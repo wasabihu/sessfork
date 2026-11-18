@@ -1,0 +1,160 @@
+"""Idempotent MCP server & Agent Skill installer for Antigravity, Claude Code, and Cursor."""
+
+from __future__ import annotations
+
+import json
+import shutil
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional
+
+from sessfork.chrome import real_user_home
+from sessfork.state import DEFAULT_STATE_PATH, load_storage_state, save_storage_state_atomic
+
+MCP_SERVER_NAME = "sessfork-browser"
+
+
+def resolve_npx_command() -> str:
+    """Resolve an absolute npx path so macOS GUI-launched agents never hit minimal $PATH bugs."""
+    found = shutil.which("npx")
+    if found:
+        return found
+    for candidate in (
+        "/opt/homebrew/bin/npx",
+        "/usr/local/bin/npx",
+        str(real_user_home() / ".volta" / "bin" / "npx"),
+    ):
+        if Path(candidate).is_file():
+            return candidate
+    return "npx"
+
+
+def build_playwright_mcp_entry(
+    state_path: Path = DEFAULT_STATE_PATH,
+    npx_cmd: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build a clean stdio MCP entry (omits 'type' key for Antigravity schema compatibility)."""
+    resolved_state = state_path.expanduser().resolve()
+    return {
+        "command": npx_cmd or resolve_npx_command(),
+        "args": [
+            "@playwright/mcp@latest",
+            "--headless",
+            "--caps=storage",
+            f"--storage-state={resolved_state}",
+        ],
+    }
+
+
+def target_mcp_config_paths(target: str, home: Optional[Path] = None) -> List[Path]:
+    """Return MCP config JSON file paths for the requested agent target."""
+    root = (home or real_user_home()).expanduser()
+    if target == "antigravity":
+        paths = [root / ".gemini" / "config" / "mcp_config.json"]
+        legacy_cli = root / ".gemini" / "antigravity-cli" / "mcp_config.json"
+        if legacy_cli.is_file():
+            paths.append(legacy_cli)
+        return paths
+    if target == "claude":
+        return [root / ".claude.json"]
+    if target == "cursor":
+        return [root / ".cursor" / "mcp.json"]
+    if target == "all":
+        return (
+            target_mcp_config_paths("antigravity", root)
+            + target_mcp_config_paths("claude", root)
+            + target_mcp_config_paths("cursor", root)
+        )
+    return []
+
+
+def ensure_mcp_configured(
+    targets: Iterable[str],
+    state_path: Path = DEFAULT_STATE_PATH,
+    home: Optional[Path] = None,
+    npx_cmd: Optional[str] = None,
+) -> List[Path]:
+    """Idempotently register `sessfork-browser` in each target's MCP configuration."""
+    # Ensure the state file exists on disk so Playwright MCP never errors on startup
+    resolved_state = state_path.expanduser().resolve()
+    if not resolved_state.is_file():
+        save_storage_state_atomic(load_storage_state(resolved_state), resolved_state)
+
+    entry = build_playwright_mcp_entry(state_path=resolved_state, npx_cmd=npx_cmd)
+    updated_files: List[Path] = []
+
+    seen: set[Path] = set()
+    for target in targets:
+        if target == "none":
+            continue
+        for cfg_path in target_mcp_config_paths(target, home=home):
+            if cfg_path in seen:
+                continue
+            seen.add(cfg_path)
+            if _upsert_mcp_json(cfg_path, MCP_SERVER_NAME, entry):
+                updated_files.append(cfg_path)
+
+    return updated_files
+
+
+def _upsert_mcp_json(cfg_path: Path, server_name: str, entry: Dict[str, Any]) -> bool:
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    doc: Dict[str, Any] = {}
+    if cfg_path.is_file():
+        raw = cfg_path.read_text(encoding="utf-8").strip()
+        if raw:
+            doc = json.loads(raw)
+
+    servers = doc.get("mcpServers")
+    if not isinstance(servers, dict):
+        servers = {}
+        doc["mcpServers"] = servers
+
+    if servers.get(server_name) == entry:
+        return False
+
+    servers[server_name] = entry
+    cfg_path.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return True
+
+
+def bundled_skill_markdown() -> str:
+    """Return the canonical SKILL.md content for sessfork."""
+    repo_skill = Path(__file__).resolve().parents[2] / "skills" / "sessfork" / "SKILL.md"
+    if repo_skill.is_file():
+        return repo_skill.read_text(encoding="utf-8")
+    return _FALLBACK_SKILL_MD
+
+
+def install_agent_skills(home: Optional[Path] = None) -> List[Path]:
+    """Install SKILL.md into Antigravity (~/.gemini/skills) and universal (~/.agents/skills)."""
+    root = (home or real_user_home()).expanduser()
+    content = bundled_skill_markdown()
+    destinations = [
+        root / ".gemini" / "skills" / "sessfork" / "SKILL.md",
+        root / ".agents" / "skills" / "sessfork" / "SKILL.md",
+    ]
+    written: List[Path] = []
+    for dest in destinations:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if not dest.is_file() or dest.read_text(encoding="utf-8") != content:
+            dest.write_text(content, encoding="utf-8")
+            written.append(dest)
+    return written
+
+
+_FALLBACK_SKILL_MD = """---
+name: sessfork
+description: Fork live Chrome login sessions (cookies) into a background headless Playwright MCP browser (`sessfork-browser`) so you can browse authenticated sites without stealing or interrupting the user's Chrome window focus.
+---
+# sessfork — Zero-Focus-Theft Authenticated Browser Skill
+
+Use `sessfork` whenever a task requires reading or interacting with a website where the user is already signed in on their local Chrome, WITHOUT hijacking their active Chrome window.
+
+## Workflow
+1. Fork or refresh the needed domain(s) from live Chrome into `~/.sessfork/state.json`:
+   ```bash
+   sessfork <domain1> [domain2 ...]
+   ```
+2. Use the `sessfork-browser` headless MCP tools (`browser_navigate`, `browser_snapshot`, etc.) to complete the web task silently in the background.
+3. Security rule: NEVER read, print, or echo `~/.sessfork/state.json` into the conversation context.
+"""

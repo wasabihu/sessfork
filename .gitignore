@@ -1,0 +1,23 @@
+# Python build & bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Auth & session artifacts (NEVER commit live cookies)
+*state*.json
+*.cookies
+*.sqlite*
+.sessfork/
+
+# OS & editor
+.DS_Store
+.idea/
+.vscode/
