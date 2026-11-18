@@ -9,9 +9,14 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import hashlib
+import json
+import os
+import pwd
 import subprocess
 import sys
-from typing import Optional, Tuple
+import tempfile
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 AES_BLOCK_SIZE = 16
 CHROMIUM_CBC_IV = b" " * AES_BLOCK_SIZE
@@ -33,51 +38,232 @@ class CryptoError(RuntimeError):
     """Raised when OS keychain retrieval or AES decryption fails."""
 
 
+def _default_key_cache_path() -> Path:
+    """Resolve `<real-user-home>/.sessfork/keys.json` without importing chrome.py."""
+    override = os.environ.get("SESSFORK_HOME")
+    if override:
+        home = Path(override).expanduser()
+    else:
+        home = Path.home()
+        try:
+            pw_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+            if pw_home.is_dir():
+                home = pw_home
+        except KeyError:
+            pass
+    return home / ".sessfork" / "keys.json"
+
+
+def _decode_aes_hex(value: object) -> Optional[bytes]:
+    if not isinstance(value, str):
+        return None
+    try:
+        raw = bytes.fromhex(value.strip())
+    except ValueError:
+        return None
+    return raw if len(raw) == AES_BLOCK_SIZE else None
+
+
+def _load_key_cache_dict(target: Path) -> Dict[str, str]:
+    if not target.is_file():
+        return {}
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    keys = data.get("keys")
+    if not isinstance(keys, dict):
+        return {}
+    return {
+        str(k): str(v)
+        for k, v in keys.items()
+        if isinstance(k, str) and _decode_aes_hex(v) is not None
+    }
+
+
+def _write_key_cache_atomic(keys: Dict[str, str], target: Path) -> Path:
+    resolved = target.expanduser().resolve()
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(resolved.parent, 0o700)
+    except OSError:
+        pass
+
+    fd, tmp_name = tempfile.mkstemp(dir=str(resolved.parent), prefix=".keys_", suffix=".tmp")
+    try:
+        os.chmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"keys": dict(sorted(keys.items()))}, fh, indent=2)
+            fh.write("\n")
+        os.replace(tmp_name, resolved)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    return resolved
+
+
+def load_cached_aes_key(browser: str, cache_path: Optional[Path] = None) -> Optional[bytes]:
+    """Load cached PBKDF2-derived 16-byte AES key from 0600 keys.json if present."""
+    target = (cache_path or _default_key_cache_path()).expanduser()
+    keys = _load_key_cache_dict(target)
+    return _decode_aes_hex(keys.get(browser))
+
+
+def save_cached_aes_key_atomic(
+    browser: str,
+    key: bytes,
+    cache_path: Optional[Path] = None,
+) -> Path:
+    """Persist PBKDF2-derived 16-byte AES key atomically with 0600 permissions."""
+    if len(key) != AES_BLOCK_SIZE:
+        raise CryptoError(f"Derived AES key must be {AES_BLOCK_SIZE} bytes, got {len(key)}")
+    target = (cache_path or _default_key_cache_path()).expanduser().resolve()
+    keys = _load_key_cache_dict(target)
+    keys[browser] = key.hex()
+    return _write_key_cache_atomic(keys, target)
+
+
+def clear_cached_aes_keys(
+    browser: Optional[str] = None,
+    cache_path: Optional[Path] = None,
+) -> int:
+    """Remove cached derived AES key(s) for a specific browser or all browsers."""
+    target = (cache_path or _default_key_cache_path()).expanduser()
+    if not target.is_file():
+        return 0
+    keys = _load_key_cache_dict(target)
+    if browser is None:
+        count = len(keys)
+        try:
+            target.unlink()
+        except OSError:
+            pass
+        return count
+    if browser not in keys:
+        return 0
+    del keys[browser]
+    if not keys:
+        try:
+            target.unlink()
+        except OSError:
+            pass
+    else:
+        _write_key_cache_atomic(keys, target)
+    return 1
+
+
+def list_cached_key_browsers(cache_path: Optional[Path] = None) -> List[str]:
+    """Return sorted browser names present in the derived-key cache (never exposes key bytes)."""
+    target = (cache_path or _default_key_cache_path()).expanduser()
+    return sorted(_load_key_cache_dict(target).keys())
+
+
 def derive_aes_key(password: bytes, iterations: int) -> bytes:
     """Derive 16-byte AES-128 key using PBKDF2-HMAC-SHA1 per Chromium spec."""
     return hashlib.pbkdf2_hmac("sha1", password, CHROMIUM_SALT, iterations, dklen=16)
 
 
-def get_safe_storage_key(browser: str = "chrome", platform: Optional[str] = None) -> bytes:
-    """Fetch Safe Storage passphrase from OS keyring and derive the 16-byte AES key."""
+def get_safe_storage_key(
+    browser: str = "chrome",
+    platform: Optional[str] = None,
+    use_cache: bool = False,
+    refresh: bool = False,
+    cache_path: Optional[Path] = None,
+) -> bytes:
+    """Fetch Safe Storage passphrase from OS keyring and derive the 16-byte AES key.
+
+    The derived-key cache (`~/.sessfork/keys.json`) is strictly opt-in (`use_cache=True`,
+    CLI `--cache-key`). Caching trades OS keyring authorization for convenience: any
+    process running as the same user could read the cached key, so it is off by default.
+    """
     plat = platform or sys.platform
     if browser not in BROWSER_KEYRING_MAP:
         raise CryptoError(f"Unsupported browser '{browser}'. Choose from: {', '.join(BROWSER_KEYRING_MAP)}")
+
+    effective_cache = use_cache and (cache_path is not None or platform is None or platform == sys.platform)
+    if effective_cache and not refresh:
+        cached = load_cached_aes_key(browser, cache_path=cache_path)
+        if cached is not None:
+            return cached
 
     service, account, linux_app = BROWSER_KEYRING_MAP[browser]
 
     if plat == "darwin":
         password = _read_macos_keychain(service, account)
-        # Chrome Canary sometimes shares the main Chrome keychain entry
-        if password is None and browser == "canary":
+        # Chrome Canary sometimes shares the main Chrome keychain entry (only fallback if Canary item is absent)
+        if (
+            password is None
+            and browser == "canary"
+            and not _macos_keychain_item_exists("Chrome Safe Storage", "Chrome Canary")
+        ):
             password = _read_macos_keychain("Chrome Safe Storage", "Chrome")
         if password is None:
             raise CryptoError(
                 f"Could not read '{service}' from macOS Keychain (or access was denied). "
                 "Click 'Allow' / 'Always Allow' when macOS prompts for Keychain access."
             )
-        return derive_aes_key(password, MACOS_ITERATIONS)
-
-    if plat.startswith("linux"):
+        key = derive_aes_key(password, MACOS_ITERATIONS)
+    elif plat.startswith("linux"):
         password = _read_linux_secret_tool(linux_app, service) or b"peanuts"
-        return derive_aes_key(password, LINUX_ITERATIONS)
+        key = derive_aes_key(password, LINUX_ITERATIONS)
+    else:
+        raise CryptoError(f"Platform '{plat}' is not supported yet (macOS and Linux supported).")
 
-    raise CryptoError(f"Platform '{plat}' is not supported yet (macOS and Linux supported).")
+    if effective_cache:
+        save_cached_aes_key_atomic(browser, key, cache_path=cache_path)
+    return key
 
 
-def _read_macos_keychain(service: str, account: str) -> Optional[bytes]:
-    for cmd in (
-        ["/usr/bin/security", "find-generic-password", "-w", "-s", service, "-a", account],
-        ["/usr/bin/security", "find-generic-password", "-w", "-s", service],
-    ):
-        try:
-            proc = subprocess.run(cmd, capture_output=True, timeout=15, check=False)
-            if proc.returncode == 0:
-                secret = proc.stdout.rstrip(b"\r\n")
-                if secret:
-                    return secret
-        except (OSError, subprocess.SubprocessError):
-            continue
+def _macos_keychain_item_exists(service: str, account: str) -> bool:
+    """Probe Keychain metadata without `-w` (never triggers a macOS password dialog)."""
+    try:
+        proc = subprocess.run(
+            ["/usr/bin/security", "find-generic-password", "-s", service, "-a", account],
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+        return proc.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _read_macos_keychain(service: str, account: str, timeout: int = 120) -> Optional[bytes]:
+    """Probe metadata first (0 popups), then prompt at most once with a generous timeout."""
+    secret_cmd = ["/usr/bin/security", "find-generic-password", "-w", "-s", service, "-a", account]
+    try:
+        probe = subprocess.run(
+            ["/usr/bin/security", "find-generic-password", "-s", service, "-a", account],
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+        if probe.returncode == 44:
+            fallback_probe = subprocess.run(
+                ["/usr/bin/security", "find-generic-password", "-s", service],
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+            if fallback_probe.returncode != 0:
+                return None
+            secret_cmd = ["/usr/bin/security", "find-generic-password", "-w", "-s", service]
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    try:
+        proc = subprocess.run(secret_cmd, capture_output=True, timeout=timeout, check=False)
+        if proc.returncode == 0:
+            secret = proc.stdout.rstrip(b"\r\n")
+            if secret:
+                return secret
+    except (OSError, subprocess.SubprocessError):
+        return None
     return None
 
 

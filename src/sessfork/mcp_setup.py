@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -28,20 +29,55 @@ def resolve_npx_command() -> str:
     return "npx"
 
 
+def _build_mcp_env(cmd: str) -> Dict[str, str]:
+    """Build a deterministic PATH (and macOS Playwright browser cache) for GUI-launched MCP servers."""
+    candidates: List[str] = []
+    cmd_path = Path(cmd)
+    if cmd_path.is_absolute():
+        candidates.append(str(cmd_path.parent))
+        if cmd_path.exists():
+            candidates.append(str(cmd_path.resolve().parent))
+    candidates.extend(
+        (
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin",
+        )
+    )
+    path_entries: List[str] = []
+    for entry in candidates:
+        if entry and entry not in path_entries:
+            path_entries.append(entry)
+
+    env_map: Dict[str, str] = {"PATH": ":".join(path_entries)}
+    if sys.platform == "darwin":
+        pw_cache = real_user_home() / "Library" / "Caches" / "ms-playwright"
+        if pw_cache.is_dir():
+            env_map["PLAYWRIGHT_BROWSERS_PATH"] = str(pw_cache)
+    return env_map
+
+
 def build_playwright_mcp_entry(
     state_path: Path = DEFAULT_STATE_PATH,
     npx_cmd: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build a clean stdio MCP entry (omits 'type' key for Antigravity schema compatibility)."""
     resolved_state = state_path.expanduser().resolve()
+    cmd = npx_cmd or resolve_npx_command()
     return {
-        "command": npx_cmd or resolve_npx_command(),
+        "command": cmd,
         "args": [
+            "-y",
             "@playwright/mcp@latest",
             "--headless",
+            "--isolated",
             "--caps=storage",
             f"--storage-state={resolved_state}",
         ],
+        "env": _build_mcp_env(cmd),
     }
 
 

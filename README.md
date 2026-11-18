@@ -37,7 +37,7 @@ Want to fork your first domains in the very same command? Pass them right after 
 curl -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/main/install.sh | bash -s -- github.com linear.app
 ```
 
-*(Note: On first run with cookies, macOS prompts to read `"Chrome Safe Storage"` from Keychain — click **Allow** or **Always Allow**. For pure LocalStorage JWT sites, pass `--no-cookies` for zero Keychain prompts.)*
+*(Note: On each cookie fork, macOS asks to read `"Chrome Safe Storage"` from Keychain — click **Allow**. For pure LocalStorage JWT sites, pass `--no-cookies` for zero Keychain prompts. See the FAQ for the opt-in `--cache-key`.)*
 
 ### Option B · Zero-Install One-Shot (`uvx`)
 
@@ -139,6 +139,9 @@ sessfork console.cloud.google.com --profile "Profile 1"
 | Target specific profile folder | `sessfork github.com --profile "Profile 1"` |
 | Wire Antigravity + Claude Code + Cursor explicitly | `sessfork --setup --target all` |
 | Inspect cached domains & origins (redacted, safe) | `sessfork --status` |
+| Opt-in: cache the derived key to skip future Keychain prompts (see FAQ) | `sessfork github.com --cache-key` |
+| Force re-read the key from Keychain (e.g. after Chrome rotated it) | `sessfork github.com --refresh-key` |
+| Delete any cached derived keys | `sessfork --purge-keys` |
 | Remove cached state for specific domain (or all) | `sessfork --clear linear.app` / `sessfork --clear` |
 
 ---
@@ -146,9 +149,20 @@ sessfork console.cloud.google.com --profile "Profile 1"
 ## FAQ
 
 <details>
-<summary><strong>Why does macOS ask for Keychain access on the first cookie fork?</strong></summary>
+<summary><strong>Why does macOS ask for Keychain access when forking cookies?</strong></summary>
 
-Chromium encrypts cookie values using a master passphrase stored under `"Chrome Safe Storage"` in your macOS Keychain. Click **Allow** (or **Always Allow**) so macOS authorizes `security` to read that entry. If a site uses `localStorage` tokens (many modern SPAs), pass `--no-cookies` to bypass Keychain completely.
+Chromium encrypts cookie values using a master passphrase stored under `"Chrome Safe Storage"` in your macOS Keychain. Click **Allow** so macOS authorizes `security` to read that entry. If a site uses `localStorage` tokens (many modern SPAs), pass `--no-cookies` to bypass Keychain completely.
+
+By default `sessfork` does **not** store the derived decryption key anywhere, so macOS stays in charge of every authorization. If you prefer convenience, `--cache-key` saves the derived key to `~/.sessfork/keys.json` (`0600`). Trade-off: any process running under your user account could then read that file and decrypt your Chrome cookies without a Keychain prompt. Run `sessfork --purge-keys` to remove it at any time.
+
+</details>
+
+<details>
+<summary><strong>Which platforms are supported?</strong></summary>
+
+- **macOS**: fully supported and tested on real Chrome profiles.
+- **Linux**: experimental — covered by unit tests, but not yet verified against many real-world Chrome/Secret Service setups. Bug reports welcome.
+- **Windows**: not supported (Chromium on Windows uses DPAPI / app-bound encryption).
 
 </details>
 
@@ -173,7 +187,10 @@ Run `sessfork --clear <domain>` to purge a single site, or `sessfork --clear` (o
 - **Domain Allowlist by Default**: Only the domains/origins you explicitly name are extracted.
 - **Strict File Permissions**: `~/.sessfork/` is `0700` and `~/.sessfork/state.json` is atomically created with `0600` permissions before a single byte is written.
 - **Redacted Diagnostics**: `sessfork --status`, `--json`, and `SKILL.md` never print raw cookie or LocalStorage values to stdout or agent prompt context.
+- **No Key Persistence by Default**: The derived cookie key lives only in memory for the duration of one command. Persisting it (`--cache-key`) is an explicit opt-in.
+- **Isolated Headless Browser**: `sessfork-browser` runs `@playwright/mcp --headless --isolated`, so each MCP session starts from the forked `state.json` instead of a persistent profile.
 - **Responsible Use**: `sessfork` operates strictly within your signed-in OS user account and relies on native OS keyring authorization (macOS Keychain / Linux Secret Service) — it never bypasses OS access controls or sandboxes. Use it only on devices and accounts you own or are explicitly authorized to test, and always comply with target websites' Terms of Service.
+- **Reporting Vulnerabilities**: See [SECURITY.md](SECURITY.md).
 
 ## Development & Tests
 

@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 import stat
+import subprocess
 import tempfile
 import time
 import unittest
@@ -17,9 +18,11 @@ from sessfork.chrome import CHROMIUM_EPOCH_DELTA_SECONDS, extract_cookies, norma
 from sessfork.cli import main
 from sessfork.crypto import (
     MACOS_ITERATIONS,
+    _read_macos_keychain,
     aes_128_cbc_encrypt_pkcs7,
     decrypt_chromium_cookie,
     derive_aes_key,
+    get_safe_storage_key,
 )
 from sessfork.mcp_setup import MCP_SERVER_NAME, ensure_mcp_configured, install_agent_skills
 from sessfork.state import clear_cookies, load_storage_state, summarize_state, upsert_cookies
@@ -220,6 +223,7 @@ class SessforkTestSuite(unittest.TestCase):
             self.assertIn("existing-tool", parsed["mcpServers"])
             self.assertIn(MCP_SERVER_NAME, parsed["mcpServers"])
             self.assertNotIn("type", parsed["mcpServers"][MCP_SERVER_NAME])
+            self.assertIn("--isolated", parsed["mcpServers"][MCP_SERVER_NAME]["args"])
             self.assertEqual(parsed["mcpServers"][MCP_SERVER_NAME]["command"], "/opt/homebrew/bin/npx")
 
             updated_again = ensure_mcp_configured(
@@ -306,6 +310,121 @@ class SessforkTestSuite(unittest.TestCase):
             skills = install_agent_skills(home=sandbox_home)
             self.assertEqual(len(skills), 3)
             self.assertTrue((sandbox_home / ".claude" / "skills" / "sessfork" / "SKILL.md").is_file())
+
+    def test_derived_key_cache_permissions_and_single_prompt_on_cancel(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            keys_file = Path(tmp) / "keys.json"
+            # Default: cache is OFF -> keychain read every time, nothing written to disk
+            with mock.patch("sessfork.crypto._read_macos_keychain", return_value=b"mock-chrome-secret") as m_kc:
+                get_safe_storage_key("chrome", platform="darwin", cache_path=keys_file)
+                get_safe_storage_key("chrome", platform="darwin", cache_path=keys_file)
+                self.assertEqual(m_kc.call_count, 2)
+                self.assertFalse(keys_file.exists())
+
+            # Opt-in: cache is ON -> single keychain read, 0600 file, raw passphrase never stored
+            with mock.patch("sessfork.crypto._read_macos_keychain", return_value=b"mock-chrome-secret") as m_kc:
+                key1 = get_safe_storage_key("chrome", platform="darwin", cache_path=keys_file, use_cache=True)
+                self.assertEqual(m_kc.call_count, 1)
+                self.assertEqual(len(key1), 16)
+                self.assertEqual(stat.S_IMODE(os.stat(keys_file).st_mode), 0o600)
+
+                key2 = get_safe_storage_key("chrome", platform="darwin", cache_path=keys_file, use_cache=True)
+                self.assertEqual(key2, key1)
+                self.assertEqual(m_kc.call_count, 1)
+                self.assertNotIn("mock-chrome-secret", keys_file.read_text(encoding="utf-8"))
+
+        seen_cmds: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
+            seen_cmds.append(list(cmd))
+            if "-w" in cmd:
+                return subprocess.CompletedProcess(cmd, 128, b"", b"User canceled the operation")
+            return subprocess.CompletedProcess(cmd, 0, b"keychain metadata", b"")
+
+        with mock.patch("sessfork.crypto.subprocess.run", side_effect=fake_run):
+            secret = _read_macos_keychain("Chrome Safe Storage", "Chrome")
+            self.assertIsNone(secret)
+            w_calls = [cmd for cmd in seen_cmds if "-w" in cmd]
+            self.assertEqual(len(w_calls), 1)
+
+    def test_lazy_keychain_skip_and_stale_key_self_healing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            plain_db = tmp_dir / "PlainCookies"
+            conn = sqlite3.connect(str(plain_db))
+            conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);")
+            conn.execute("INSERT INTO meta VALUES ('version', '24');")
+            conn.execute(
+                """
+                CREATE TABLE cookies (
+                    host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB,
+                    path TEXT, expires_utc INTEGER, is_secure INTEGER,
+                    is_httponly INTEGER, has_expires INTEGER, samesite INTEGER
+                );
+                """
+            )
+            future_exp = _unix_to_chromium_us(time.time() + 3600)
+            conn.execute(
+                "INSERT INTO cookies VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                (".linear.app", "plain_flag", "ok", b"", "/", future_exp, 1, 0, 1, 1),
+            )
+            conn.commit()
+            conn.close()
+
+            with mock.patch("sessfork.chrome.get_safe_storage_key") as m_key:
+                cookies, _ = extract_cookies(["linear.app"], db_path=plain_db)
+                self.assertEqual(m_key.call_count, 0)
+                self.assertEqual(len(cookies), 1)
+                self.assertEqual(cookies[0]["value"], "ok")
+
+            enc_db = tmp_dir / "EncCookies"
+            real_key = self.aes_key
+            wrong_key = derive_aes_key(b"stale-wrong-key", MACOS_ITERATIONS)
+            conn2 = sqlite3.connect(str(enc_db))
+            conn2.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);")
+            conn2.execute("INSERT INTO meta VALUES ('version', '24');")
+            conn2.execute(
+                """
+                CREATE TABLE cookies (
+                    host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB,
+                    path TEXT, expires_utc INTEGER, is_secure INTEGER,
+                    is_httponly INTEGER, has_expires INTEGER, samesite INTEGER
+                );
+                """
+            )
+            conn2.execute(
+                "INSERT INTO cookies VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                (
+                    ".github.com",
+                    "session_id",
+                    "",
+                    _encrypt_cookie_blob("fresh_val", ".github.com", real_key),
+                    "/",
+                    future_exp,
+                    1,
+                    1,
+                    1,
+                    1,
+                ),
+            )
+            conn2.commit()
+            conn2.close()
+
+            # Without the opt-in cache, a wrong key is NOT retried (no pointless second prompt)
+            with mock.patch("sessfork.chrome.get_safe_storage_key", side_effect=[wrong_key]) as m_once:
+                cookies_once, _ = extract_cookies(["github.com"], db_path=enc_db)
+                self.assertEqual(m_once.call_count, 1)
+                self.assertEqual(m_once.call_args_list[0].kwargs["use_cache"], False)
+                self.assertEqual(cookies_once, [])
+
+            # With the opt-in cache, a stale cached key self-heals via one forced refresh
+            with mock.patch("sessfork.chrome.get_safe_storage_key", side_effect=[wrong_key, real_key]) as m_heal:
+                cookies2, _ = extract_cookies(["github.com"], db_path=enc_db, cache_key=True)
+                self.assertEqual(m_heal.call_count, 2)
+                self.assertEqual(m_heal.call_args_list[0].kwargs["refresh"], False)
+                self.assertEqual(m_heal.call_args_list[1].kwargs["refresh"], True)
+                self.assertEqual(len(cookies2), 1)
+                self.assertEqual(cookies2[0]["value"], "fresh_val")
 
 
 if __name__ == "__main__":

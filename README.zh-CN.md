@@ -35,7 +35,7 @@ curl -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/main/install.sh |
 curl -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/main/install.sh | bash -s -- github.com linear.app
 ```
 
-*(提示：首次提取 Cookie 时，macOS 会弹窗请求读取钥匙串 `"Chrome Safe Storage"`，点击 **允许** 或 **始终允许** 即可。如果目标网站只用 LocalStorage JWT 登录，加 `--no-cookies` 可做到全程零弹窗。)*
+*(提示：每次提取 Cookie 时，macOS 会弹窗请求读取钥匙串 `"Chrome Safe Storage"`，点击 **允许** 即可。如果目标网站只用 LocalStorage JWT 登录，加 `--no-cookies` 可做到全程零弹窗。想免弹窗可参考 FAQ 里的 `--cache-key`（需自行权衡）。)*
 
 ### 方式二 · 免安装直接运行（`uvx`）
 
@@ -135,6 +135,9 @@ sessfork console.cloud.google.com --profile "Profile 1"
 | 指定 Chrome 分身账号目录 | `sessfork github.com --profile "Profile 1"` |
 | 同时为 Antigravity + Claude Code + Cursor 写入配置 | `sessfork --setup --target all` |
 | 安全查看已缓存的域名与键数量（完全脱敏） | `sessfork --status` |
+| 可选：缓存派生密钥，以后免钥匙串弹窗（见 FAQ） | `sessfork github.com --cache-key` |
+| 强制重新从钥匙串读取密钥 | `sessfork github.com --refresh-key` |
+| 删除已缓存的派生密钥 | `sessfork --purge-keys` |
 | 清理某个域名或全部已分叉登录态 | `sessfork --clear linear.app` / `sessfork --clear` |
 
 ---
@@ -142,9 +145,20 @@ sessfork console.cloud.google.com --profile "Profile 1"
 ## 常见问题（FAQ）
 
 <details>
-<summary><strong>为什么第一次提取 Cookie 时 macOS 会弹钥匙串授权窗口？</strong></summary>
+<summary><strong>为什么提取 Cookie 时 macOS 会弹钥匙串授权窗口？</strong></summary>
 
-Chromium 会在系统钥匙串的 `"Chrome Safe Storage"` 条目下保存主加密口令。首次读取时点击 **允许** 或 **始终允许** 即可授权当前用户读取自己的加密密钥。如果目标站点仅靠 `localStorage` 存 JWT，只需加 `--no-cookies` 即可完全免弹窗。
+Chromium 会在系统钥匙串的 `"Chrome Safe Storage"` 条目下保存主加密口令。读取时点击 **允许** 即可授权当前用户读取自己的加密密钥。如果目标站点仅靠 `localStorage` 存 JWT，只需加 `--no-cookies` 即可完全免弹窗。
+
+`sessfork` 默认**不会**把派生出的解密密钥保存到任何地方，每次授权都由 macOS 把关。如果你更看重省事，可以加 `--cache-key`，把派生密钥保存到 `~/.sessfork/keys.json`（权限 `0600`）。代价是：本机以你的用户身份运行的任何程序都能读取这个文件，不经钥匙串确认就解密你的 Chrome Cookie。随时可以用 `sessfork --purge-keys` 删除。
+
+</details>
+
+<details>
+<summary><strong>支持哪些系统？</strong></summary>
+
+- **macOS**：完整支持，已在真实 Chrome 配置上验证。
+- **Linux**：实验性支持，有单元测试覆盖，但还没在多种真实 Chrome / Secret Service 环境中验证，欢迎反馈问题。
+- **Windows**：不支持（Windows 版 Chromium 使用 DPAPI / 应用绑定加密）。
 
 </details>
 
@@ -169,7 +183,10 @@ Chromium 默认大约每 5 秒才将内存中的 `localStorage` 变更刷盘到 
 - **默认域名白名单最小化提取**：仅提取你显式指定的域名与 Origin，绝不顺带导出整个浏览器的无关网站凭证。
 - **严格原子权限隔离**：`~/.sessfork/` 为 `0700`，`~/.sessfork/state.json` 在写入任意字节前即以 `0600` 原子创建并替换。
 - **输出全面脱敏**：`sessfork --status`、`--json` 及 `SKILL.md` 严禁向终端或 AI 上下文打印原始 Cookie / Token 明文。
+- **默认不保存密钥**：派生出的 Cookie 解密密钥只在单次命令运行期间存在于内存中；持久化保存（`--cache-key`）必须由你主动开启。
+- **隔离的无头浏览器**：`sessfork-browser` 以 `@playwright/mcp --headless --isolated` 运行，每次会话都从分叉出的 `state.json` 启动，不沿用持久化的浏览器配置。
 - **合规使用声明**：`sessfork` 严格运行在当前登录用户的权限边界内，并依赖操作系统原生钥匙串鉴权（macOS Keychain / Linux Secret Service），不会绕过任何系统访问控制或沙箱机制。请仅用于个人设备及已获明确授权的账号与自动化测试场景，并遵守目标网站的服务条款。
+- **安全问题报告**：见 [SECURITY.md](SECURITY.md)。
 
 ## 本地开发与测试
 

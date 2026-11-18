@@ -46,4 +46,5 @@ Use the `sessfork-browser` MCP tools (`browser_navigate`, `browser_snapshot`, `b
 ## Security Guardrails
 
 1. **Least Privilege**: Always pass explicit `<domain>` names (never pass `--all-domains` unless the user explicitly asks for it).
-2. **Zero Secret Leakage**: NEVER run `cat`, `head`, or `view_file` on `~/.sessfork/state.json`, and NEVER echo raw cookie or LocalStorage token values into chat or logs. Use `sessfork --status` to inspect active counts safely.
+2. **Zero Secret Leakage**: NEVER run `cat`, `head`, or `view_file` on `~/.sessfork/state.json` or `~/.sessfork/keys.json`, and NEVER echo raw cookie or LocalStorage token values into chat or logs. Use `sessfork --status` to inspect active counts safely.
+3. **No Silent Key Caching**: Never pass `--cache-key` unless the user explicitly asks for it; it persists the derived cookie key on disk and weakens Keychain protection. If the user wants it removed, run `sessfork --purge-keys`.

@@ -209,11 +209,12 @@ def extract_cookies(
     db_path: Optional[Path] = None,
     aes_key: Optional[bytes] = None,
     include_expired: bool = False,
+    refresh_key: bool = False,
+    cache_key: bool = False,
 ) -> tuple[List[CookieDict], Path]:
     """Copy Chromium SQLite DB (+ WAL/SHM) to an isolated 0700 temp dir and extract Playwright cookies."""
     source_db = resolve_cookie_db(browser=browser, profile=profile, db_path=db_path)
     normalized_domains = [normalize_domain_filter(d) for d in domains if d.strip()]
-    key = aes_key if aes_key is not None else get_safe_storage_key(browser=browser)
     now = time.time()
 
     with tempfile.TemporaryDirectory(prefix="sessfork_") as tmp_dir_str:
@@ -238,54 +239,107 @@ def extract_cookies(
                 FROM cookies
                 """
             )
-            cookies: List[CookieDict] = []
-            for (
-                host_key,
-                name,
-                plain_val,
-                enc_val,
-                path,
-                expires_utc,
-                is_secure,
-                is_httponly,
-                has_expires,
-                samesite,
-            ) in cur.fetchall():
-                if not _domain_matches(host_key, normalized_domains):
-                    continue
-
-                expires = _convert_expires(int(expires_utc or 0), int(has_expires or 0))
-                if not include_expired and expires != -1 and expires <= now:
-                    continue
-
-                decrypted = decrypt_chromium_cookie(
-                    encrypted_value=bytes(enc_val) if enc_val else b"",
-                    plain_value=plain_val or "",
-                    host_key=host_key,
-                    aes_key=key,
-                    db_version=db_version,
-                )
-                if decrypted is None:
-                    continue
-
-                secure_bool = bool(is_secure)
-                cookies.append(
-                    {
-                        "name": name,
-                        "value": decrypted,
-                        "domain": host_key,
-                        "path": path or "/",
-                        "expires": expires,
-                        "httpOnly": bool(is_httponly),
-                        "secure": secure_bool,
-                        "sameSite": _convert_samesite(
-                            int(samesite) if samesite is not None else -1,
-                            secure_bool,
-                        ),
-                    }
-                )
+            raw_rows = cur.fetchall()
         finally:
             conn.close()
+
+    matched_rows: List[tuple[str, str, str, bytes, str, float, int, int, int]] = []
+    for (
+        host_key,
+        name,
+        plain_val,
+        enc_val,
+        path,
+        expires_utc,
+        is_secure,
+        is_httponly,
+        has_expires,
+        samesite,
+    ) in raw_rows:
+        if not _domain_matches(host_key, normalized_domains):
+            continue
+
+        expires = _convert_expires(int(expires_utc or 0), int(has_expires or 0))
+        if not include_expired and expires != -1 and expires <= now:
+            continue
+
+        matched_rows.append(
+            (
+                host_key,
+                name,
+                plain_val or "",
+                bytes(enc_val) if enc_val else b"",
+                path or "/",
+                expires,
+                int(is_secure or 0),
+                int(is_httponly or 0),
+                int(samesite) if samesite is not None else -1,
+            )
+        )
+
+    def _decrypt_rows(active_key: bytes) -> tuple[List[CookieDict], int, int]:
+        cookies_out: List[CookieDict] = []
+        encrypted_seen = 0
+        encrypted_ok = 0
+        for (
+            host_key,
+            name,
+            plain_val,
+            enc_bytes,
+            path,
+            expires,
+            is_secure,
+            is_httponly,
+            samesite,
+        ) in matched_rows:
+            is_aes_row = (not plain_val) and enc_bytes[:3] in (b"v10", b"v11")
+            if is_aes_row:
+                encrypted_seen += 1
+            decrypted = decrypt_chromium_cookie(
+                encrypted_value=enc_bytes,
+                plain_value=plain_val,
+                host_key=host_key,
+                aes_key=active_key,
+                db_version=db_version,
+            )
+            if decrypted is None:
+                continue
+            if is_aes_row:
+                encrypted_ok += 1
+
+            secure_bool = bool(is_secure)
+            cookies_out.append(
+                {
+                    "name": name,
+                    "value": decrypted,
+                    "domain": host_key,
+                    "path": path,
+                    "expires": expires,
+                    "httpOnly": bool(is_httponly),
+                    "secure": secure_bool,
+                    "sameSite": _convert_samesite(samesite, secure_bool),
+                }
+            )
+        return cookies_out, encrypted_seen, encrypted_ok
+
+    needs_aes = any(
+        (not plain_val) and enc_bytes[:3] in (b"v10", b"v11")
+        for (_, _, plain_val, enc_bytes, *_) in matched_rows
+    )
+    if not needs_aes:
+        cookies, _, _ = _decrypt_rows(b"")
+        return cookies, source_db
+
+    key = (
+        aes_key
+        if aes_key is not None
+        else get_safe_storage_key(browser=browser, use_cache=cache_key, refresh=refresh_key)
+    )
+    cookies, encrypted_seen, encrypted_ok = _decrypt_rows(key)
+    # Self-heal a stale cached key (only meaningful when the opt-in cache was used)
+    if aes_key is None and cache_key and not refresh_key and encrypted_seen > 0 and encrypted_ok == 0:
+        key = get_safe_storage_key(browser=browser, use_cache=True, refresh=True)
+        cookies, _, _ = _decrypt_rows(key)
 
     return cookies, source_db
 
@@ -299,6 +353,8 @@ def extract_browser_session(
     aes_key: Optional[bytes] = None,
     include_cookies: bool = True,
     include_local_storage: bool = True,
+    refresh_key: bool = False,
+    cache_key: bool = False,
 ) -> tuple[List[CookieDict], List[OriginEntry], str]:
     """Extract both SQLite Cookies and LevelDB LocalStorage for `domains` without locking the browser.
 
@@ -318,6 +374,8 @@ def extract_browser_session(
             profile=profile,
             db_path=db_path,
             aes_key=aes_key,
+            refresh_key=refresh_key,
+            cache_key=cache_key,
         )
         profile_label = profile_dir_from_cookie_db(source_cookie_db).name
 

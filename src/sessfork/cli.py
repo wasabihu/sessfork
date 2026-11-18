@@ -10,7 +10,12 @@ from typing import List, Optional, Sequence
 
 from sessfork import __version__
 from sessfork.chrome import BrowserProfileError, extract_browser_session
-from sessfork.crypto import BROWSER_KEYRING_MAP, CryptoError
+from sessfork.crypto import (
+    BROWSER_KEYRING_MAP,
+    CryptoError,
+    clear_cached_aes_keys,
+    list_cached_key_browsers,
+)
 from sessfork.localstorage import LevelDBFormatError
 from sessfork.mcp_setup import (
     MCP_SERVER_NAME,
@@ -123,6 +128,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Clear saved cookies and LocalStorage origins (for specified domains, or all if omitted)",
     )
     parser.add_argument(
+        "--cache-key",
+        action="store_true",
+        help=(
+            "Opt-in: cache the derived Safe Storage key in ~/.sessfork/keys.json (0600) to skip "
+            "future Keychain prompts. Trade-off: any process running as your user could read it."
+        ),
+    )
+    parser.add_argument(
+        "--refresh-key",
+        action="store_true",
+        help="Force re-reading Safe Storage key from OS Keychain (updates the cache if --cache-key is set)",
+    )
+    parser.add_argument(
+        "--purge-keys",
+        action="store_true",
+        help="Remove cached derived Safe Storage keys (~/.sessfork/keys.json)",
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         dest="as_json",
@@ -152,18 +175,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "remaining_origins": left_o,
             "state_file": str(state_path),
         }
-        _emit(
-            payload,
-            args.as_json,
+        msg = (
             f"Cleared {rem_c} cookie(s) and {rem_o} LocalStorage origin(s); "
-            f"{left_c} cookie(s) and {left_o} origin(s) remaining in {state_path}",
+            f"{left_c} cookie(s) and {left_o} origin(s) remaining in {state_path}"
         )
+        if args.purge_keys:
+            purged = clear_cached_aes_keys()
+            payload["purged_keys"] = purged
+            msg += f"; purged {purged} cached Safe Storage key(s)"
+        _emit(payload, args.as_json, msg)
+        return 0
+
+    if args.purge_keys:
+        purged = clear_cached_aes_keys()
+        payload = {"action": "purge_keys", "purged_keys": purged}
+        _emit(payload, args.as_json, f"Purged {purged} cached Safe Storage key(s).")
         return 0
 
     if args.status:
         info = summarize_state(state_path)
         wired = [str(p) for p in target_mcp_config_paths(args.target) if p.is_file()]
         info["wired_mcp_configs"] = wired
+        info["cached_key_browsers"] = list_cached_key_browsers()
         _emit_status(info, args.as_json)
         return 0
 
@@ -191,6 +224,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 leveldb_path=args.leveldb_path,
                 include_cookies=not args.no_cookies,
                 include_local_storage=not args.no_local_storage,
+                refresh_key=args.refresh_key,
+                cache_key=args.cache_key,
             )
             saved_path, up_cookies, tot_cookies, up_ls_keys, tot_origins = upsert_session_state(
                 new_cookies=cookies,
@@ -299,6 +334,12 @@ def _emit_status(info: dict, as_json: bool) -> None:
         return
     if not info["exists"]:
         print(f"No state file yet at {info['path']} (run `sessfork <domain>` to create one).")
+        if info.get("cached_key_browsers"):
+            print(
+                "Cached Safe Storage key(s): "
+                f"{', '.join(info['cached_key_browsers'])} (used only with --cache-key; "
+                "remove with `sessfork --purge-keys`)"
+            )
         return
     print(
         f"State file: {info['path']} "
@@ -316,6 +357,12 @@ def _emit_status(info: dict, as_json: bool) -> None:
         print("LocalStorage origins:")
         for orig, count in info["origins"].items():
             print(f"  - {orig}: {count} key(s)")
+    if info.get("cached_key_browsers"):
+        print(
+            "Cached Safe Storage key(s): "
+            f"{', '.join(info['cached_key_browsers'])} (used only with --cache-key; "
+            "remove with `sessfork --purge-keys`)"
+        )
     if info.get("wired_mcp_configs"):
         print(f"Wired MCP config(s): {', '.join(info['wired_mcp_configs'])}")
 

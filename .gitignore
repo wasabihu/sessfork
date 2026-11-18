@@ -13,9 +13,11 @@ venv/
 
 # Auth & session artifacts (NEVER commit live cookies)
 *state*.json
+*keys*.json
 *.cookies
 *.sqlite*
 .sessfork/
+.playwright-mcp/
 
 # OS & editor
 .DS_Store

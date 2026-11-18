@@ -2,7 +2,9 @@
 set -euo pipefail
 
 REPO_URL="https://github.com/wasabihu/sessfork"
-TARBALL_URL="${REPO_URL}/archive/refs/heads/main.tar.gz"
+# Pinned release by default; override with SESSFORK_REF=main (or another tag) for bleeding edge
+SESSFORK_REF="${SESSFORK_REF:-v0.1.0}"
+TARBALL_URL="${REPO_URL}/archive/${SESSFORK_REF}.tar.gz"
 RUNTIME_DIR="${HOME}/.sessfork/runtime"
 BIN_DIR="${HOME}/.local/bin"
 
@@ -24,8 +26,8 @@ if sys.version_info < (3, 9):
 SESSFORK_BIN=""
 
 if command -v uv >/dev/null 2>&1; then
-  echo "-> Installing sessfork via uv tool..."
-  uv tool install --force "git+${REPO_URL}.git"
+  echo "-> Installing sessfork ${SESSFORK_REF} via uv tool..."
+  uv tool install --force "git+${REPO_URL}.git@${SESSFORK_REF}"
   if command -v sessfork >/dev/null 2>&1; then
     SESSFORK_BIN="$(command -v sessfork)"
   elif [ -x "${BIN_DIR}/sessfork" ]; then
@@ -38,7 +40,7 @@ if [ -z "${SESSFORK_BIN}" ]; then
     echo "Error: curl is required for standalone installation." >&2
     exit 1
   fi
-  echo "-> Installing zero-dependency standalone runtime into ${RUNTIME_DIR}..."
+  echo "-> Installing zero-dependency standalone runtime (${SESSFORK_REF}) into ${RUNTIME_DIR}..."
   mkdir -p "${RUNTIME_DIR}" "${BIN_DIR}"
   TMP_TAR="$(mktemp -t sessfork_src.XXXXXX.tar.gz)"
   trap 'rm -f "${TMP_TAR}"' EXIT
