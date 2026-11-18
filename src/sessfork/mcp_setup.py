@@ -12,6 +12,7 @@ from sessfork.chrome import real_user_home
 from sessfork.state import DEFAULT_STATE_PATH, load_storage_state, save_storage_state_atomic
 
 MCP_SERVER_NAME = "sessfork-browser"
+PLAYWRIGHT_OUTPUT_DIRNAME = "playwright-output"
 
 
 def resolve_npx_command() -> str:
@@ -64,8 +65,13 @@ def build_playwright_mcp_entry(
     state_path: Path = DEFAULT_STATE_PATH,
     npx_cmd: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Build a clean stdio MCP entry (omits 'type' key for Antigravity schema compatibility)."""
+    """Build a clean stdio MCP entry (omits 'type' key for Antigravity schema compatibility).
+
+    `--output-dir` keeps Playwright MCP snapshots/screenshots under `~/.sessfork/playwright-output`
+    instead of a `.playwright-mcp/` folder in whatever project the agent happens to run in.
+    """
     resolved_state = state_path.expanduser().resolve()
+    output_dir = resolved_state.parent / PLAYWRIGHT_OUTPUT_DIRNAME
     cmd = npx_cmd or resolve_npx_command()
     return {
         "command": cmd,
@@ -76,6 +82,7 @@ def build_playwright_mcp_entry(
             "--isolated",
             "--caps=storage",
             f"--storage-state={resolved_state}",
+            f"--output-dir={output_dir}",
         ],
         "env": _build_mcp_env(cmd),
     }
@@ -143,6 +150,8 @@ def ensure_mcp_configured(
     resolved_state = state_path.expanduser().resolve()
     if not resolved_state.is_file():
         save_storage_state_atomic(load_storage_state(resolved_state), resolved_state)
+    output_dir = resolved_state.parent / PLAYWRIGHT_OUTPUT_DIRNAME
+    output_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
 
     entry = build_playwright_mcp_entry(state_path=resolved_state, npx_cmd=npx_cmd)
     updated_files: List[Path] = []

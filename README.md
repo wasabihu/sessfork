@@ -188,7 +188,7 @@ Run `sessfork --clear <domain>` to purge a single site, or `sessfork --clear` (o
 - **Strict File Permissions**: `~/.sessfork/` is `0700` and `~/.sessfork/state.json` is atomically created with `0600` permissions before a single byte is written.
 - **Redacted Diagnostics**: `sessfork --status`, `--json`, and `SKILL.md` never print raw cookie or LocalStorage values to stdout or agent prompt context.
 - **No Key Persistence by Default**: The derived cookie key lives only in memory for the duration of one command. Persisting it (`--cache-key`) is an explicit opt-in.
-- **Isolated Headless Browser**: `sessfork-browser` runs `@playwright/mcp --headless --isolated`, so each MCP session starts from the forked `state.json` instead of a persistent profile.
+- **Isolated Headless Browser**: `sessfork-browser` runs `@playwright/mcp --headless --isolated`, so each MCP session starts from the forked `state.json` instead of a persistent profile. Page snapshots and screenshots go to `~/.sessfork/playwright-output/` (`--output-dir`), never into a `.playwright-mcp/` folder inside your projects.
 - **Responsible Use**: `sessfork` operates strictly within your signed-in OS user account and relies on native OS keyring authorization (macOS Keychain / Linux Secret Service) — it never bypasses OS access controls or sandboxes. Use it only on devices and accounts you own or are explicitly authorized to test, and always comply with target websites' Terms of Service.
 - **Reporting Vulnerabilities**: See [SECURITY.md](SECURITY.md).
 

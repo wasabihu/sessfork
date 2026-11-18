@@ -184,7 +184,7 @@ Chromium 默认大约每 5 秒才将内存中的 `localStorage` 变更刷盘到 
 - **严格原子权限隔离**：`~/.sessfork/` 为 `0700`，`~/.sessfork/state.json` 在写入任意字节前即以 `0600` 原子创建并替换。
 - **输出全面脱敏**：`sessfork --status`、`--json` 及 `SKILL.md` 严禁向终端或 AI 上下文打印原始 Cookie / Token 明文。
 - **默认不保存密钥**：派生出的 Cookie 解密密钥只在单次命令运行期间存在于内存中；持久化保存（`--cache-key`）必须由你主动开启。
-- **隔离的无头浏览器**：`sessfork-browser` 以 `@playwright/mcp --headless --isolated` 运行，每次会话都从分叉出的 `state.json` 启动，不沿用持久化的浏览器配置。
+- **隔离的无头浏览器**：`sessfork-browser` 以 `@playwright/mcp --headless --isolated` 运行，每次会话都从分叉出的 `state.json` 启动，不沿用持久化的浏览器配置。页面快照和截图统一写到 `~/.sessfork/playwright-output/`（`--output-dir`），不会在你的项目目录里生成 `.playwright-mcp/` 文件夹。
 - **合规使用声明**：`sessfork` 严格运行在当前登录用户的权限边界内，并依赖操作系统原生钥匙串鉴权（macOS Keychain / Linux Secret Service），不会绕过任何系统访问控制或沙箱机制。请仅用于个人设备及已获明确授权的账号与自动化测试场景，并遵守目标网站的服务条款。
 - **安全问题报告**：见 [SECURITY.md](SECURITY.md)。
 

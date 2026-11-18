@@ -225,6 +225,10 @@ class SessforkTestSuite(unittest.TestCase):
             self.assertNotIn("type", parsed["mcpServers"][MCP_SERVER_NAME])
             self.assertIn("--isolated", parsed["mcpServers"][MCP_SERVER_NAME]["args"])
             self.assertEqual(parsed["mcpServers"][MCP_SERVER_NAME]["command"], "/opt/homebrew/bin/npx")
+            mcp_args = parsed["mcpServers"][MCP_SERVER_NAME]["args"]
+            expected_out = state_file.resolve().parent / "playwright-output"
+            self.assertIn(f"--output-dir={expected_out}", mcp_args)
+            self.assertTrue(expected_out.is_dir())
 
             updated_again = ensure_mcp_configured(
                 ["antigravity", "claude"],
