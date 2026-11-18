@@ -3,84 +3,172 @@
 [![CI](https://github.com/wasabihu/sessfork/actions/workflows/ci.yml/badge.svg)](https://github.com/wasabihu/sessfork/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](pyproject.toml)
+[![Zero Dependencies](https://img.shields.io/badge/dependencies-0-22c55e.svg)](pyproject.toml)
+
+**English** · [简体中文](README.zh-CN.md) · [Interactive Visual Guide](https://wasabihu.github.io/sessfork/)
 
 **Fork live Chrome auth sessions (Cookies + LocalStorage) into headless AI agent browsers — zero window focus theft, zero runtime dependencies.**
 
-When AI coding agents ([Google Antigravity](https://antigravity.google/docs/commands/browser/), Claude Code, or Cursor) connect to your main Chrome instance to reuse your logged-in sessions, they hijack your active window, switch tabs, and interrupt your reading flow.
+![sessfork Before vs After](docs/assets/hero-en.svg)
 
-From first principles, **UI viewport focus** and **auth storage state** should never be coupled. `sessfork` decouples them in one command: it takes lock-free snapshots of both your live Chromium SQLite `Cookies` database and your LevelDB `Local Storage/leveldb` store, decrypts cookies in memory via native OS APIs, reconciles MVCC sequence numbers for SPA/JWT `localStorage` tokens, writes a strict `0600` [Playwright `storageState`](https://playwright.dev/docs/api/class-browser) file (`cookies` + `origins`), and wires a background headless [Playwright MCP](https://github.com/microsoft/playwright-mcp) server (`sessfork-browser`) so your agent works silently in the background.
+When AI coding agents ([Google Antigravity](https://antigravity.google/docs/commands/browser/), Claude Code, or Cursor) connect directly to your main Chrome instance to reuse logged-in sessions, they hijack your active window, switch tabs, and break your flow.
 
-## Highlights
+`sessfork` decouples **your UI viewport** from **browser auth state** in a single command: it takes lock-free snapshots of your live Chromium SQLite `Cookies` database and LevelDB `Local Storage/leveldb` store, decrypts cookies in memory via native OS APIs, reconciles MVCC sequence numbers for SPA/JWT `localStorage` tokens, writes a strict `0600` [Playwright `storageState`](https://playwright.dev/docs/api/class-browser) file, and wires a silent background [Playwright MCP](https://github.com/microsoft/playwright-mcp) server (`sessfork-browser`) across your installed AI agents.
 
-- **Zero Runtime Dependencies**: Pure Python standard library (`>=3.9`). Uses macOS `CommonCrypto` (`/usr/lib/libSystem.B.dylib` via `ctypes`) for AES-128-CBC cookie decryption plus a built-in pure-Python [LevelDB SSTable/WAL](https://github.com/google/leveldb/blob/main/doc/log_format.md) + [Snappy](https://github.com/google/snappy/blob/main/format_description.txt) reader — works out of the box with macOS `/usr/bin/python3` or `uvx`.
-- **Full Dual-Layer Auth (`Cookies` + `LocalStorage`)**:
-  - **SQLite Cookies**: Handles [Chromium Cookie DB `meta.version >= 24`](https://gist.github.com/creachadair/937179894a24571ce9860e2475a2d2ec) (`SHA-256(host_key)` 32-byte plaintext prefix stripping), WAL/SHM live sidecars, and `SameSite` / `HttpOnly` fidelity.
-  - **LevelDB LocalStorage (`origins`)**: Parses [Chromium's `_<origin>\x00` encoding-prefixed (`0x00` UTF-16LE / `0x01` Latin-1) records](https://www.cclsolutionsgroup.com/post/chromium-session-storage-and-local-storage) across `.ldb` SSTables and `.log` Write-Ahead Logs, honoring `kTypeDeletion` tombstones (`localStorage.removeItem`) so logged-out JWTs are never resurrected.
-- **One-Command Closed Loop**: Fork domains, incrementally merge `~/.sessfork/state.json`, resolve absolute `npx` paths (avoiding [macOS GUI `$PATH` launch failures](https://discuss.ai.google.dev/t/bug-mcp-servers-crash-with-executable-file-not-found-in-path-when-antigravity-is-launched-via-macos-gui/138495)), and install the Agent `SKILL.md` in one shot.
+---
 
-## Quickstart
+## 10-Second Lazy Quickstart
 
-### 1. Install
+**Install once, then just talk to your AI agent in plain language.**
+
+![3-Step Lazy Workflow](docs/assets/lazy-flow-en.svg)
+
+### Option A · One-Click Auto-Setup (Recommended — zero prerequisites)
+
+Auto-detects installed AI tools (**Antigravity**, **Claude Code**, **Cursor**), registers the background `sessfork-browser` MCP server, and installs the global Agent `SKILL.md`:
 
 ```bash
-# Option A: Install globally via uv directly from GitHub (recommended)
+curl -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/main/install.sh | bash
+```
+
+Want to fork your first domains in the very same command? Pass them right after `--`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/main/install.sh | bash -s -- github.com linear.app
+```
+
+*(Note: On first run with cookies, macOS prompts to read `"Chrome Safe Storage"` from Keychain — click **Allow** or **Always Allow**. For pure LocalStorage JWT sites, pass `--no-cookies` for zero Keychain prompts.)*
+
+### Option B · Zero-Install One-Shot (`uvx`)
+
+Try `sessfork` immediately without touching global binaries:
+
+```bash
+uvx --from git+https://github.com/wasabihu/sessfork sessfork github.com
+```
+
+### Option C · Global `uv tool` or Editable Local Checkout
+
+```bash
+# Install globally via uv
 uv tool install git+https://github.com/wasabihu/sessfork.git
 
-# Option B: Clone and install editable (or run directly with system Python)
+# Or clone locally
 git clone https://github.com/wasabihu/sessfork.git
 cd sessfork
 uv tool install -e .
-# Zero-install alias from repo root:
-# alias sessfork="PYTHONPATH=\"$PWD/src\" python3 -m sessfork"
 ```
 
-### 2. One-Command Setup & Session Fork
+*(Tip: Once installed, reload MCP servers once in your AI editor or run `/mcp` in CLI so `sessfork-browser` becomes active.)*
+
+---
+
+## 5 Real-World Copy-Paste Examples
+
+Once installed, you don't even have to remember CLI flags. Copy any prompt below straight to your AI agent — or run the 1-line command directly.
+
+### 1. Triage GitHub PRs & CI Failures Silently
+
+> **Copy & paste to your AI Agent:**
+> *"Use `sessfork` to fork my `github.com` login session into `sessfork-browser`, then silently check my unread notifications and review the failing PR checks without switching or touching my active Chrome window."*
 
 ```bash
-# Install global Antigravity MCP server + Agent SKILL.md, and fork github.com & linear.app:
-sessfork --setup github.com linear.app
+sessfork github.com
 ```
 
-*(On first run with cookies, macOS will prompt to allow reading `"Chrome Safe Storage"` from Keychain. For pure LocalStorage JWT sites, pass `--no-cookies` for zero Keychain prompts.)*
+### 2. Check Linear / Notion / Jira Sprint Tasks
 
-### 3. One-Sentence Usage Inside Your Agent
-
-Once `--setup` has installed `~/.gemini/skills/sessfork/SKILL.md` ([Antigravity Agent Skills](https://antigravity.google/docs/skills/)) and `~/.gemini/config/mcp_config.json` ([Antigravity MCP Settings](https://antigravity.google/docs/settings/)), just tell your agent in plain language:
-
-> *"用 sessfork 把我 Chrome 里的 linear.app 登录态分叉过来，在后台无头浏览器里帮我检查一下..."*
-
-## CLI Reference
+> **Copy & paste to your AI Agent:**
+> *"Fork my `linear.app` and `notion.so` sessions with `sessfork` and summarize today's assigned sprint blockers in the background."*
 
 ```bash
-sessfork github.com linear.app          # Fork both Cookies + LocalStorage & ensure MCP wired
-sessfork app.spa.io --no-cookies        # Fork LevelDB LocalStorage JWTs only (no Keychain prompt)
-sessfork github.com --no-local-storage  # Fork SQLite Cookies only
-sessfork x.com --browser brave          # Fork from Brave (supports: chrome, canary, brave, edge, arc)
-sessfork internal.corp --target all     # Wire Antigravity + Claude Code + Cursor simultaneously
-sessfork --status                       # Inspect forked Cookie domains & LocalStorage origins (redacted)
-sessfork --clear linear.app             # Remove forked Cookies & LocalStorage for linear.app
+sessfork linear.app notion.so
 ```
 
-## Architecture
+### 3. Pure SPA / JWT Apps & Localhost (Zero Keychain Prompt)
 
-```text
-Live Chrome (Foreground, 100% Yours)
-  ├── Cookies + Cookies-wal (SQLite)
-  └── Local Storage/leveldb/*.ldb + *.log (LevelDB + Snappy)
-        │  1. Lock-free copy to 0700 ephemeral temp dirs
-        ▼
-  sessfork (Zero-Dep Python >= 3.9)
-        ├── crypto.py        macOS Keychain + CommonCrypto AES-128-CBC + v24 SHA256 strip
-        ├── localstorage.py  Pure-Python LevelDB SSTable/WAL + Snappy + MVCC tombstone resolver
-        ├── chrome.py        Active profile auto-discovery + dual-layer session extractor
-        ├── state.py         Atomic 0600 ~/.sessfork/state.json (cookies + origins) upsert
-        └── mcp_setup.py     Idempotent MCP & SKILL.md wiring (Antigravity / Claude / Cursor)
-        │  2. Loaded via --storage-state
-        ▼
-  sessfork-browser (@playwright/mcp --headless)  <── Driven silently by AI Agent
+Modern SPAs (Supabase, Vercel dashboards, local dev apps) store bearer tokens in `localStorage` instead of `HttpOnly` cookies. Skip Keychain completely with `--no-cookies`:
+
+> **Copy & paste to your AI Agent:**
+> *"Run `sessfork app.supabase.com localhost:3000 --no-cookies` and verify the authenticated dashboard API responses in `sessfork-browser`."*
+
+```bash
+sessfork app.supabase.com localhost:3000 --no-cookies
 ```
 
-## Security Design
+### 4. Paste Full URLs Straight from Your Address Bar
+
+Don't bother stripping `https://` or paths — `sessfork` automatically normalizes full URLs to their domain allowlist:
+
+```bash
+sessfork https://github.com/notifications
+```
+
+### 5. Fork from Arc, Brave, Edge, or a Specific Work Profile
+
+`sessfork` supports `chrome`, `canary`, `brave`, `edge`, and `arc`, and automatically discovers your most recently active profile (or lets you target one explicitly):
+
+```bash
+sessfork x.com --browser arc
+sessfork console.cloud.google.com --profile "Profile 1"
+```
+
+---
+
+## Architecture & Highlights
+
+![sessfork Architecture](docs/assets/architecture-en.svg)
+
+- **Zero Runtime Dependencies**: Pure Python standard library (`>=3.9`). Uses macOS `CommonCrypto` (`/usr/lib/libSystem.B.dylib` via `ctypes`) for AES-128-CBC cookie decryption (and `openssl` CLI on Linux) plus a built-in pure-Python [LevelDB SSTable/WAL](https://github.com/google/leveldb/blob/main/doc/log_format.md) + [Snappy](https://github.com/google/snappy/blob/main/format_description.txt) reader.
+- **Full Dual-Layer Auth (`Cookies` + `LocalStorage`)**:
+  - **SQLite Cookies**: Handles [Chromium Cookie DB `meta.version >= 24`](https://gist.github.com/creachadair/937179894a24571ce9860e2475a2d2ec) (`SHA-256(host_key)` 32-byte plaintext prefix stripping), live `-wal`/`-shm` sidecars, and `SameSite` / `HttpOnly` fidelity.
+  - **LevelDB LocalStorage (`origins`)**: Parses Chromium's `_<origin>\x00` encoding-prefixed (`0x00` UTF-16LE / `0x01` Latin-1) records across `.ldb` SSTables and `.log` WALs, honoring `kTypeDeletion` tombstones (`localStorage.removeItem`) so logged-out JWTs are never resurrected.
+- **One-Command Auto-Wiring**: `sessfork <domain>` and `sessfork --setup` auto-detect Antigravity, Claude Code, and Cursor (`--target auto`), resolve absolute `npx` paths (avoiding [macOS GUI `$PATH` launch failures](https://discuss.ai.google.dev/t/bug-mcp-servers-crash-with-executable-file-not-found-in-path-when-antigravity-is-launched-via-macos-gui/138495)), and install `SKILL.md`.
+
+---
+
+## Cheat Sheet
+
+| Goal | Command |
+| :--- | :--- |
+| One-time setup (MCP + Skill for all detected agents) | `sessfork --setup` |
+| Fork Cookies + LocalStorage for domains | `sessfork github.com linear.app` |
+| Fork LocalStorage JWT only (zero Keychain prompt) | `sessfork app.spa.io --no-cookies` |
+| Fork SQLite Cookies only | `sessfork github.com --no-local-storage` |
+| Choose source browser (`chrome`, `arc`, `brave`, `edge`, `canary`) | `sessfork x.com --browser arc` |
+| Target specific profile folder | `sessfork github.com --profile "Profile 1"` |
+| Wire Antigravity + Claude Code + Cursor explicitly | `sessfork --setup --target all` |
+| Inspect cached domains & origins (redacted, safe) | `sessfork --status` |
+| Remove cached state for specific domain (or all) | `sessfork --clear linear.app` / `sessfork --clear` |
+
+---
+
+## FAQ
+
+<details>
+<summary><strong>Why does macOS ask for Keychain access on the first cookie fork?</strong></summary>
+
+Chromium encrypts cookie values using a master passphrase stored under `"Chrome Safe Storage"` in your macOS Keychain. Click **Allow** (or **Always Allow**) so macOS authorizes `security` to read that entry. If a site uses `localStorage` tokens (many modern SPAs), pass `--no-cookies` to bypass Keychain completely.
+
+</details>
+
+<details>
+<summary><strong>I just signed in 1 second ago and a LocalStorage token is missing — why?</strong></summary>
+
+Chromium batches `localStorage` flushes from memory to LevelDB on disk roughly every 5 seconds. Wait ~5 seconds after signing in and re-run `sessfork <domain>`.
+
+</details>
+
+<details>
+<summary><strong>How do I revoke or clean up forked session data?</strong></summary>
+
+Run `sessfork --clear <domain>` to purge a single site, or `sessfork --clear` (or `rm -rf ~/.sessfork`) to wipe all cached session state.
+
+</details>
+
+---
+
+## Security & Responsible Use
 
 - **Domain Allowlist by Default**: Only the domains/origins you explicitly name are extracted.
 - **Strict File Permissions**: `~/.sessfork/` is `0700` and `~/.sessfork/state.json` is atomically created with `0600` permissions before a single byte is written.
@@ -95,4 +183,4 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 
 ## License
 
-MIT
+[MIT](LICENSE)

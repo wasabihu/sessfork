@@ -45,25 +45,54 @@ def build_playwright_mcp_entry(
     }
 
 
+def detect_installed_targets(home: Optional[Path] = None) -> List[str]:
+    """Auto-detect installed AI coding agents on the user's machine."""
+    root = (home or real_user_home()).expanduser()
+    targets: List[str] = ["antigravity"]
+    if (
+        (root / ".claude.json").is_file()
+        or (root / ".claude").is_dir()
+        or (home is None and shutil.which("claude") is not None)
+    ):
+        targets.append("claude")
+    if (root / ".cursor").is_dir() or (home is None and Path("/Applications/Cursor.app").exists()):
+        targets.append("cursor")
+    return targets
+
+
 def target_mcp_config_paths(target: str, home: Optional[Path] = None) -> List[Path]:
     """Return MCP config JSON file paths for the requested agent target."""
     root = (home or real_user_home()).expanduser()
+    if target == "auto":
+        auto_paths: List[Path] = []
+        for sub_target in detect_installed_targets(home=home):
+            for p in target_mcp_config_paths(sub_target, home=home):
+                if p not in auto_paths:
+                    auto_paths.append(p)
+        return auto_paths
     if target == "antigravity":
         paths = [root / ".gemini" / "config" / "mcp_config.json"]
         legacy_cli = root / ".gemini" / "antigravity-cli" / "mcp_config.json"
         if legacy_cli.is_file():
             paths.append(legacy_cli)
+        if home is None:
+            env_home = Path.home().expanduser()
+            if env_home.resolve() != root.resolve() and (env_home / ".gemini").is_dir():
+                env_cfg = env_home / ".gemini" / "config" / "mcp_config.json"
+                if env_cfg not in paths:
+                    paths.append(env_cfg)
         return paths
     if target == "claude":
         return [root / ".claude.json"]
     if target == "cursor":
         return [root / ".cursor" / "mcp.json"]
     if target == "all":
-        return (
-            target_mcp_config_paths("antigravity", root)
-            + target_mcp_config_paths("claude", root)
-            + target_mcp_config_paths("cursor", root)
-        )
+        all_paths: List[Path] = []
+        for sub_target in ("antigravity", "claude", "cursor"):
+            for p in target_mcp_config_paths(sub_target, home=home):
+                if p not in all_paths:
+                    all_paths.append(p)
+        return all_paths
     return []
 
 
@@ -126,15 +155,25 @@ def bundled_skill_markdown() -> str:
 
 
 def install_agent_skills(home: Optional[Path] = None) -> List[Path]:
-    """Install SKILL.md into Antigravity (~/.gemini/skills) and universal (~/.agents/skills)."""
+    """Install SKILL.md into Antigravity (~/.gemini/skills), Claude Code, and universal (~/.agents/skills)."""
     root = (home or real_user_home()).expanduser()
     content = bundled_skill_markdown()
     destinations = [
         root / ".gemini" / "skills" / "sessfork" / "SKILL.md",
         root / ".agents" / "skills" / "sessfork" / "SKILL.md",
     ]
+    if (root / ".claude").is_dir():
+        destinations.append(root / ".claude" / "skills" / "sessfork" / "SKILL.md")
+    if home is None:
+        env_home = Path.home().expanduser()
+        if env_home.resolve() != root.resolve() and (env_home / ".gemini" / "config" / "skills").is_dir():
+            destinations.append(env_home / ".gemini" / "config" / "skills" / "sessfork" / "SKILL.md")
     written: List[Path] = []
+    seen: set[Path] = set()
     for dest in destinations:
+        if dest in seen:
+            continue
+        seen.add(dest)
         dest.parent.mkdir(parents=True, exist_ok=True)
         if not dest.is_file() or dest.read_text(encoding="utf-8") != content:
             dest.write_text(content, encoding="utf-8")

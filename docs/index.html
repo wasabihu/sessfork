@@ -1,0 +1,1539 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>sessfork — Zero-Focus-Theft Browser Session Forking</title>
+  <meta name="description" content="Fork live Chrome auth sessions (Cookies + LocalStorage) into headless AI agent browsers with zero window focus theft and zero runtime dependencies." />
+  <style>
+    :root {
+      --bg: #0B0F19;
+      --bg-elevated: #131B2E;
+      --bg-card: #172138;
+      --bg-code: #080C15;
+      --border: rgba(148, 163, 184, 0.16);
+      --border-strong: rgba(148, 163, 184, 0.30);
+      --specular: rgba(255, 255, 255, 0.09);
+      --fg: #F8FAFC;
+      --fg-muted: #94A3B8;
+      --fg-subtle: #64748B;
+      --accent: #22C55E;
+      --accent-soft: rgba(34, 197, 94, 0.14);
+      --accent-border: rgba(34, 197, 94, 0.38);
+      --sky: #38BDF8;
+      --sky-soft: rgba(56, 189, 248, 0.14);
+      --danger: #EF4444;
+      --danger-soft: rgba(239, 68, 68, 0.14);
+      --danger-border: rgba(239, 68, 68, 0.38);
+      --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "PingFang SC", "IBM Plex Sans", "Segoe UI", sans-serif;
+      --font-mono: "SF Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --radius-lg: 20px;
+      --radius-md: 14px;
+      --radius-sm: 10px;
+      --shadow-card: 0 24px 48px -18px rgba(0, 0, 0, 0.55);
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+      background-color: var(--bg);
+      color: var(--fg);
+      font-family: var(--font-sans);
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(920px 460px at 15% -6%, rgba(56, 189, 248, 0.12), transparent 62%),
+        radial-gradient(880px 480px at 88% 4%, rgba(34, 197, 94, 0.10), transparent 60%),
+        var(--bg);
+      color: var(--fg);
+      overflow-x: hidden;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    button, input {
+      font-family: inherit;
+    }
+
+    :focus-visible {
+      outline: 2px solid var(--sky);
+      outline-offset: 2px;
+    }
+
+    /* Translucent Apple-style top chrome */
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      background: rgba(11, 15, 25, 0.72);
+      backdrop-filter: blur(20px) saturate(180%);
+      -webkit-backdrop-filter: blur(20px) saturate(180%);
+      border-bottom: 1px solid var(--specular);
+    }
+
+    .topbar-inner {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      font-size: 1.05rem;
+      letter-spacing: -0.015em;
+    }
+
+    .brand-mark {
+      width: 32px;
+      height: 32px;
+      border-radius: 9px;
+      background: linear-gradient(135deg, rgba(56, 189, 248, 0.2), rgba(34, 197, 94, 0.22));
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--accent);
+    }
+
+    .nav-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    /* Segmented Language Control */
+    .segmented {
+      display: inline-flex;
+      padding: 3px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border);
+    }
+
+    .segmented button {
+      min-height: 38px;
+      padding: 0 14px;
+      border: none;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--fg-muted);
+      font-size: 0.875rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background-color 180ms ease, color 180ms ease, transform 100ms ease-out;
+    }
+
+    .segmented button:active {
+      transform: scale(0.97);
+    }
+
+    .segmented button[aria-pressed="true"] {
+      background: var(--fg);
+      color: #0B0F19;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 44px;
+      padding: 0 18px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--fg);
+      font-size: 0.92rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background-color 180ms ease, border-color 180ms ease, transform 100ms ease-out;
+    }
+
+    .btn:hover {
+      background: rgba(255, 255, 255, 0.10);
+      border-color: var(--border-strong);
+    }
+
+    .btn:active {
+      transform: scale(0.97);
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #062111;
+      border-color: transparent;
+    }
+
+    .btn-primary:hover {
+      background: #4ADE80;
+      border-color: transparent;
+    }
+
+    .container {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 40px 24px 88px;
+    }
+
+    /* Hero Section */
+    .hero {
+      padding: 28px 0 44px;
+      text-align: center;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      border-radius: 999px;
+      background: var(--sky-soft);
+      border: 1px solid rgba(56, 189, 248, 0.30);
+      color: #7DD3FC;
+      font-size: 0.82rem;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      margin-bottom: 18px;
+    }
+
+    .hero h1 {
+      margin: 0 auto 16px;
+      max-width: 860px;
+      font-size: clamp(2.15rem, 4.8vw, 3.6rem);
+      font-weight: 800;
+      line-height: 1.08;
+      letter-spacing: -0.025em;
+      color: var(--fg);
+    }
+
+    .hero p.lead {
+      margin: 0 auto 28px;
+      max-width: 680px;
+      font-size: clamp(1rem, 2vw, 1.15rem);
+      color: var(--fg-muted);
+      line-height: 1.6;
+    }
+
+    /* 1-Click Install Command Box */
+    .install-bar {
+      margin: 0 auto 20px;
+      max-width: 780px;
+      padding: 8px 8px 8px 18px;
+      border-radius: 16px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-strong);
+      box-shadow: var(--shadow-card);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      text-align: left;
+    }
+
+    .install-code {
+      flex: 1;
+      min-width: 0;
+      overflow-x: auto;
+      white-space: nowrap;
+      font-family: var(--font-mono);
+      font-size: 0.9rem;
+      color: #E2E8F0;
+      scrollbar-width: none;
+    }
+
+    .install-code::-webkit-scrollbar {
+      display: none;
+    }
+
+    .install-code .prompt-sign {
+      color: var(--accent);
+      margin-right: 8px;
+      user-select: none;
+    }
+
+    .hero-meta {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 18px;
+      color: var(--fg-muted);
+      font-size: 0.88rem;
+    }
+
+    .hero-meta span {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    /* Section Headings */
+    .section {
+      margin-top: 64px;
+    }
+
+    .section-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 22px;
+    }
+
+    .section-eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--sky);
+      margin-bottom: 6px;
+    }
+
+    .section h2 {
+      margin: 0;
+      font-size: clamp(1.5rem, 3vw, 2.05rem);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      line-height: 1.2;
+    }
+
+    .section-sub {
+      margin: 6px 0 0;
+      color: var(--fg-muted);
+      font-size: 0.98rem;
+      max-width: 680px;
+    }
+
+    /* Spring Physics Interactive Stage */
+    .stage-card {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-top: 1px solid var(--specular);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      box-shadow: var(--shadow-card);
+    }
+
+    .stage-controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 20px;
+    }
+
+    .mode-switch {
+      display: inline-flex;
+      padding: 4px;
+      border-radius: 14px;
+      background: var(--bg-code);
+      border: 1px solid var(--border);
+      gap: 4px;
+    }
+
+    .mode-btn {
+      min-height: 44px;
+      padding: 0 18px;
+      border-radius: 10px;
+      border: none;
+      background: transparent;
+      color: var(--fg-muted);
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: background-color 180ms ease, color 180ms ease, transform 100ms ease-out;
+    }
+
+    .mode-btn:active {
+      transform: scale(0.97);
+    }
+
+    .mode-btn[data-active="danger"] {
+      background: var(--danger-soft);
+      color: #FCA5A5;
+      border: 1px solid var(--danger-border);
+    }
+
+    .mode-btn[data-active="safe"] {
+      background: var(--accent-soft);
+      color: #86EFAC;
+      border: 1px solid var(--accent-border);
+    }
+
+    .spring-viewport {
+      position: relative;
+      height: 330px;
+      border-radius: 16px;
+      background:
+        radial-gradient(600px 260px at 50% 0%, rgba(56, 189, 248, 0.08), transparent 70%),
+        var(--bg-code);
+      border: 1px solid var(--border);
+      overflow: hidden;
+      padding: 20px;
+    }
+
+    .sim-layer {
+      position: absolute;
+      left: 24px;
+      right: 24px;
+      border-radius: 14px;
+      padding: 14px 16px;
+      will-change: transform, opacity;
+    }
+
+    .sim-user-window {
+      top: 22px;
+      background: #141D33;
+      border: 1px solid var(--border-strong);
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+      z-index: 3;
+    }
+
+    .sim-agent-window {
+      top: 176px;
+      background: #0E1B1C;
+      border: 1px solid var(--accent-border);
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+      z-index: 2;
+    }
+
+    .win-chrome {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .traffic-lights {
+      display: inline-flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+    .dot.red { background: #EF4444; }
+    .dot.amber { background: #F59E0B; }
+    .dot.green { background: #22C55E; }
+
+    .win-url {
+      flex: 1;
+      max-width: 340px;
+      padding: 4px 10px;
+      border-radius: 7px;
+      background: rgba(255, 255, 255, 0.05);
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: var(--fg-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .win-badge {
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .badge-safe {
+      background: var(--accent-soft);
+      color: #86EFAC;
+      border: 1px solid var(--accent-border);
+    }
+
+    .badge-danger {
+      background: var(--danger-soft);
+      color: #FCA5A5;
+      border: 1px solid var(--danger-border);
+    }
+
+    .win-body {
+      font-size: 0.9rem;
+      color: #CBD5E1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .snapshot-pipe {
+      position: absolute;
+      left: 50%;
+      top: 128px;
+      transform: translateX(-50%);
+      z-index: 1;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 12px;
+      border-radius: 999px;
+      background: rgba(15, 32, 52, 0.95);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      color: #7DD3FC;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      white-space: nowrap;
+    }
+
+    /* Command & Prompt Builder */
+    .builder-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+
+    .panel {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-top: 1px solid var(--specular);
+      border-radius: var(--radius-lg);
+      padding: 22px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .field-label {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--fg-muted);
+      margin-bottom: 8px;
+      display: block;
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .chip {
+      min-height: 44px;
+      padding: 0 14px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--bg-code);
+      color: var(--fg-muted);
+      font-family: var(--font-mono);
+      font-size: 0.84rem;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: border-color 150ms ease, background-color 150ms ease, color 150ms ease, transform 100ms ease-out;
+    }
+
+    .chip:active {
+      transform: scale(0.96);
+    }
+
+    .chip[aria-pressed="true"] {
+      background: var(--accent-soft);
+      border-color: var(--accent-border);
+      color: #86EFAC;
+    }
+
+    .custom-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    .text-input {
+      flex: 1;
+      min-height: 44px;
+      padding: 0 14px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--bg-code);
+      color: var(--fg);
+      font-family: var(--font-mono);
+      font-size: 0.88rem;
+    }
+
+    .text-input::placeholder {
+      color: var(--fg-subtle);
+    }
+
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: var(--bg-code);
+      border: 1px solid var(--border);
+    }
+
+    .switch-btn {
+      min-width: 52px;
+      min-height: 44px;
+      padding: 0 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: #1E293B;
+      color: var(--fg);
+      font-size: 0.8rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background-color 160ms ease, transform 100ms ease-out;
+    }
+
+    .switch-btn[aria-pressed="true"] {
+      background: var(--accent);
+      color: #062111;
+      border-color: transparent;
+    }
+
+    .output-box {
+      background: var(--bg-code);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .output-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .output-tag {
+      font-family: var(--font-mono);
+      font-size: 0.76rem;
+      font-weight: 600;
+      color: var(--sky);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .output-pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: var(--font-mono);
+      font-size: 0.88rem;
+      line-height: 1.55;
+      color: #E2E8F0;
+    }
+
+    .output-prose {
+      margin: 0;
+      font-size: 0.94rem;
+      line-height: 1.6;
+      color: #E2E8F0;
+    }
+
+    /* 5 Use-Case Cards */
+    .cards-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 16px;
+    }
+
+    .case-card {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-top: 1px solid var(--specular);
+      border-radius: var(--radius-md);
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 14px;
+      transition: border-color 180ms ease, transform 150ms ease;
+    }
+
+    .case-card:hover {
+      border-color: var(--border-strong);
+      transform: translateY(-2px);
+    }
+
+    .case-top {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .case-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 10px;
+      background: var(--sky-soft);
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      color: var(--sky);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .case-title {
+      margin: 0;
+      font-size: 1.02rem;
+      font-weight: 700;
+    }
+
+    .case-prompt {
+      margin: 0;
+      padding: 12px;
+      border-radius: 10px;
+      background: var(--bg-code);
+      border: 1px solid var(--border);
+      font-size: 0.88rem;
+      color: #CBD5E1;
+      line-height: 1.5;
+    }
+
+    .case-foot {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .case-cli {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: var(--accent);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* Visual Diagrams Showcase */
+    .diagrams-stack {
+      display: grid;
+      gap: 18px;
+    }
+
+    .diagram-frame {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 14px;
+      overflow: hidden;
+    }
+
+    .diagram-frame img {
+      display: block;
+      width: 100%;
+      height: auto;
+      border-radius: 12px;
+    }
+
+    footer {
+      margin-top: 72px;
+      padding-top: 28px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      color: var(--fg-muted);
+      font-size: 0.88rem;
+    }
+
+    .footer-links {
+      display: flex;
+      gap: 18px;
+      flex-wrap: wrap;
+    }
+
+    .footer-links a:hover {
+      color: var(--fg);
+    }
+
+    @media (max-width: 860px) {
+      .builder-grid {
+        grid-template-columns: 1fr;
+      }
+      .spring-viewport {
+        height: 360px;
+      }
+    }
+
+    @media (max-width: 560px) {
+      .topbar-inner {
+        padding: 10px 16px;
+      }
+      .container {
+        padding: 24px 16px 64px;
+      }
+      .install-bar {
+        flex-direction: column;
+        align-items: stretch;
+        padding: 12px;
+      }
+      .snapshot-pipe {
+        display: none;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html {
+        scroll-behavior: auto;
+      }
+      *, *::before, *::after {
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+      }
+      .case-card:hover {
+        transform: none;
+      }
+    }
+
+    @media (prefers-reduced-transparency: reduce) {
+      .topbar {
+        background: var(--bg);
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+      }
+    }
+
+    @media (prefers-contrast: more) {
+      :root {
+        --border: rgba(248, 250, 252, 0.35);
+        --fg-muted: #CBD5E1;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="#top" aria-label="sessfork home">
+        <span class="brand-mark" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="6" cy="6" r="3"/>
+            <circle cx="18" cy="6" r="3"/>
+            <circle cx="6" cy="18" r="3"/>
+            <path d="M6 9v6"/>
+            <path d="M18 9a6 6 0 0 1-6 6H6"/>
+          </svg>
+        </span>
+        <span>sessfork</span>
+      </a>
+
+      <div class="nav-actions">
+        <div class="segmented" role="group" aria-label="Language switcher">
+          <button type="button" id="lang-zh" aria-pressed="true">中文</button>
+          <button type="button" id="lang-en" aria-pressed="false">EN</button>
+        </div>
+        <a class="btn" href="https://github.com/wasabihu/sessfork" target="_blank" rel="noopener noreferrer">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0 1 12 6.844a9.59 9.59 0 0 1 2.504.337c1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.02 10.02 0 0 0 22 12.017C22 6.484 17.522 2 12 2Z"/>
+          </svg>
+          <span>GitHub</span>
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <main id="top" class="container">
+    <!-- Hero -->
+    <section class="hero">
+      <div class="pill" data-i18n="heroPill"></div>
+      <h1 data-i18n="heroTitle"></h1>
+      <p class="lead" data-i18n="heroLead"></p>
+
+      <div class="install-bar">
+        <code class="install-code" id="hero-install-cmd"><span class="prompt-sign">$</span>curl -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/main/install.sh | bash</code>
+        <button type="button" class="btn btn-primary" id="copy-install-btn" data-copy-target="heroInstall">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="9" y="9" width="13" height="13" rx="2"/>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+          <span data-i18n="copyInstall"></span>
+        </button>
+      </div>
+
+      <div class="hero-meta">
+        <span>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#22C55E" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+          <span data-i18n="metaZeroDeps"></span>
+        </span>
+        <span>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#22C55E" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+          <span data-i18n="metaDualLayer"></span>
+        </span>
+        <span>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#22C55E" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+          <span data-i18n="metaAgents"></span>
+        </span>
+      </div>
+    </section>
+
+    <!-- Interactive Spring Demo -->
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <div class="section-eyebrow" data-i18n="demoEyebrow"></div>
+          <h2 data-i18n="demoTitle"></h2>
+          <p class="section-sub" data-i18n="demoSub"></p>
+        </div>
+      </div>
+
+      <div class="stage-card">
+        <div class="stage-controls">
+          <div class="mode-switch" role="group" aria-label="Simulation mode">
+            <button type="button" class="mode-btn" id="mode-safe" data-active="safe" data-i18n="modeSafe"></button>
+            <button type="button" class="mode-btn" id="mode-hijack" data-active="" data-i18n="modeHijack"></button>
+          </div>
+          <span style="color: var(--fg-muted); font-size: 0.86rem;" data-i18n="springHint"></span>
+        </div>
+
+        <div class="spring-viewport" id="spring-viewport">
+          <div class="sim-layer sim-user-window" id="sim-user">
+            <div class="win-chrome">
+              <span class="traffic-lights" aria-hidden="true">
+                <span class="dot red"></span>
+                <span class="dot amber"></span>
+                <span class="dot green"></span>
+              </span>
+              <span class="win-url" id="user-win-url">docs.company.com/architecture</span>
+              <span class="win-badge badge-safe" id="user-win-badge">100% Yours</span>
+            </div>
+            <div class="win-body">
+              <span id="user-win-text"></span>
+            </div>
+          </div>
+
+          <div class="snapshot-pipe" id="snapshot-pipe">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
+            <span data-i18n="pipeLabel"></span>
+          </div>
+
+          <div class="sim-layer sim-agent-window" id="sim-agent">
+            <div class="win-chrome">
+              <span class="traffic-lights" aria-hidden="true">
+                <span class="dot red"></span>
+                <span class="dot amber"></span>
+                <span class="dot green"></span>
+              </span>
+              <span class="win-url" id="agent-win-url">sessfork-browser (@playwright/mcp --headless)</span>
+              <span class="win-badge badge-safe" id="agent-win-badge">Headless</span>
+            </div>
+            <div class="win-body">
+              <span id="agent-win-text"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Lazy Builder -->
+    <section class="section" id="builder">
+      <div class="section-head">
+        <div>
+          <div class="section-eyebrow" data-i18n="builderEyebrow"></div>
+          <h2 data-i18n="builderTitle"></h2>
+          <p class="section-sub" data-i18n="builderSub"></p>
+        </div>
+      </div>
+
+      <div class="builder-grid">
+        <div class="panel">
+          <div>
+            <span class="field-label" data-i18n="labelDomains"></span>
+            <div class="chips" id="domain-chips">
+              <button type="button" class="chip" data-domain="github.com" aria-pressed="true">github.com</button>
+              <button type="button" class="chip" data-domain="linear.app" aria-pressed="false">linear.app</button>
+              <button type="button" class="chip" data-domain="notion.so" aria-pressed="false">notion.so</button>
+              <button type="button" class="chip" data-domain="x.com" aria-pressed="false">x.com</button>
+              <button type="button" class="chip" data-domain="app.supabase.com" aria-pressed="false">app.supabase.com</button>
+              <button type="button" class="chip" data-domain="localhost:3000" aria-pressed="false">localhost:3000</button>
+            </div>
+          </div>
+
+          <div>
+            <label class="field-label" for="custom-domain-input" data-i18n="labelCustomDomain"></label>
+            <div class="custom-row">
+              <input id="custom-domain-input" class="text-input" type="text" placeholder="https://console.cloud.google.com/..." />
+              <button type="button" class="btn" id="add-domain-btn" data-i18n="btnAdd"></button>
+            </div>
+          </div>
+
+          <div>
+            <span class="field-label" data-i18n="labelBrowser"></span>
+            <div class="chips" id="browser-chips">
+              <button type="button" class="chip" data-browser="chrome" aria-pressed="true">Chrome</button>
+              <button type="button" class="chip" data-browser="arc" aria-pressed="false">Arc</button>
+              <button type="button" class="chip" data-browser="brave" aria-pressed="false">Brave</button>
+              <button type="button" class="chip" data-browser="edge" aria-pressed="false">Edge</button>
+              <button type="button" class="chip" data-browser="canary" aria-pressed="false">Canary</button>
+            </div>
+          </div>
+
+          <div class="toggle-row">
+            <div>
+              <div style="font-weight: 600; font-size: 0.92rem;" data-i18n="jwtTitle"></div>
+              <div style="color: var(--fg-muted); font-size: 0.82rem;" data-i18n="jwtDesc"></div>
+            </div>
+            <button type="button" class="switch-btn" id="toggle-no-cookies" aria-pressed="false">OFF</button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="output-box">
+            <div class="output-head">
+              <span class="output-tag" data-i18n="outPromptTag"></span>
+              <button type="button" class="btn" id="copy-prompt-btn" style="min-height: 36px; padding: 0 12px; font-size: 0.82rem;">
+                <span data-i18n="btnCopy"></span>
+              </button>
+            </div>
+            <p class="output-prose" id="generated-prompt"></p>
+          </div>
+
+          <div class="output-box">
+            <div class="output-head">
+              <span class="output-tag" data-i18n="outCliTag"></span>
+              <button type="button" class="btn" id="copy-cli-btn" style="min-height: 36px; padding: 0 12px; font-size: 0.82rem;">
+                <span data-i18n="btnCopy"></span>
+              </button>
+            </div>
+            <pre class="output-pre" id="generated-cli"></pre>
+          </div>
+
+          <div class="output-box">
+            <div class="output-head">
+              <span class="output-tag" data-i18n="outUvxTag"></span>
+              <button type="button" class="btn" id="copy-uvx-btn" style="min-height: 36px; padding: 0 12px; font-size: 0.82rem;">
+                <span data-i18n="btnCopy"></span>
+              </button>
+            </div>
+            <pre class="output-pre" id="generated-uvx"></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 5 Use-Case Cards -->
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <div class="section-eyebrow" data-i18n="casesEyebrow"></div>
+          <h2 data-i18n="casesTitle"></h2>
+          <p class="section-sub" data-i18n="casesSub"></p>
+        </div>
+      </div>
+      <div class="cards-grid" id="cases-grid"></div>
+    </section>
+
+    <!-- Visual Architecture & Flow Diagrams -->
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <div class="section-eyebrow" data-i18n="archEyebrow"></div>
+          <h2 data-i18n="archTitle"></h2>
+          <p class="section-sub" data-i18n="archSub"></p>
+        </div>
+      </div>
+      <div class="diagrams-stack">
+        <div class="diagram-frame">
+          <img id="img-flow" src="assets/lazy-flow-zh.svg" alt="sessfork lazy workflow diagram" />
+        </div>
+        <div class="diagram-frame">
+          <img id="img-arch" src="assets/architecture-zh.svg" alt="sessfork architecture diagram" />
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      <span>sessfork · MIT License · Pure Python &gt;= 3.9</span>
+      <div class="footer-links">
+        <a href="https://github.com/wasabihu/sessfork" target="_blank" rel="noopener noreferrer">GitHub</a>
+        <a href="https://github.com/wasabihu/sessfork/blob/main/README.md" target="_blank" rel="noopener noreferrer">README (EN)</a>
+        <a href="https://github.com/wasabihu/sessfork/blob/main/README.zh-CN.md" target="_blank" rel="noopener noreferrer">简体中文文档</a>
+      </div>
+    </footer>
+  </main>
+
+  <script>
+    (function () {
+      "use strict";
+
+      const I18N = {
+        zh: {
+          heroPill: "零焦点抢占 · 零运行时依赖 · 支持 Antigravity / Claude Code / Cursor",
+          heroTitle: "把 Chrome 登录态一键分叉给 AI，再也不抢你的浏览器窗口",
+          heroLead: "以前 AI 复用登录态，总是强行把 Chrome 切到前台、乱点标签页。sessfork 只需一行命令，无锁快照 Cookies 与 LocalStorage，自动配好后台无头浏览器，你只管继续专注手头的事。",
+          copyInstall: "一键复制安装",
+          copied: "已复制!",
+          metaZeroDeps: "纯 Python 标准库（0 三方包）",
+          metaDualLayer: "双层同步：Cookies + LocalStorage JWT",
+          metaAgents: "自动检测并配置本机 AI 工具",
+          demoEyebrow: "交互演示 · 苹果物理弹簧动效",
+          demoTitle: "对比一下：为什么“分叉”比“直接接管”爽得多",
+          demoSub: "点击切换模式，体验物理阻尼动画（支持随时中途打断反向，绝不卡顿）。",
+          modeSafe: "使用 sessfork（后台静默分叉）",
+          modeHijack: "传统方式（强抢前台焦点）",
+          springHint: "尝试快速连续点击切换按钮",
+          pipeLabel: "<20ms 无锁快照 -> 0600 state.json",
+          userSafeUrl: "docs.company.com/architecture",
+          userSafeBadge: "100% 归你控制",
+          userSafeText: "你的主 Chrome 窗口纹丝不动，继续放心看文档、写代码。",
+          agentSafeText: "sessfork-browser 正在后台无头运行：已同步目标域名的 Cookies 与 JWT。",
+          agentSafeBadge: "后台静默完成",
+          userHijackUrl: "github.com/pulls [已被 AI 强切]",
+          userHijackBadge: "焦点被抢占!",
+          userHijackText: "打字到一半浏览器突然跳出来乱点标签页，工作流直接被打断。",
+          agentHijackText: "AI 直接挂在你的主窗口上操作，甚至能看到你打开的所有私密页面。",
+          agentHijackBadge: "隐私与焦点冲突",
+          builderEyebrow: "懒人生成器 · 选好直接复制",
+          builderTitle: "1 秒生成给 AI 的话 & 一行命令",
+          builderSub: "勾一下你想让 AI 帮忙看的网站，下面自动生成“直接粘贴发给 AI 的人话”和终端命令。",
+          labelDomains: "1. 选择或输入目标网站（支持直接粘贴整条网址）",
+          labelCustomDomain: "自定义域名或 URL",
+          btnAdd: "添加",
+          labelBrowser: "2. 选择你的日常浏览器",
+          jwtTitle: "仅同步 LocalStorage JWT（--no-cookies）",
+          jwtDesc: "适用于 Supabase / SPA / localhost，跳过系统钥匙串授权弹窗。",
+          outPromptTag: "直接复制发给 AI 助手（最省事）",
+          outCliTag: "或自己在终端运行一行命令",
+          outUvxTag: "免安装直接跑（uvx）",
+          btnCopy: "复制",
+          casesEyebrow: "5 个高频实战事例",
+          casesTitle: "懒得自己想怎么问 AI？点卡片直接复制",
+          casesSub: "覆盖日常开发最常见的 5 种场景，点击任意卡片按钮即可复制发给 Antigravity / Claude Code / Cursor。",
+          archEyebrow: "原理一目了然",
+          archTitle: "三步懒人流程 & 核心架构",
+          archSub: "一次安装，永久省心。最小权限白名单 + 0600 原子权限写入。"
+        },
+        en: {
+          heroPill: "Zero Focus Theft · Zero Dependencies · Antigravity / Claude Code / Cursor",
+          heroTitle: "Fork live Chrome auth to AI agents — without hijacking your window",
+          heroLead: "Stop letting AI agents steal window focus and switch tabs in your active Chrome. sessfork snapshots Cookies & LocalStorage in one lock-free pass and wires a silent headless browser in the background.",
+          copyInstall: "Copy 1-Line Install",
+          copied: "Copied!",
+          metaZeroDeps: "Pure Python Stdlib (0 pip deps)",
+          metaDualLayer: "Dual-Layer: Cookies + LocalStorage JWT",
+          metaAgents: "Auto-wires installed AI editors",
+          demoEyebrow: "Interactive Physics Demo",
+          demoTitle: "See why forking beats attaching to your live browser",
+          demoSub: "Toggle rapidly mid-flight — powered by an interruptible critically-damped spring.",
+          modeSafe: "With sessfork (Silent Fork)",
+          modeHijack: "Without sessfork (Hijacks Focus)",
+          springHint: "Try clicking rapidly mid-transition",
+          pipeLabel: "<20ms lock-free snapshot -> 0600 state.json",
+          userSafeUrl: "docs.company.com/architecture",
+          userSafeBadge: "100% Yours",
+          userSafeText: "Your active Chrome window stays completely untouched while you read or code.",
+          agentSafeText: "sessfork-browser runs silently in headless mode with forked Cookies + JWTs.",
+          agentSafeBadge: "Silent Background",
+          userHijackUrl: "github.com/pulls [Hijacked by AI]",
+          userHijackBadge: "Focus Stolen!",
+          userHijackText: "Browser jumps to the foreground and flips tabs right in the middle of your typing.",
+          agentHijackText: "Agent shares your live GUI browser and sees every open tab you have.",
+          agentHijackBadge: "Focus & Tab Clash",
+          builderEyebrow: "Lazy Generator",
+          builderTitle: "Generate your AI Prompt & 1-Line Command",
+          builderSub: "Pick your sites and browser — copy either the natural-language prompt for your AI agent or the exact CLI command.",
+          labelDomains: "1. Pick or paste domains / full URLs",
+          labelCustomDomain: "Custom domain or full URL",
+          btnAdd: "Add",
+          labelBrowser: "2. Source Chromium browser",
+          jwtTitle: "LocalStorage JWT only (--no-cookies)",
+          jwtDesc: "Skip macOS Keychain prompts completely for SPA & localhost apps.",
+          outPromptTag: "Paste straight to your AI Agent (Easiest)",
+          outCliTag: "Or run 1-line CLI in terminal",
+          outUvxTag: "Zero-install via uvx",
+          btnCopy: "Copy",
+          casesEyebrow: "5 Copy-Paste Examples",
+          casesTitle: "Click any real-world workflow to copy its AI prompt",
+          casesSub: "Works out of the box with Google Antigravity, Claude Code, and Cursor.",
+          archEyebrow: "Visual Architecture",
+          archTitle: "3-Step Lazy Flow & Engine Blueprint",
+          archSub: "Install once, talk normally after. Strict domain allowlist & 0600 atomic storage."
+        }
+      };
+
+      const CASES = [
+        {
+          icon: '<path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/>',
+          zhTitle: "1. 后台排查 GitHub 通知与 PR 报错",
+          enTitle: "1. Triage GitHub PRs & CI Silently",
+          zhPrompt: "用 sessfork 把我 Chrome 里的 github.com 登录态分叉到 sessfork-browser，在后台无头浏览器里帮我看下未读通知和失败的 PR 检查，别切换我前台浏览器。",
+          enPrompt: "Use sessfork to fork my github.com session into sessfork-browser, then silently check my unread notifications and failing PR checks without touching my active Chrome.",
+          cli: "sessfork github.com"
+        },
+        {
+          icon: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 2v4M16 2v4M3 10h18"/>',
+          zhTitle: "2. 汇总 Linear / Notion 今日任务",
+          enTitle: "2. Summarize Linear & Notion Sprint",
+          zhPrompt: "用 sessfork 分叉我的 linear.app 和 notion.so 登录态，在后台汇总一下今天分配给我的阻塞任务。",
+          enPrompt: "Fork my linear.app and notion.so sessions with sessfork and summarize today's assigned sprint blockers in the background.",
+          cli: "sessfork linear.app notion.so"
+        },
+        {
+          icon: '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+          zhTitle: "3. 纯 SPA / localhost 零弹窗调试",
+          enTitle: "3. SPA / Localhost JWT (Zero Prompt)",
+          zhPrompt: "运行 sessfork app.supabase.com localhost:3000 --no-cookies，然后在 sessfork-browser 后台验证已登录态下的页面接口渲染结果。",
+          enPrompt: "Run sessfork app.supabase.com localhost:3000 --no-cookies and verify the authenticated dashboard API state inside sessfork-browser.",
+          cli: "sessfork app.supabase.com localhost:3000 --no-cookies"
+        },
+        {
+          icon: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+          zhTitle: "4. 直接贴浏览器地址栏完整 URL",
+          enTitle: "4. Paste Full URLs from Address Bar",
+          zhPrompt: "用 sessfork 同步我当前在看的 https://github.com/notifications 页面登录态，后台帮我把待处理事项列成清单。",
+          enPrompt: "Fork https://github.com/notifications with sessfork and extract a clean action checklist in the background.",
+          cli: "sessfork https://github.com/notifications"
+        },
+        {
+          icon: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="21.17" y1="8" x2="12" y2="8"/><line x1="3.95" y1="6.06" x2="8.54" y2="14"/><line x1="10.88" y1="21.94" x2="15.46" y2="14"/>',
+          zhTitle: "5. 切换 Arc / Brave / 工作分身",
+          enTitle: "5. Target Arc, Brave, or Work Profile",
+          zhPrompt: "从我本机的 Arc 浏览器用 sessfork 分叉 x.com 登录态，并在后台检查最新私信摘要。",
+          enPrompt: "Fork my x.com login from Arc browser using sessfork --browser arc and check my latest messages silently.",
+          cli: "sessfork x.com --browser arc"
+        }
+      ];
+
+      const state = {
+        lang: (navigator.language || "").toLowerCase().startsWith("zh") ? "zh" : "en",
+        domains: ["github.com"],
+        browser: "chrome",
+        noCookies: false,
+        simSafe: true
+      };
+
+      function normalizeDomain(raw) {
+        let text = raw.trim();
+        if (!text) return "";
+        if (text.includes("://")) {
+          try {
+            const u = new URL(text);
+            text = u.host || u.hostname || text;
+          } catch (_) {
+            text = text.split("/")[0];
+          }
+        } else {
+          text = text.split("/")[0];
+        }
+        return text.replace(/^\.+/, "").toLowerCase();
+      }
+
+      async function copyText(text, btn, labelEl) {
+        try {
+          await navigator.clipboard.writeText(text);
+        } catch (_) {
+          const ta = document.createElement("textarea");
+          ta.value = text;
+          ta.style.position = "fixed";
+          ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          ta.remove();
+        }
+        const dict = I18N[state.lang];
+        const target = labelEl || btn;
+        const prev = target.textContent;
+        target.textContent = dict.copied;
+        clearTimeout(btn._copyTimer);
+        btn._copyTimer = setTimeout(() => {
+          target.textContent = prev;
+        }, 1600);
+      }
+
+      function renderBuilder() {
+        const doms = state.domains.length ? state.domains : ["github.com"];
+        const flags = [];
+        if (state.browser !== "chrome") flags.push("--browser " + state.browser);
+        if (state.noCookies) flags.push("--no-cookies");
+        const suffix = flags.length ? " " + flags.join(" ") : "";
+        const cli = "sessfork " + doms.join(" ") + suffix;
+        const uvx = "uvx --from git+https://github.com/wasabihu/sessfork sessfork " + doms.join(" ") + suffix;
+
+        const browserCap = state.browser.charAt(0).toUpperCase() + state.browser.slice(1);
+        const domList = doms.join(", ");
+        const promptText = state.lang === "zh"
+          ? `用 sessfork 把我 ${browserCap} 里的 ${domList} 登录态${state.noCookies ? "（仅 LocalStorage，加 --no-cookies）" : ""}分叉到 sessfork-browser，并在后台无头浏览器里帮我完成检查，别切换或打断我当前的浏览器窗口。`
+          : `Use sessfork to fork my ${domList} session from ${browserCap}${state.noCookies ? " (with --no-cookies)" : ""} into sessfork-browser, then inspect it silently in the background without touching my active browser window.`;
+
+        document.getElementById("generated-prompt").textContent = promptText;
+        document.getElementById("generated-cli").textContent = cli;
+        document.getElementById("generated-uvx").textContent = uvx;
+      }
+
+      function renderCases() {
+        const grid = document.getElementById("cases-grid");
+        grid.innerHTML = "";
+        const dict = I18N[state.lang];
+        CASES.forEach((item) => {
+          const card = document.createElement("article");
+          card.className = "case-card";
+          const title = state.lang === "zh" ? item.zhTitle : item.enTitle;
+          const prompt = state.lang === "zh" ? item.zhPrompt : item.enPrompt;
+          card.innerHTML = `
+            <div>
+              <div class="case-top" style="margin-bottom: 12px;">
+                <span class="case-icon" aria-hidden="true">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${item.icon}</svg>
+                </span>
+                <h3 class="case-title">${title}</h3>
+              </div>
+              <p class="case-prompt"></p>
+            </div>
+            <div class="case-foot">
+              <code class="case-cli"></code>
+              <button type="button" class="btn" style="min-height: 38px; padding: 0 14px; font-size: 0.84rem;">${dict.btnCopy}</button>
+            </div>
+          `;
+          card.querySelector(".case-prompt").textContent = prompt;
+          card.querySelector(".case-cli").textContent = item.cli;
+          const btn = card.querySelector("button");
+          btn.addEventListener("click", () => copyText(prompt, btn, btn));
+          grid.appendChild(card);
+        });
+      }
+
+      function applyLanguage(lang) {
+        state.lang = lang;
+        document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
+        document.getElementById("lang-zh").setAttribute("aria-pressed", String(lang === "zh"));
+        document.getElementById("lang-en").setAttribute("aria-pressed", String(lang === "en"));
+
+        const dict = I18N[lang];
+        document.querySelectorAll("[data-i18n]").forEach((el) => {
+          const key = el.getAttribute("data-i18n");
+          if (dict[key] !== undefined) el.textContent = dict[key];
+        });
+
+        document.getElementById("img-flow").src = lang === "zh" ? "assets/lazy-flow-zh.svg" : "assets/lazy-flow-en.svg";
+        document.getElementById("img-arch").src = lang === "zh" ? "assets/architecture-zh.svg" : "assets/architecture-en.svg";
+
+        updateSimulationLabels();
+        renderBuilder();
+        renderCases();
+      }
+
+      /* Interruptible critically-damped Apple spring physics (damping = 1.0, response = 0.35s) */
+      const spring = {
+        pos: 0, // 0 = safe separated, 1 = hijacked clash
+        vel: 0,
+        target: 0,
+        rafId: null,
+        lastTs: 0
+      };
+
+      const userWin = document.getElementById("sim-user");
+      const agentWin = document.getElementById("sim-agent");
+      const pipeEl = document.getElementById("snapshot-pipe");
+
+      function updateSimulationLabels() {
+        const dict = I18N[state.lang];
+        const uUrl = document.getElementById("user-win-url");
+        const uBadge = document.getElementById("user-win-badge");
+        const uText = document.getElementById("user-win-text");
+        const aBadge = document.getElementById("agent-win-badge");
+        const aText = document.getElementById("agent-win-text");
+
+        if (state.simSafe) {
+          uUrl.textContent = dict.userSafeUrl;
+          uBadge.textContent = dict.userSafeBadge;
+          uBadge.className = "win-badge badge-safe";
+          uText.textContent = dict.userSafeText;
+          aBadge.textContent = dict.agentSafeBadge;
+          aBadge.className = "win-badge badge-safe";
+          aText.textContent = dict.agentSafeText;
+          userWin.style.borderColor = "rgba(148, 163, 184, 0.30)";
+          agentWin.style.borderColor = "rgba(34, 197, 94, 0.38)";
+        } else {
+          uUrl.textContent = dict.userHijackUrl;
+          uBadge.textContent = dict.userHijackBadge;
+          uBadge.className = "win-badge badge-danger";
+          uText.textContent = dict.userHijackText;
+          aBadge.textContent = dict.agentHijackBadge;
+          aBadge.className = "win-badge badge-danger";
+          aText.textContent = dict.agentHijackText;
+          userWin.style.borderColor = "rgba(239, 68, 68, 0.55)";
+          agentWin.style.borderColor = "rgba(239, 68, 68, 0.38)";
+        }
+      }
+
+      function renderSpringFrame(p) {
+        const userShiftY = p * 18;
+        const userScale = 1 - p * 0.018;
+        const agentShiftY = -p * 124;
+        const agentOpacity = 1 - p * 0.14;
+        userWin.style.transform = `translate3d(0, ${userShiftY.toFixed(2)}px, 0) scale(${userScale.toFixed(4)})`;
+        agentWin.style.transform = `translate3d(0, ${agentShiftY.toFixed(2)}px, 0)`;
+        agentWin.style.opacity = agentOpacity.toFixed(3);
+        pipeEl.style.opacity = Math.max(0, 1 - p * 1.6).toFixed(3);
+      }
+
+      function tickSpring(ts) {
+        if (!spring.lastTs) spring.lastTs = ts;
+        const dt = Math.min((ts - spring.lastTs) / 1000, 0.05);
+        spring.lastTs = ts;
+
+        // Critically damped spring: omega = 2 * pi / response
+        const response = 0.34;
+        const omega = (2 * Math.PI) / response;
+        const stiffness = omega * omega;
+        const damping = 2 * omega; // damping ratio = 1.0 (zero overshoot)
+
+        const force = -stiffness * (spring.pos - spring.target) - damping * spring.vel;
+        spring.vel += force * dt;
+        spring.pos += spring.vel * dt;
+
+        renderSpringFrame(spring.pos);
+
+        if (Math.abs(spring.pos - spring.target) < 0.001 && Math.abs(spring.vel) < 0.002) {
+          spring.pos = spring.target;
+          spring.vel = 0;
+          spring.rafId = null;
+          spring.lastTs = 0;
+          renderSpringFrame(spring.pos);
+          return;
+        }
+        spring.rafId = requestAnimationFrame(tickSpring);
+      }
+
+      function setSimulationMode(safe) {
+        state.simSafe = safe;
+        const btnSafe = document.getElementById("mode-safe");
+        const btnHijack = document.getElementById("mode-hijack");
+        btnSafe.setAttribute("data-active", safe ? "safe" : "");
+        btnHijack.setAttribute("data-active", safe ? "" : "danger");
+        updateSimulationLabels();
+
+        spring.target = safe ? 0 : 1;
+        if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+          spring.pos = spring.target;
+          spring.vel = 0;
+          renderSpringFrame(spring.pos);
+          return;
+        }
+        if (!spring.rafId) {
+          spring.lastTs = 0;
+          spring.rafId = requestAnimationFrame(tickSpring);
+        }
+      }
+
+      /* Event Wiring */
+      document.getElementById("lang-zh").addEventListener("click", () => applyLanguage("zh"));
+      document.getElementById("lang-en").addEventListener("click", () => applyLanguage("en"));
+      document.getElementById("mode-safe").addEventListener("click", () => setSimulationMode(true));
+      document.getElementById("mode-hijack").addEventListener("click", () => setSimulationMode(false));
+
+      document.getElementById("copy-install-btn").addEventListener("click", function () {
+        const span = this.querySelector("span");
+        copyText("curl -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/main/install.sh | bash", this, span);
+      });
+
+      document.getElementById("copy-prompt-btn").addEventListener("click", function () {
+        copyText(document.getElementById("generated-prompt").textContent, this, this.querySelector("span"));
+      });
+      document.getElementById("copy-cli-btn").addEventListener("click", function () {
+        copyText(document.getElementById("generated-cli").textContent, this, this.querySelector("span"));
+      });
+      document.getElementById("copy-uvx-btn").addEventListener("click", function () {
+        copyText(document.getElementById("generated-uvx").textContent, this, this.querySelector("span"));
+      });
+
+      document.getElementById("domain-chips").addEventListener("click", (e) => {
+        const chip = e.target.closest("[data-domain]");
+        if (!chip) return;
+        const dom = chip.getAttribute("data-domain");
+        const idx = state.domains.indexOf(dom);
+        if (idx >= 0) {
+          if (state.domains.length > 1) {
+            state.domains.splice(idx, 1);
+            chip.setAttribute("aria-pressed", "false");
+          }
+        } else {
+          state.domains.push(dom);
+          chip.setAttribute("aria-pressed", "true");
+        }
+        renderBuilder();
+      });
+
+      function addCustomDomain() {
+        const input = document.getElementById("custom-domain-input");
+        const dom = normalizeDomain(input.value);
+        if (!dom) return;
+        if (!state.domains.includes(dom)) {
+          state.domains.push(dom);
+          const chip = document.createElement("button");
+          chip.type = "button";
+          chip.className = "chip";
+          chip.setAttribute("data-domain", dom);
+          chip.setAttribute("aria-pressed", "true");
+          chip.textContent = dom;
+          document.getElementById("domain-chips").appendChild(chip);
+        }
+        input.value = "";
+        renderBuilder();
+      }
+
+      document.getElementById("add-domain-btn").addEventListener("click", addCustomDomain);
+      document.getElementById("custom-domain-input").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          addCustomDomain();
+        }
+      });
+
+      document.getElementById("browser-chips").addEventListener("click", (e) => {
+        const chip = e.target.closest("[data-browser]");
+        if (!chip) return;
+        state.browser = chip.getAttribute("data-browser");
+        document.querySelectorAll("#browser-chips .chip").forEach((btn) => {
+          btn.setAttribute("aria-pressed", String(btn === chip));
+        });
+        renderBuilder();
+      });
+
+      document.getElementById("toggle-no-cookies").addEventListener("click", function () {
+        state.noCookies = !state.noCookies;
+        this.setAttribute("aria-pressed", String(state.noCookies));
+        this.textContent = state.noCookies ? "ON" : "OFF";
+        renderBuilder();
+      });
+
+      applyLanguage(state.lang);
+      setSimulationMode(true);
+    })();
+  </script>
+</body>
+</html>

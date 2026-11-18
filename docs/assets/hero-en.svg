@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 420" width="100%" role="img" aria-labelledby="hero-en-title">
+  <title id="hero-en-title">sessfork Before vs After Comparison</title>
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0B0F19"/>
+      <stop offset="100%" stop-color="#0F172A"/>
+    </linearGradient>
+    <linearGradient id="forkGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8"/>
+      <stop offset="100%" stop-color="#22C55E"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1040" height="420" rx="20" fill="url(#bgGrad)" stroke="#1E293B" stroke-width="1.5"/>
+
+  <!-- Left Card: Without sessfork -->
+  <rect x="28" y="24" width="468" height="372" rx="16" fill="#131B2E" stroke="#451A22" stroke-width="1.5"/>
+  <rect x="48" y="42" width="176" height="26" rx="13" fill="#3B151B" stroke="#7F1D1D" stroke-width="1"/>
+  <text x="136" y="59" text-anchor="middle" fill="#FCA5A5" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'IBM Plex Sans', sans-serif" font-size="11" font-weight="600" letter-spacing="0.6">BEFORE · DIRECT ATTACH</text>
+  <text x="48" y="88" fill="#F8FAFC" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'IBM Plex Sans', sans-serif" font-size="18" font-weight="700">Foreground Chrome Hijacked</text>
+
+  <!-- Left Browser Mockup -->
+  <rect x="48" y="104" width="428" height="172" rx="12" fill="#0D1322" stroke="#2A3650" stroke-width="1"/>
+  <rect x="48" y="104" width="428" height="34" rx="12" fill="#182238"/>
+  <rect x="48" y="126" width="428" height="12" fill="#182238"/>
+  <circle cx="68" cy="121" r="5" fill="#EF4444"/>
+  <circle cx="85" cy="121" r="5" fill="#F59E0B"/>
+  <circle cx="102" cy="121" r="5" fill="#22C55E"/>
+  <!-- Tabs -->
+  <rect x="122" y="111" width="92" height="22" rx="6" fill="#0F172A"/>
+  <text x="168" y="126" text-anchor="middle" fill="#64748B" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11">Your Docs</text>
+  <rect x="220" y="111" width="146" height="22" rx="6" fill="#451A22" stroke="#EF4444" stroke-width="1"/>
+  <text x="293" y="126" text-anchor="middle" fill="#FCA5A5" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="600">AI Switched Tab!</text>
+
+  <!-- Hijack Alert Box inside left browser -->
+  <rect x="74" y="158" width="376" height="96" rx="10" fill="#1F1218" stroke="#7F1D1D" stroke-width="1" stroke-dasharray="4 4"/>
+  <circle cx="104" cy="192" r="14" fill="#3B151B"/>
+  <path d="M98 186 L110 198 M110 186 L98 198" stroke="#EF4444" stroke-width="2.2" stroke-linecap="round"/>
+  <text x="130" y="189" fill="#FCA5A5" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="14" font-weight="600">Window Focus Stolen by Agent</text>
+  <text x="130" y="211" fill="#94A3B8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">AI clicks, scrolls &amp; navigates in front of you</text>
+  <text x="130" y="233" fill="#64748B" font-family="'SF Mono', 'JetBrains Mono', monospace" font-size="11">typing_interrupted = true</text>
+
+  <!-- Left Status List -->
+  <rect x="48" y="294" width="428" height="38" rx="10" fill="#182032"/>
+  <circle cx="70" cy="313" r="9" fill="#3B151B"/>
+  <path d="M66 309 L74 317 M74 309 L66 317" stroke="#EF4444" stroke-width="1.8" stroke-linecap="round"/>
+  <text x="90" y="317" fill="#CBD5E1" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13">Steals active window focus &amp; breaks your flow</text>
+
+  <rect x="48" y="342" width="428" height="38" rx="10" fill="#182032"/>
+  <circle cx="70" cy="361" r="9" fill="#3B151B"/>
+  <path d="M66 357 L74 365 M74 357 L66 365" stroke="#EF4444" stroke-width="1.8" stroke-linecap="round"/>
+  <text x="90" y="365" fill="#CBD5E1" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13">Exposes all open tabs &amp; unrelated browser state</text>
+
+  <!-- Right Card: With sessfork -->
+  <rect x="544" y="24" width="468" height="372" rx="16" fill="#131B2E" stroke="#1E4638" stroke-width="1.5"/>
+  <rect x="564" y="42" width="176" height="26" rx="13" fill="#0F2D1E" stroke="#166534" stroke-width="1"/>
+  <text x="652" y="59" text-anchor="middle" fill="#86EFAC" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'IBM Plex Sans', sans-serif" font-size="11" font-weight="600" letter-spacing="0.6">AFTER · WITH SESSFORK</text>
+  <text x="564" y="88" fill="#F8FAFC" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'IBM Plex Sans', sans-serif" font-size="18" font-weight="700">Your Window + Silent Headless Fork</text>
+
+  <!-- Top Right Browser Mockup (Untouched) -->
+  <rect x="564" y="104" width="428" height="72" rx="12" fill="#0D1322" stroke="#2A3650" stroke-width="1"/>
+  <circle cx="584" cy="123" r="5" fill="#EF4444"/>
+  <circle cx="601" cy="123" r="5" fill="#F59E0B"/>
+  <circle cx="618" cy="123" r="5" fill="#22C55E"/>
+  <rect x="638" y="113" width="224" height="20" rx="6" fill="#182238"/>
+  <text x="650" y="127" fill="#94A3B8" font-family="'SF Mono', 'JetBrains Mono', monospace" font-size="11">docs.company.com (active)</text>
+  <rect x="874" y="113" width="104" height="20" rx="10" fill="#0F2D1E" stroke="#166534" stroke-width="1"/>
+  <text x="926" y="127" text-anchor="middle" fill="#4ADE80" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="600">100% Yours</text>
+  <text x="584" y="159" fill="#CBD5E1" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12.5">Live Chrome stays untouched — keep reading or coding freely</text>
+
+  <!-- Connector Arrow -->
+  <line x1="778" y1="176" x2="778" y2="212" stroke="url(#forkGrad)" stroke-width="2" stroke-dasharray="4 3"/>
+  <polygon points="773,208 783,208 778,216" fill="#22C55E"/>
+  <rect x="640" y="182" width="276" height="22" rx="11" fill="#0F2034" stroke="#1E4B6E" stroke-width="1"/>
+  <text x="778" y="197" text-anchor="middle" fill="#7DD3FC" font-family="'SF Mono', 'JetBrains Mono', monospace" font-size="11">lock-free snapshot -&gt; 0600 state.json</text>
+
+  <!-- Bottom Right Headless Agent Browser -->
+  <rect x="564" y="216" width="428" height="62" rx="12" fill="#0D1924" stroke="#1D4E3E" stroke-width="1"/>
+  <rect x="580" y="232" width="30" height="30" rx="8" fill="#0F2D1E" stroke="#22C55E" stroke-width="1"/>
+  <path d="M588 242 L594 247 L588 252 M596 252 L603 252" fill="none" stroke="#4ADE80" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="622" y="244" fill="#F8FAFC" font-family="'SF Mono', 'JetBrains Mono', monospace" font-size="12.5" font-weight="600">sessfork-browser (--headless)</text>
+  <text x="622" y="263" fill="#94A3B8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">AI Agent runs silently with forked Cookies + LocalStorage</text>
+
+  <!-- Right Status List -->
+  <rect x="564" y="294" width="428" height="38" rx="10" fill="#182032"/>
+  <circle cx="586" cy="313" r="9" fill="#0F2D1E"/>
+  <path d="M581.5 313 L585 316.5 L591 310" fill="none" stroke="#22C55E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="606" y="317" fill="#CBD5E1" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13">Zero window focus theft, zero tab interruptions</text>
+
+  <rect x="564" y="342" width="428" height="38" rx="10" fill="#182032"/>
+  <circle cx="586" cy="361" r="9" fill="#0F2D1E"/>
+  <path d="M581.5 361 L585 364.5 L591 358" fill="none" stroke="#22C55E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="606" y="365" fill="#CBD5E1" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13">Domain-scoped allowlist · Pure Python zero dependencies</text>
+</svg>

@@ -93,9 +93,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-t",
         "--target",
-        choices=("antigravity", "claude", "cursor", "all", "none"),
-        default="antigravity",
-        help="Agent MCP config to auto-wire (default: antigravity; use 'none' to skip)",
+        choices=("auto", "antigravity", "claude", "cursor", "all", "none"),
+        default="auto",
+        help="Agent MCP config to auto-wire (default: auto-detect Antigravity/Claude/Cursor; use 'none' to skip)",
     )
     parser.add_argument(
         "--replace",
@@ -204,6 +204,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 for p in more_mcp:
                     if p not in updated_mcp:
                         updated_mcp.append(p)
+                more_skills = install_agent_skills()
+                for sk in more_skills:
+                    if sk not in installed_skills:
+                        installed_skills.append(sk)
         else:
             saved_path = state_path
             up_cookies = tot_cookies = up_ls_keys = tot_origins = 0
@@ -271,6 +275,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 print("  = MCP config and SKILL.md were already up to date.")
         return 0
 
+    print(
+        "Quick Start:\n"
+        "  sessfork github.com              # Fork Chrome login & auto-wire MCP + Skill\n"
+        "  sessfork app.spa.io --no-cookies # Fork LocalStorage JWT only (no Keychain prompt)\n"
+        "  sessfork --setup                 # One-click wire MCP config & Agent SKILL.md\n"
+        "  sessfork --status                # Inspect cached domains & origins\n"
+    )
     parser.print_help()
     return 0
 

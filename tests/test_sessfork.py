@@ -285,6 +285,28 @@ class SessforkTestSuite(unittest.TestCase):
         self.assertEqual(normalize_domain_filter("https://gist.github.com/demo"), "gist.github.com")
         self.assertEqual(normalize_domain_filter(".x.com"), "x.com")
 
+    def test_auto_target_detection_and_one_shot_skill_install(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox_home = Path(tmp)
+            state_file = sandbox_home / "state.json"
+            (sandbox_home / ".cursor").mkdir()
+            (sandbox_home / ".claude").mkdir()
+
+            updated = ensure_mcp_configured(
+                ["auto"],
+                state_path=state_file,
+                home=sandbox_home,
+                npx_cmd="/opt/homebrew/bin/npx",
+            )
+            self.assertEqual(len(updated), 3)
+            self.assertTrue((sandbox_home / ".gemini" / "config" / "mcp_config.json").is_file())
+            self.assertTrue((sandbox_home / ".claude.json").is_file())
+            self.assertTrue((sandbox_home / ".cursor" / "mcp.json").is_file())
+
+            skills = install_agent_skills(home=sandbox_home)
+            self.assertEqual(len(skills), 3)
+            self.assertTrue((sandbox_home / ".claude" / "skills" / "sessfork" / "SKILL.md").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()
