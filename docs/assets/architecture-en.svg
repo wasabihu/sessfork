@@ -3,58 +3,58 @@
   <rect width="1040" height="310" rx="20" fill="#0B0F19" stroke="#1E293B" stroke-width="1.5"/>
 
   <!-- Column 1: Live Browsers -->
-  <rect x="28" y="28" width="290" height="254" rx="16" fill="#131B2E" stroke="#2A3650" stroke-width="1.2"/>
+  <rect x="28" y="28" width="270" height="254" rx="16" fill="#131B2E" stroke="#2A3650" stroke-width="1.2"/>
   <text x="48" y="58" fill="#7DD3FC" font-family="'SF Mono', 'JetBrains Mono', monospace" font-size="11" font-weight="600">01 · SOURCE BROWSER</text>
   <text x="48" y="82" fill="#F8FAFC" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif" font-size="16" font-weight="700">Live Chromium Profile</text>
-  <text x="48" y="102" fill="#94A3B8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">Chrome · Arc · Brave · Edge · Canary</text>
+  <text x="48" y="102" fill="#94A3B8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11.5">Chrome · Arc · Brave · Edge · Canary</text>
 
-  <rect x="48" y="122" width="250" height="64" rx="10" fill="#0B0F19" stroke="#24314A" stroke-width="1"/>
-  <text x="64" y="146" fill="#F8FAFC" font-family="'SF Mono', 'JetBrains Mono', monospace" font-size="12" font-weight="600">Cookies + -wal / -shm</text>
-  <text x="64" y="168" fill="#94A3B8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11.5">SQLite HttpOnly &amp; SameSite cookies</text>
+  <rect x="48" y="122" width="230" height="64" rx="10" fill="#0B0F19" stroke="#24314A" stroke-width="1"/>
+  <text x="64" y="146" fill="#F8FAFC" font-family="'SF Mono', 'JetBrains Mono', monospace" font-size="11.5" font-weight="600">Cookies + -wal / -shm</text>
+  <text x="64" y="168" fill="#94A3B8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11">SQLite HttpOnly &amp; SameSite</text>
 
-  <rect x="48" y="198" width="250" height="64" rx="10" fill="#0B0F19" stroke="#24314A" stroke-width="1"/>
-  <text x="64" y="222" fill="#F8FAFC" font-family="'SF Mono', 'JetBrains Mono', monospace" font-size="12" font-weight="600">Local Storage/leveldb</text>
-  <text x="64" y="244" fill="#94A3B8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11.5">.ldb SSTables + .log WAL (JWT/SPA)</text>
+  <rect x="48" y="198" width="230" height="64" rx="10" fill="#0B0F19" stroke="#24314A" stroke-width="1"/>
+  <text x="64" y="222" fill="#F8FAFC" font-family="'SF Mono', 'JetBrains Mono', monospace" font-size="11.5" font-weight="600">Local Storage/leveldb</text>
+  <text x="64" y="244" fill="#94A3B8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11">.ldb SSTables + .log WAL</text>
 
   <!-- Arrow 1->2 -->
-  <line x1="322" y1="155" x2="366" y2="155" stroke="#38BDF8" stroke-width="2" stroke-dasharray="4 3"/>
-  <polygon points="362,150 371,155 362,160" fill="#38BDF8"/>
-  <text x="346" y="142" text-anchor="middle" fill="#7DD3FC" font-family="'SF Mono', monospace" font-size="10">0700</text>
-  <text x="346" y="175" text-anchor="middle" fill="#64748B" font-family="'SF Mono', monospace" font-size="10">copy</text>
+  <line x1="302" y1="155" x2="346" y2="155" stroke="#38BDF8" stroke-width="2" stroke-dasharray="4 3"/>
+  <polygon points="342,150 351,155 342,160" fill="#38BDF8"/>
+  <text x="326" y="142" text-anchor="middle" fill="#7DD3FC" font-family="'SF Mono', monospace" font-size="10">0700</text>
+  <text x="326" y="175" text-anchor="middle" fill="#64748B" font-family="'SF Mono', monospace" font-size="10">copy</text>
 
   <!-- Column 2: sessfork Engine -->
-  <rect x="374" y="28" width="292" height="254" rx="16" fill="#131B2E" stroke="#1E4B6E" stroke-width="1.2"/>
-  <text x="394" y="58" fill="#38BDF8" font-family="'SF Mono', 'JetBrains Mono', monospace" font-size="11" font-weight="600">02 · ZERO-DEP PYTHON &gt;=3.9</text>
-  <text x="394" y="82" fill="#F8FAFC" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif" font-size="16" font-weight="700">sessfork Core Engine</text>
-  <text x="394" y="102" fill="#94A3B8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">In-memory decode &amp; domain allowlist</text>
+  <rect x="354" y="28" width="332" height="254" rx="16" fill="#131B2E" stroke="#1E4B6E" stroke-width="1.2"/>
+  <text x="374" y="58" fill="#38BDF8" font-family="'SF Mono', 'JetBrains Mono', monospace" font-size="11" font-weight="600">02 · ZERO-DEP PYTHON &gt;=3.9</text>
+  <text x="374" y="82" fill="#F8FAFC" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif" font-size="16" font-weight="700">sessfork Core Engine</text>
+  <text x="374" y="102" fill="#94A3B8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">In-memory decode &amp; domain allowlist</text>
 
-  <rect x="394" y="122" width="252" height="44" rx="9" fill="#0B0F19" stroke="#24314A" stroke-width="1"/>
-  <text x="408" y="141" fill="#F8FAFC" font-family="'SF Mono', monospace" font-size="11.5" font-weight="600">crypto.py</text>
-  <text x="408" y="157" fill="#94A3B8" font-family="-apple-system, sans-serif" font-size="11">CommonCrypto AES-128 + v24 SHA256</text>
+  <rect x="374" y="122" width="292" height="44" rx="9" fill="#0B0F19" stroke="#24314A" stroke-width="1"/>
+  <text x="388" y="141" fill="#F8FAFC" font-family="'SF Mono', monospace" font-size="11.5" font-weight="600">crypto.py</text>
+  <text x="388" y="157" fill="#94A3B8" font-family="-apple-system, sans-serif" font-size="11">CommonCrypto AES-128 + v24 SHA256</text>
 
-  <rect x="394" y="174" width="252" height="44" rx="9" fill="#0B0F19" stroke="#24314A" stroke-width="1"/>
-  <text x="408" y="193" fill="#F8FAFC" font-family="'SF Mono', monospace" font-size="11.5" font-weight="600">localstorage.py</text>
-  <text x="408" y="209" fill="#94A3B8" font-family="-apple-system, sans-serif" font-size="11">Snappy + MVCC tombstone resolver</text>
+  <rect x="374" y="174" width="292" height="44" rx="9" fill="#0B0F19" stroke="#24314A" stroke-width="1"/>
+  <text x="388" y="193" fill="#F8FAFC" font-family="'SF Mono', monospace" font-size="11.5" font-weight="600">localstorage.py</text>
+  <text x="388" y="209" fill="#94A3B8" font-family="-apple-system, sans-serif" font-size="11">Snappy + MVCC tombstone resolver</text>
 
-  <rect x="394" y="226" width="252" height="40" rx="9" fill="#0B1914" stroke="#166534" stroke-width="1"/>
-  <text x="408" y="250" fill="#86EFAC" font-family="'SF Mono', monospace" font-size="11.5" font-weight="600">state.py -&gt; 0600 ~/.sessfork/state.json</text>
+  <rect x="374" y="226" width="292" height="40" rx="9" fill="#0B1914" stroke="#166534" stroke-width="1"/>
+  <text x="388" y="250" fill="#86EFAC" font-family="'SF Mono', monospace" font-size="10.5" font-weight="600">state.py -&gt; 0600 ~/.sessfork/state.json</text>
 
   <!-- Arrow 2->3 -->
-  <line x1="670" y1="155" x2="714" y2="155" stroke="#22C55E" stroke-width="2"/>
-  <polygon points="710,150 719,155 710,160" fill="#22C55E"/>
-  <text x="694" y="142" text-anchor="middle" fill="#86EFAC" font-family="'SF Mono', monospace" font-size="10">stdio</text>
-  <text x="694" y="175" text-anchor="middle" fill="#64748B" font-family="'SF Mono', monospace" font-size="10">MCP</text>
+  <line x1="690" y1="155" x2="734" y2="155" stroke="#22C55E" stroke-width="2"/>
+  <polygon points="730,150 739,155 730,160" fill="#22C55E"/>
+  <text x="714" y="142" text-anchor="middle" fill="#86EFAC" font-family="'SF Mono', monospace" font-size="10">stdio</text>
+  <text x="714" y="175" text-anchor="middle" fill="#64748B" font-family="'SF Mono', monospace" font-size="10">MCP</text>
 
   <!-- Column 3: Headless MCP -->
-  <rect x="722" y="28" width="290" height="254" rx="16" fill="#131B2E" stroke="#1E4638" stroke-width="1.2"/>
-  <text x="742" y="58" fill="#4ADE80" font-family="'SF Mono', 'JetBrains Mono', monospace" font-size="11" font-weight="600">03 · HEADLESS RUNTIME</text>
-  <text x="742" y="82" fill="#F8FAFC" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif" font-size="16" font-weight="700">sessfork-browser MCP</text>
-  <text x="742" y="102" fill="#94A3B8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">@playwright/mcp --headless --storage-state</text>
+  <rect x="742" y="28" width="270" height="254" rx="16" fill="#131B2E" stroke="#1E4638" stroke-width="1.2"/>
+  <text x="762" y="58" fill="#4ADE80" font-family="'SF Mono', 'JetBrains Mono', monospace" font-size="11" font-weight="600">03 · HEADLESS RUNTIME</text>
+  <text x="762" y="82" fill="#F8FAFC" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif" font-size="16" font-weight="700">sessfork-browser MCP</text>
+  <text x="762" y="102" fill="#94A3B8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11">@playwright/mcp --storage-state</text>
 
-  <rect x="742" y="122" width="250" height="44" rx="9" fill="#0B0F19" stroke="#24314A" stroke-width="1"/>
-  <text x="758" y="149" fill="#E2E8F0" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="600">Google Antigravity</text>
-  <rect x="742" y="174" width="250" height="44" rx="9" fill="#0B0F19" stroke="#24314A" stroke-width="1"/>
-  <text x="758" y="201" fill="#E2E8F0" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="600">Claude Code</text>
-  <rect x="742" y="226" width="250" height="40" rx="9" fill="#0B0F19" stroke="#24314A" stroke-width="1"/>
-  <text x="758" y="251" fill="#E2E8F0" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="600">Cursor</text>
+  <rect x="762" y="122" width="230" height="44" rx="9" fill="#0B0F19" stroke="#24314A" stroke-width="1"/>
+  <text x="778" y="149" fill="#E2E8F0" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="600">Google Antigravity</text>
+  <rect x="762" y="174" width="230" height="44" rx="9" fill="#0B0F19" stroke="#24314A" stroke-width="1"/>
+  <text x="778" y="201" fill="#E2E8F0" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="600">Claude Code</text>
+  <rect x="762" y="226" width="230" height="40" rx="9" fill="#0B0F19" stroke="#24314A" stroke-width="1"/>
+  <text x="778" y="251" fill="#E2E8F0" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="600">Cursor</text>
 </svg>
