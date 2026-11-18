@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import pwd
+import re
 import shutil
 import sqlite3
 import sys
@@ -85,7 +87,10 @@ def resolve_cookie_db(
 ) -> Path:
     """Locate the active Chromium Cookies SQLite database without locking it."""
     if db_path is not None:
-        expanded = db_path.expanduser().resolve()
+        raw_expanded = db_path.expanduser()
+        if raw_expanded.is_symlink():
+            raise BrowserProfileError(f"Refusing to read symlinked Cookie DB: {raw_expanded}")
+        expanded = raw_expanded.resolve()
         if not expanded.is_file():
             raise BrowserProfileError(f"Cookie DB file not found: {expanded}")
         return expanded
@@ -99,7 +104,7 @@ def resolve_cookie_db(
     if profile:
         for base in base_dirs:
             for cand in _candidate_cookie_files(base / profile):
-                if cand.is_file():
+                if cand.is_file() and not cand.is_symlink():
                     return cand
         raise BrowserProfileError(
             f"Profile '{profile}' Cookies database not found under {base_dirs[0]}"
@@ -112,7 +117,7 @@ def resolve_cookie_db(
             if not pdir.is_dir():
                 continue
             for cand in _candidate_cookie_files(pdir):
-                if cand.is_file():
+                if cand.is_file() and not cand.is_symlink():
                     found.append(cand)
 
     if not found:
@@ -166,15 +171,54 @@ def resolve_localstorage_dir(
     return candidates[0]
 
 
+_VALID_HOSTNAME_RE = re.compile(
+    r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
+)
+_UNSAFE_PUBLIC_SUFFIXES = frozenset(
+    {
+        # Multi-label country/registry eTLDs
+        "co.uk", "org.uk", "ac.uk", "gov.uk",
+        "com.cn", "net.cn", "org.cn", "gov.cn",
+        "com.au", "net.au", "org.au",
+        "co.jp", "ne.jp", "or.jp",
+        "co.kr", "com.br", "com.hk", "com.tw", "com.sg", "co.in",
+        # Multi-tenant shared hosting public suffixes
+        "github.io", "gitlab.io", "vercel.app", "netlify.app",
+        "pages.dev", "workers.dev", "web.app", "firebaseapp.com",
+        "herokuapp.com", "onrender.com", "fly.dev", "railway.app",
+    }
+)
+
+
 def normalize_domain_filter(raw: str) -> str:
-    """Normalize URL or domain input (e.g., 'https://gist.github.com/foo' -> 'gist.github.com')."""
+    """Normalize and validate a URL or domain input (e.g., 'https://gist.github.com/foo' -> 'gist.github.com')."""
     text = raw.strip()
+    if not text:
+        return ""
     if "://" in text:
         parsed = urlparse(text)
-        host = parsed.hostname or text
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise BrowserProfileError(f"Invalid URL or domain filter: {raw!r}")
+        host = parsed.hostname.lstrip(".").lower()
     else:
-        host = text.split("/")[0].split(":")[0]
-    return host.lstrip(".").lower()
+        if any(ch in text for ch in " \t\r\n;|&$`'\"\\<>"):
+            raise BrowserProfileError(f"Invalid characters in domain filter: {raw!r}")
+        host = text.split("/")[0].split(":")[0].lstrip(".").lower()
+
+    if host == "localhost":
+        return host
+    try:
+        ipaddress.ip_address(host)
+        return host
+    except ValueError:
+        pass
+
+    if not _VALID_HOSTNAME_RE.match(host) or host in _UNSAFE_PUBLIC_SUFFIXES:
+        raise BrowserProfileError(
+            f"Refusing unsafe or invalid domain filter {raw!r}; "
+            "specify a concrete domain (e.g. 'github.com' or 'user.github.io')."
+        )
+    return host
 
 
 def _domain_matches(host_key: str, filters: Sequence[str]) -> bool:
@@ -214,6 +258,8 @@ def extract_cookies(
 ) -> tuple[List[CookieDict], Path]:
     """Copy Chromium SQLite DB (+ WAL/SHM) to an isolated 0700 temp dir and extract Playwright cookies."""
     source_db = resolve_cookie_db(browser=browser, profile=profile, db_path=db_path)
+    if source_db.is_symlink():
+        raise BrowserProfileError(f"Refusing to read symlinked Cookie DB: {source_db}")
     normalized_domains = [normalize_domain_filter(d) for d in domains if d.strip()]
     now = time.time()
 
@@ -225,7 +271,7 @@ def extract_cookies(
 
         for suffix in ("-wal", "-shm"):
             sidecar = Path(str(source_db) + suffix)
-            if sidecar.is_file():
+            if sidecar.is_file() and not sidecar.is_symlink():
                 shutil.copy2(sidecar, Path(str(tmp_db) + suffix))
 
         conn = sqlite3.connect(str(tmp_db))

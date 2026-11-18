@@ -15,10 +15,13 @@ Please include the affected version or commit, your OS, and steps to reproduce. 
 
 **What `sessfork` is designed to protect against**
 
-- Accidentally exporting credentials for sites you did not ask for (domain allowlist by default).
-- Other local OS users reading forked state (`~/.sessfork/` is `0700`, files are `0600`, written atomically).
+- Accidentally exporting credentials for sites you did not ask for (domain allowlist by default, rejecting bare TLDs and shared public suffixes like `github.io` or `co.uk`).
+- Other local OS users reading forked state or keys (`~/.sessfork/` and `playwright-output/` are `0700`; `state.json`, `keys.json`, and newly created MCP configs are `0600`, written atomically).
+- Leaking derived AES keys in process listings (`crypto.py` uses in-memory `CommonCrypto` on macOS and OpenSSL `libcrypto` via `ctypes` on Linux — no subprocess key arguments).
+- Unpinned floating supply-chain updates on MCP startup (`sessfork-browser` pins a tested `@playwright/mcp` version rather than `@latest`).
+- Symlinked browser database files redirecting snapshot copies (`chrome.py` and `localstorage.py` refuse/skip symlinks).
 - Credentials leaking into terminal output or AI agent context (`--status` / `--json` are redacted).
-- Your foreground browser being driven by an agent (forked state is used by a separate headless browser).
+- Your foreground browser being driven by an agent (forked state is used by a separate `--isolated` headless browser).
 
 **What `sessfork` does NOT protect against**
 

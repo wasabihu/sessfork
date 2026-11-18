@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import struct
 import tempfile
 import unittest
@@ -198,6 +199,20 @@ class LocalStorageTestSuite(unittest.TestCase):
             _, _, rem_o, left_o = clear_state(["linear.app"], state_path=state_file)
             self.assertEqual(rem_o, 1)
             self.assertEqual(left_o, 0)
+
+    def test_symlinked_leveldb_files_are_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            secret_sst = tmp_path / "outside.ldb"
+            secret_sst.write_bytes(
+                _build_sstable([(b"_https://evil.example\x00\x01token", 1, K_TYPE_VALUE, b"\x01leaked")])
+            )
+            ldb_dir = tmp_path / "leveldb"
+            ldb_dir.mkdir()
+            os.symlink(secret_sst, ldb_dir / "000001.ldb")
+
+            origins = extract_local_storage(ldb_dir, ["evil.example"])
+            self.assertEqual(origins, [])
 
 
 if __name__ == "__main__":

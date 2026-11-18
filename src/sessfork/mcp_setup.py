@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import stat
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -13,6 +16,7 @@ from sessfork.state import DEFAULT_STATE_PATH, load_storage_state, save_storage_
 
 MCP_SERVER_NAME = "sessfork-browser"
 PLAYWRIGHT_OUTPUT_DIRNAME = "playwright-output"
+DEFAULT_PLAYWRIGHT_MCP_PKG = "@playwright/mcp@0.0.85"
 
 
 def resolve_npx_command() -> str:
@@ -73,11 +77,12 @@ def build_playwright_mcp_entry(
     resolved_state = state_path.expanduser().resolve()
     output_dir = resolved_state.parent / PLAYWRIGHT_OUTPUT_DIRNAME
     cmd = npx_cmd or resolve_npx_command()
+    mcp_pkg = os.environ.get("SESSFORK_PLAYWRIGHT_MCP_PKG", DEFAULT_PLAYWRIGHT_MCP_PKG).strip() or DEFAULT_PLAYWRIGHT_MCP_PKG
     return {
         "command": cmd,
         "args": [
             "-y",
-            "@playwright/mcp@latest",
+            mcp_pkg,
             "--headless",
             "--isolated",
             "--caps=storage",
@@ -152,6 +157,11 @@ def ensure_mcp_configured(
         save_storage_state_atomic(load_storage_state(resolved_state), resolved_state)
     output_dir = resolved_state.parent / PLAYWRIGHT_OUTPUT_DIRNAME
     output_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for secure_dir in (resolved_state.parent, output_dir):
+        try:
+            os.chmod(secure_dir, 0o700)
+        except OSError:
+            pass
 
     entry = build_playwright_mcp_entry(state_path=resolved_state, npx_cmd=npx_cmd)
     updated_files: List[Path] = []
@@ -173,7 +183,9 @@ def ensure_mcp_configured(
 def _upsert_mcp_json(cfg_path: Path, server_name: str, entry: Dict[str, Any]) -> bool:
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
     doc: Dict[str, Any] = {}
+    file_mode = 0o600
     if cfg_path.is_file():
+        file_mode = stat.S_IMODE(cfg_path.stat().st_mode)
         raw = cfg_path.read_text(encoding="utf-8").strip()
         if raw:
             doc = json.loads(raw)
@@ -187,7 +199,17 @@ def _upsert_mcp_json(cfg_path: Path, server_name: str, entry: Dict[str, Any]) ->
         return False
 
     servers[server_name] = entry
-    cfg_path.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    payload = json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
+    fd, tmp_name = tempfile.mkstemp(prefix=".mcp_", suffix=".tmp", dir=str(cfg_path.parent))
+    try:
+        os.fchmod(fd, file_mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+        os.replace(tmp_name, cfg_path)
+    except BaseException:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
+        raise
     return True
 
 

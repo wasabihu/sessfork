@@ -14,7 +14,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from sessfork.chrome import CHROMIUM_EPOCH_DELTA_SECONDS, extract_cookies, normalize_domain_filter
+from sessfork.chrome import (
+    CHROMIUM_EPOCH_DELTA_SECONDS,
+    BrowserProfileError,
+    extract_cookies,
+    normalize_domain_filter,
+)
 from sessfork.cli import main
 from sessfork.crypto import (
     MACOS_ITERATIONS,
@@ -24,7 +29,12 @@ from sessfork.crypto import (
     derive_aes_key,
     get_safe_storage_key,
 )
-from sessfork.mcp_setup import MCP_SERVER_NAME, ensure_mcp_configured, install_agent_skills
+from sessfork.mcp_setup import (
+    DEFAULT_PLAYWRIGHT_MCP_PKG,
+    MCP_SERVER_NAME,
+    ensure_mcp_configured,
+    install_agent_skills,
+)
 from sessfork.state import clear_cookies, load_storage_state, summarize_state, upsert_cookies
 
 
@@ -292,6 +302,39 @@ class SessforkTestSuite(unittest.TestCase):
     def test_normalize_domain_filter(self) -> None:
         self.assertEqual(normalize_domain_filter("https://gist.github.com/demo"), "gist.github.com")
         self.assertEqual(normalize_domain_filter(".x.com"), "x.com")
+        self.assertEqual(normalize_domain_filter("wasabihu.github.io"), "wasabihu.github.io")
+        self.assertEqual(normalize_domain_filter("localhost:3000"), "localhost")
+        self.assertEqual(normalize_domain_filter("127.0.0.1:8080"), "127.0.0.1")
+
+    def test_security_hardening_guards(self) -> None:
+        for bad in ("com", "co.uk", "github.io", "vercel.app", "github.com;id", "foo bar", "ftp://github.com"):
+            with self.assertRaises(BrowserProfileError, msg=f"Expected rejection for {bad!r}"):
+                normalize_domain_filter(bad)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox_home = Path(tmp)
+            state_file = sandbox_home / ".sessfork" / "state.json"
+            ensure_mcp_configured(
+                ["claude"],
+                state_path=state_file,
+                home=sandbox_home,
+                npx_cmd="/opt/homebrew/bin/npx",
+            )
+            claude_cfg = sandbox_home / ".claude.json"
+            self.assertEqual(stat.S_IMODE(os.stat(claude_cfg).st_mode), 0o600)
+            out_dir = sandbox_home / ".sessfork" / "playwright-output"
+            self.assertEqual(stat.S_IMODE(os.stat(out_dir).st_mode), 0o700)
+            parsed = json.loads(claude_cfg.read_text(encoding="utf-8"))
+            args = parsed["mcpServers"][MCP_SERVER_NAME]["args"]
+            self.assertIn(DEFAULT_PLAYWRIGHT_MCP_PKG, args)
+            self.assertNotIn("@playwright/mcp@latest", args)
+
+            real_db = sandbox_home / "CookiesReal"
+            real_db.write_bytes(b"")
+            sym_db = sandbox_home / "CookiesLink"
+            os.symlink(real_db, sym_db)
+            with self.assertRaises(BrowserProfileError):
+                extract_cookies(["github.com"], db_path=sym_db, aes_key=self.aes_key)
 
     def test_auto_target_detection_and_one_shot_skill_install(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

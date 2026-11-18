@@ -332,7 +332,7 @@ def extract_local_storage(
 
         copied_files: List[Path] = []
         for entry in sorted(leveldb_dir.iterdir()):
-            if entry.is_file() and entry.suffix.lower() in (".ldb", ".sst", ".log"):
+            if entry.is_file() and not entry.is_symlink() and entry.suffix.lower() in (".ldb", ".sst", ".log"):
                 dest = tmp_dir / entry.name
                 try:
                     shutil.copy2(entry, dest)

@@ -1,7 +1,8 @@
 """Zero-dependency Chromium cookie decryption for macOS and Linux.
 
-Uses macOS built-in CommonCrypto (`/usr/lib/libSystem.B.dylib`) via `ctypes` or
-Linux `openssl` CLI so `sessfork` requires zero third-party pip packages.
+Uses macOS built-in CommonCrypto (`/usr/lib/libSystem.B.dylib`) or Linux OpenSSL
+(`libcrypto`) via `ctypes` in memory so `sessfork` requires zero third-party pip
+packages and never exposes derived keys in subprocess command lines.
 """
 
 from __future__ import annotations
@@ -282,10 +283,11 @@ def _read_linux_secret_tool(app_name: str, service: str) -> Optional[bytes]:
 
 
 # ---------------------------------------------------------------------------
-# AES-128-CBC (macOS CommonCrypto via ctypes / Linux openssl CLI)
+# In-memory AES-128-CBC via ctypes (macOS CommonCrypto / Linux libcrypto)
 # ---------------------------------------------------------------------------
 
 _cc_lib: Optional[ctypes.CDLL] = None
+_libcrypto_lib: Optional[ctypes.CDLL] = None
 
 
 def _get_macos_common_crypto() -> ctypes.CDLL:
@@ -332,28 +334,88 @@ def _macos_cc_crypt(op: int, data: bytes, key: bytes, iv: bytes) -> bytes:
     return out_buf.raw[: moved.value]
 
 
-def _openssl_cli_crypt(encrypt: bool, data: bytes, key: bytes, iv: bytes) -> bytes:
-    flag = "-e" if encrypt else "-d"
-    proc = subprocess.run(
-        [
-            "openssl",
-            "enc",
-            "-aes-128-cbc",
-            flag,
-            "-nopad",
-            "-K",
-            key.hex(),
-            "-iv",
-            iv.hex(),
-        ],
-        input=data,
-        capture_output=True,
-        timeout=5,
-        check=False,
-    )
-    if proc.returncode != 0:
-        raise CryptoError(f"openssl AES-128-CBC failed: {proc.stderr.decode('utf-8', 'replace').strip()}")
-    return proc.stdout
+def _get_linux_libcrypto() -> ctypes.CDLL:
+    global _libcrypto_lib
+    if _libcrypto_lib is not None:
+        return _libcrypto_lib
+
+    candidates = [
+        ctypes.util.find_library("crypto"),
+        "libcrypto.so.3",
+        "libcrypto.so.1.1",
+        "libcrypto.so",
+    ]
+    lib: Optional[ctypes.CDLL] = None
+    for cand in candidates:
+        if not cand:
+            continue
+        try:
+            lib = ctypes.CDLL(cand)
+            break
+        except OSError:
+            continue
+
+    if lib is None:
+        raise CryptoError("Could not load OpenSSL libcrypto shared library")
+
+    lib.EVP_CIPHER_CTX_new.argtypes = []
+    lib.EVP_CIPHER_CTX_new.restype = ctypes.c_void_p
+    lib.EVP_CIPHER_CTX_free.argtypes = [ctypes.c_void_p]
+    lib.EVP_CIPHER_CTX_free.restype = None
+    lib.EVP_aes_128_cbc.argtypes = []
+    lib.EVP_aes_128_cbc.restype = ctypes.c_void_p
+    lib.EVP_CipherInit_ex.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_int,
+    ]
+    lib.EVP_CipherInit_ex.restype = ctypes.c_int
+    lib.EVP_CIPHER_CTX_set_padding.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    lib.EVP_CIPHER_CTX_set_padding.restype = ctypes.c_int
+    lib.EVP_CipherUpdate.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.c_void_p,
+        ctypes.c_int,
+    ]
+    lib.EVP_CipherUpdate.restype = ctypes.c_int
+    lib.EVP_CipherFinal_ex.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_int),
+    ]
+    lib.EVP_CipherFinal_ex.restype = ctypes.c_int
+
+    _libcrypto_lib = lib
+    return _libcrypto_lib
+
+
+def _linux_libcrypto_crypt(encrypt: bool, data: bytes, key: bytes, iv: bytes) -> bytes:
+    lib = _get_linux_libcrypto()
+    ctx = lib.EVP_CIPHER_CTX_new()
+    if not ctx:
+        raise CryptoError("OpenSSL EVP_CIPHER_CTX_new failed")
+    try:
+        if lib.EVP_CipherInit_ex(ctx, lib.EVP_aes_128_cbc(), None, key, iv, 1 if encrypt else 0) != 1:
+            raise CryptoError("OpenSSL EVP_CipherInit_ex failed")
+        if lib.EVP_CIPHER_CTX_set_padding(ctx, 0) != 1:
+            raise CryptoError("OpenSSL EVP_CIPHER_CTX_set_padding failed")
+
+        out_buf = ctypes.create_string_buffer(len(data) + AES_BLOCK_SIZE)
+        out_len1 = ctypes.c_int(0)
+        out_len2 = ctypes.c_int(0)
+        if lib.EVP_CipherUpdate(ctx, out_buf, ctypes.byref(out_len1), data, len(data)) != 1:
+            raise CryptoError("OpenSSL EVP_CipherUpdate failed")
+        final_ptr = ctypes.c_void_p(ctypes.addressof(out_buf) + out_len1.value)
+        if lib.EVP_CipherFinal_ex(ctx, final_ptr, ctypes.byref(out_len2)) != 1:
+            raise CryptoError("OpenSSL EVP_CipherFinal_ex failed")
+        return out_buf.raw[: out_len1.value + out_len2.value]
+    finally:
+        lib.EVP_CIPHER_CTX_free(ctx)
 
 
 def aes_128_cbc_decrypt_raw(ciphertext: bytes, key: bytes, iv: bytes = CHROMIUM_CBC_IV) -> bytes:
@@ -365,7 +427,7 @@ def aes_128_cbc_decrypt_raw(ciphertext: bytes, key: bytes, iv: bytes = CHROMIUM_
 
     if sys.platform == "darwin":
         return _macos_cc_crypt(1, ciphertext, key, iv)
-    return _openssl_cli_crypt(False, ciphertext, key, iv)
+    return _linux_libcrypto_crypt(False, ciphertext, key, iv)
 
 
 def aes_128_cbc_encrypt_pkcs7(plaintext: bytes, key: bytes, iv: bytes = CHROMIUM_CBC_IV) -> bytes:
@@ -374,7 +436,7 @@ def aes_128_cbc_encrypt_pkcs7(plaintext: bytes, key: bytes, iv: bytes = CHROMIUM
     padded = plaintext + bytes([pad_len]) * pad_len
     if sys.platform == "darwin":
         return _macos_cc_crypt(0, padded, key, iv)
-    return _openssl_cli_crypt(True, padded, key, iv)
+    return _linux_libcrypto_crypt(True, padded, key, iv)
 
 
 def strip_pkcs7_padding(data: bytes) -> bytes:

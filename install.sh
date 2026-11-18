@@ -3,7 +3,7 @@ set -euo pipefail
 
 REPO_URL="https://github.com/wasabihu/sessfork"
 # Pinned release by default; override with SESSFORK_REF=main (or another tag) for bleeding edge
-SESSFORK_REF="${SESSFORK_REF:-v0.1.0}"
+SESSFORK_REF="${SESSFORK_REF:-v0.1.1}"
 TARBALL_URL="${REPO_URL}/archive/${SESSFORK_REF}.tar.gz"
 RUNTIME_DIR="${HOME}/.sessfork/runtime"
 BIN_DIR="${HOME}/.local/bin"
@@ -41,8 +41,9 @@ if [ -z "${SESSFORK_BIN}" ]; then
     exit 1
   fi
   echo "-> Installing zero-dependency standalone runtime (${SESSFORK_REF}) into ${RUNTIME_DIR}..."
-  mkdir -p "${RUNTIME_DIR}" "${BIN_DIR}"
-  TMP_TAR="$(mktemp -t sessfork_src.XXXXXX.tar.gz)"
+  mkdir -p "${HOME}/.sessfork" "${RUNTIME_DIR}" "${BIN_DIR}"
+  chmod 700 "${HOME}/.sessfork"
+  TMP_TAR="$(mktemp "${TMPDIR:-/tmp}/sessfork_src.XXXXXX")"
   trap 'rm -f "${TMP_TAR}"' EXIT
   curl -fsSL "${TARBALL_URL}" -o "${TMP_TAR}"
   rm -rf "${RUNTIME_DIR:?}"/*

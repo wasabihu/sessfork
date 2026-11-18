@@ -1235,20 +1235,43 @@
         simSafe: true
       };
 
+      const UNSAFE_PUBLIC_SUFFIXES = new Set([
+        "co.uk", "org.uk", "ac.uk", "gov.uk",
+        "com.cn", "net.cn", "org.cn", "gov.cn",
+        "com.au", "net.au", "org.au",
+        "co.jp", "ne.jp", "or.jp",
+        "co.kr", "com.br", "com.hk", "com.tw", "com.sg", "co.in",
+        "github.io", "gitlab.io", "vercel.app", "netlify.app",
+        "pages.dev", "workers.dev", "web.app", "firebaseapp.com",
+        "herokuapp.com", "onrender.com", "fly.dev", "railway.app"
+      ]);
+      const VALID_HOSTNAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+      const VALID_IPV4_RE = /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/;
+
       function normalizeDomain(raw) {
-        let text = raw.trim();
-        if (!text) return "";
+        const text = raw.trim();
+        if (!text || /[ \t\r\n;|&$`'"\\<>]/.test(text)) return "";
+        let hostWithPort = "";
         if (text.includes("://")) {
           try {
             const u = new URL(text);
-            text = u.host || u.hostname || text;
+            if (u.protocol !== "http:" && u.protocol !== "https:") return "";
+            hostWithPort = u.host || "";
           } catch (_) {
-            text = text.split("/")[0];
+            return "";
           }
         } else {
-          text = text.split("/")[0];
+          hostWithPort = text.split("/")[0];
         }
-        return text.replace(/^\.+/, "").toLowerCase();
+        hostWithPort = hostWithPort.replace(/^\.+/, "").toLowerCase();
+        if (!hostWithPort) return "";
+        const hostOnly = hostWithPort.split(":")[0];
+        if (!hostOnly) return "";
+        const isLocalOrIp = hostOnly === "localhost" || VALID_IPV4_RE.test(hostOnly);
+        if (!isLocalOrIp && (!VALID_HOSTNAME_RE.test(hostOnly) || UNSAFE_PUBLIC_SUFFIXES.has(hostOnly))) {
+          return "";
+        }
+        return hostWithPort;
       }
 
       async function copyText(text, btn, labelEl) {
