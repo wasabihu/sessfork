@@ -26,6 +26,8 @@ from sessfork.mcp_setup import (
 from sessfork.state import (
     DEFAULT_STATE_PATH,
     clear_state,
+    hot_reload_state_path,
+    list_state_domains,
     summarize_state,
     upsert_session_state,
 )
@@ -42,6 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Examples:\n"
             "  sessfork github.com linear.app  # Fork Cookies + LocalStorage & auto-wire MCP\n"
             "  sessfork app.spa.io --no-cookies # Fork pure JWT/SPA LocalStorage without Keychain prompt\n"
+            "  sessfork --refresh              # Re-fork all domains already saved in state.json\n"
             "  sessfork --setup                # One-click wire MCP config + install Agent SKILL.md\n"
             "  sessfork --status               # Show forked Cookie domains & LocalStorage origins\n"
             "  sessfork --clear linear.app     # Remove forked Cookies & LocalStorage for linear.app"
@@ -106,6 +109,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--replace",
         action="store_true",
         help="Replace existing state.json instead of incrementally merging domains",
+    )
+    parser.add_argument(
+        "-r",
+        "--refresh",
+        action="store_true",
+        help="Re-fork all domains currently saved in state.json (can be combined with new domains)",
     )
     parser.add_argument(
         "--all-domains",
@@ -204,6 +213,30 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("sessfork error: cannot pass both --no-cookies and --no-local-storage", file=sys.stderr)
         return 1
 
+    has_fork_request = False
+    domains: List[str] = []
+    if args.all_domains:
+        has_fork_request = True
+        domains = []
+    elif args.refresh:
+        saved_domains = list_state_domains(state_path)
+        combined: List[str] = []
+        for dom in saved_domains + list(args.domains):
+            if dom not in combined:
+                combined.append(dom)
+        if not combined:
+            msg = f"No saved domains found in {state_path} to refresh (run 'sessfork <domain>' first)."
+            if args.as_json:
+                print(json.dumps({"ok": False, "error": msg}, ensure_ascii=False))
+            else:
+                print(f"sessfork error: {msg}", file=sys.stderr)
+            return 1
+        has_fork_request = True
+        domains = combined
+    elif args.domains:
+        has_fork_request = True
+        domains = list(args.domains)
+
     did_work = False
     updated_mcp: List[Path] = []
     installed_skills: List[Path] = []
@@ -214,8 +247,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             installed_skills = install_agent_skills()
             did_work = True
 
-        if args.domains or args.all_domains:
-            domains = [] if args.all_domains else args.domains
+        if has_fork_request:
             cookies, origins, profile_label = extract_browser_session(
                 domains=domains,
                 browser=args.browser,
@@ -254,17 +286,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"sessfork error: {exc}", file=sys.stderr)
         return 1
 
-    if args.domains or args.all_domains:
-
+    if has_fork_request:
         result = {
             "ok": True,
             "browser": args.browser,
             "source_profile": profile_label,
+            "refreshed_domains": domains,
             "forked_cookies": up_cookies,
             "total_cached_cookies": tot_cookies,
             "forked_local_storage_keys": up_ls_keys,
             "total_cached_origins": tot_origins,
             "state_file": str(saved_path),
+            "hot_reload_state_file": str(hot_reload_state_path(saved_path)),
             "mcp_server": MCP_SERVER_NAME,
             "updated_mcp_configs": [str(p) for p in updated_mcp],
             "installed_skills": [str(p) for p in installed_skills],
@@ -280,7 +313,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if up_cookies == 0 and up_ls_keys == 0:
                 print(
                     "Note: 0 matching active cookies or LocalStorage keys found. "
-                    f"Check that you are signed in to {', '.join(args.domains)} in {args.browser}.",
+                    f"Check that you are signed in to {', '.join(domains)} in {args.browser}.",
                     file=sys.stderr,
                 )
             for cfg in updated_mcp:
@@ -314,6 +347,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "Quick Start:\n"
         "  sessfork github.com              # Fork Chrome login & auto-wire MCP + Skill\n"
         "  sessfork app.spa.io --no-cookies # Fork LocalStorage JWT only (no Keychain prompt)\n"
+        "  sessfork --refresh               # Re-fork all domains currently saved in state.json\n"
         "  sessfork --setup                 # One-click wire MCP config & Agent SKILL.md\n"
         "  sessfork --status                # Inspect cached domains & origins\n"
     )
@@ -346,6 +380,8 @@ def _emit_status(info: dict, as_json: bool) -> None:
         f"({info['total_cookies']} cookies, {info['total_local_storage_keys']} LocalStorage keys "
         f"across {info['total_origins']} origin(s))"
     )
+    if info.get("hot_reload_path"):
+        print(f"Hot-reload path: {info['hot_reload_path']}")
     if info["domains"]:
         print("Cookies:")
         for dom, counts in info["domains"].items():

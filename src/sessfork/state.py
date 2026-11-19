@@ -10,10 +10,23 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 
-from sessfork.chrome import CookieDict, normalize_domain_filter, real_user_home
+from sessfork.chrome import (
+    BrowserProfileError,
+    CookieDict,
+    normalize_domain_filter,
+    real_user_home,
+)
 from sessfork.localstorage import OriginEntry
 
 DEFAULT_STATE_PATH = real_user_home() / ".sessfork" / "state.json"
+PLAYWRIGHT_OUTPUT_DIRNAME = "playwright-output"
+HOT_RELOAD_STATE_FILENAME = ".sessfork-state.json"
+
+
+def hot_reload_state_path(state_path: Path = DEFAULT_STATE_PATH) -> Path:
+    """Return mirror path inside Playwright MCP `--output-dir` for zero-restart hot reload."""
+    resolved = state_path.expanduser().resolve()
+    return resolved.parent / PLAYWRIGHT_OUTPUT_DIRNAME / HOT_RELOAD_STATE_FILENAME
 
 
 def _cookie_identity(cookie: CookieDict) -> Tuple[str, str, str]:
@@ -48,16 +61,13 @@ def load_storage_state(state_path: Path = DEFAULT_STATE_PATH) -> Dict[str, Any]:
     return {"cookies": [], "origins": []}
 
 
-def save_storage_state_atomic(state: Dict[str, Any], state_path: Path = DEFAULT_STATE_PATH) -> Path:
-    """Atomically write storageState JSON with 0700 parent dir and 0600 file mode."""
-    target = state_path.expanduser().resolve()
+def _write_json_0600(payload: str, target: Path) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(target.parent, 0o700)
 
     fd, tmp_name = tempfile.mkstemp(prefix=".state_", suffix=".tmp", dir=str(target.parent))
     try:
         os.fchmod(fd, 0o600)
-        payload = json.dumps(state, indent=2, ensure_ascii=False) + "\n"
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(payload)
         os.replace(tmp_name, target)
@@ -66,6 +76,17 @@ def save_storage_state_atomic(state: Dict[str, Any], state_path: Path = DEFAULT_
             os.unlink(tmp_name)
         raise
     return target
+
+
+def save_storage_state_atomic(state: Dict[str, Any], state_path: Path = DEFAULT_STATE_PATH) -> Path:
+    """Atomically write storageState JSON (and its Playwright --output-dir mirror) with 0600 mode."""
+    target = state_path.expanduser().resolve()
+    payload = json.dumps(state, indent=2, ensure_ascii=False) + "\n"
+    saved = _write_json_0600(payload, target)
+    mirror = hot_reload_state_path(saved)
+    if mirror != saved:
+        _write_json_0600(payload, mirror)
+    return saved
 
 
 def upsert_session_state(
@@ -210,13 +231,54 @@ def clear_cookies(
     return rem_c, left_c
 
 
+def list_state_domains(state_path: Path = DEFAULT_STATE_PATH) -> List[str]:
+    """Return deduplicated top-level domains currently stored in `state.json`."""
+    state = load_storage_state(state_path)
+    candidates: set[str] = set()
+
+    for item in state.get("cookies", []):
+        if not isinstance(item, dict):
+            continue
+        raw_dom = str(item.get("domain", "")).strip()
+        if not raw_dom:
+            continue
+        try:
+            norm = normalize_domain_filter(raw_dom)
+        except BrowserProfileError:
+            continue
+        if norm:
+            candidates.add(norm)
+
+    for entry in state.get("origins", []):
+        if not isinstance(entry, dict):
+            continue
+        raw_orig = str(entry.get("origin", "")).strip()
+        if not raw_orig:
+            continue
+        try:
+            norm = normalize_domain_filter(raw_orig)
+        except BrowserProfileError:
+            continue
+        if norm:
+            candidates.add(norm)
+
+    collapsed: List[str] = []
+    for dom in sorted(candidates, key=lambda d: (d.count("."), len(d), d)):
+        if any(dom == parent or dom.endswith("." + parent) for parent in collapsed):
+            continue
+        collapsed.append(dom)
+    return sorted(collapsed)
+
+
 def summarize_state(state_path: Path = DEFAULT_STATE_PATH) -> Dict[str, Any]:
     """Return safe metadata summary (never exposes raw cookie or LocalStorage values)."""
     path = state_path.expanduser()
+    hot_path = str(hot_reload_state_path(path))
     if not path.is_file():
         return {
             "exists": False,
             "path": str(path),
+            "hot_reload_path": hot_path,
             "total_cookies": 0,
             "total_origins": 0,
             "total_local_storage_keys": 0,
@@ -253,6 +315,7 @@ def summarize_state(state_path: Path = DEFAULT_STATE_PATH) -> Dict[str, Any]:
     return {
         "exists": True,
         "path": str(path.resolve()),
+        "hot_reload_path": hot_path,
         "total_cookies": len(state["cookies"]),
         "total_origins": len(origin_stats),
         "total_local_storage_keys": total_ls_keys,

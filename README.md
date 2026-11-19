@@ -139,6 +139,7 @@ sessfork console.cloud.google.com --profile "Profile 1"
 | Target specific profile folder | `sessfork github.com --profile "Profile 1"` |
 | Wire Antigravity + Claude Code + Cursor explicitly | `sessfork --setup --target all` |
 | Inspect cached domains & origins (redacted, safe) | `sessfork --status` |
+| Re-fork all domains currently saved in `state.json` | `sessfork --refresh` |
 | Opt-in: cache the derived key to skip future Keychain prompts (see FAQ) | `sessfork github.com --cache-key` |
 | Force re-read the key from Keychain (e.g. after Chrome rotated it) | `sessfork github.com --refresh-key` |
 | Delete any cached derived keys | `sessfork --purge-keys` |
@@ -177,6 +178,13 @@ Chromium batches `localStorage` flushes from memory to LevelDB on disk roughly e
 <summary><strong>How do I revoke or clean up forked session data?</strong></summary>
 
 Run `sessfork --clear <domain>` to purge a single site, or `sessfork --clear` (or `rm -rf ~/.sessfork`) to wipe all cached session state.
+
+</details>
+
+<details>
+<summary><strong>Do I need to restart my AI editor every time I fork a new domain or refresh cookies?</strong></summary>
+
+No — only reload MCP once right after initial installation. Whenever you run `sessfork <domain>` or `sessfork --refresh`, `sessfork` updates an atomic `0600` mirror at `~/.sessfork/playwright-output/.sessfork-state.json` inside Playwright MCP's `--output-dir` sandbox, and your AI agent hot-reloads it straight into the running `sessfork-browser` via `browser_set_storage_state` with zero restarts.
 
 </details>
 

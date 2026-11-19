@@ -21,6 +21,7 @@ Run `sessfork` with only the domain(s) needed for the current task (by default, 
 
 ```bash
 sessfork <domain1> [domain2 ...]
+sessfork --refresh                        # Re-fork all domains currently saved in state.json
 ```
 
 Examples:
@@ -28,6 +29,7 @@ Examples:
 sessfork github.com linear.app
 sessfork app.supabase.com --no-cookies    # Pure JWT/SPA LocalStorage only (skips Keychain)
 sessfork x.com --browser brave
+sessfork --refresh                        # Refresh all existing saved domains in one pass
 ```
 
 If `sessfork` is not yet on global `$PATH`, run via `uvx` or from a local source checkout:
@@ -36,15 +38,21 @@ uvx --from git+https://github.com/wasabihu/sessfork.git sessfork <domain>
 # Or from a local repo root: PYTHONPATH=src python3 -m sessfork <domain>
 ```
 
-### 2. Operate Silently in Background Headless Browser
+### 2. Zero-Restart Hot Reload into Running `sessfork-browser`
+
+After running `sessfork <domain>` or `sessfork --refresh` inside an already-running session, hot-reload the updated auth state straight into `sessfork-browser`'s live memory (~5ms) without asking the user to restart MCP:
+
+1. Call `sessfork-browser`'s `browser_set_storage_state` tool with `filename` set to the `Hot-reload path` reported by `sessfork --status` (i.e. `<real_home>/.sessfork/playwright-output/.sessfork-state.json`). This loads directly from disk inside Playwright MCP's `--output-dir` sandbox without exposing any secret values.
+2. Only ask the user to reload/toggle `sessfork-browser` once if `sessfork-browser` was just added to `mcp_config.json` for the first time (or if an older `sessfork-browser` process started before `--output-dir` was configured returns `outside allowed roots`).
+
+### 3. Operate Silently in Background Headless Browser
 
 Use the `sessfork-browser` MCP tools (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_take_screenshot`) to execute the web workflow in the background.
 
-- Note: Chromium batches `LocalStorage` flushes to disk every ~5 seconds; if the user *just* signed in a second ago and a token is missing, wait 5 seconds and re-run `sessfork <domain>`.
-- If `sessfork-browser` was just added to `mcp_config.json` for the first time, ask the user to reload MCP servers once (or run `/mcp` in CLI).
+- Note: Chromium batches `LocalStorage` flushes to disk every ~5 seconds; if the user *just* signed in a second ago and a token is missing, wait 5 seconds and re-run `sessfork <domain>` + `browser_set_storage_state`.
 
 ## Security Guardrails
 
 1. **Least Privilege**: Always pass explicit `<domain>` names (never pass `--all-domains` unless the user explicitly asks for it).
-2. **Zero Secret Leakage**: NEVER run `cat`, `head`, or `view_file` on `~/.sessfork/state.json` or `~/.sessfork/keys.json`, and NEVER echo raw cookie or LocalStorage token values into chat or logs. Use `sessfork --status` to inspect active counts safely.
+2. **Zero Secret Leakage**: NEVER run `cat`, `head`, or `view_file` on `~/.sessfork/state.json`, `~/.sessfork/playwright-output/.sessfork-state.json`, or `~/.sessfork/keys.json`, and NEVER call `browser_storage_state` or `browser_cookie_list` or echo raw cookie/token values into chat or logs (`browser_set_storage_state` is safe because it only loads from disk and never echoes secrets). Use `sessfork --status` to inspect active counts safely.
 3. **No Silent Key Caching**: Never pass `--cache-key` unless the user explicitly asks for it; it persists the derived cookie key on disk and weakens Keychain protection. If the user wants it removed, run `sessfork --purge-keys`.

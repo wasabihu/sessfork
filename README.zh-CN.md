@@ -135,6 +135,7 @@ sessfork console.cloud.google.com --profile "Profile 1"
 | 指定 Chrome 分身账号目录 | `sessfork github.com --profile "Profile 1"` |
 | 同时为 Antigravity + Claude Code + Cursor 写入配置 | `sessfork --setup --target all` |
 | 安全查看已缓存的域名与键数量（完全脱敏） | `sessfork --status` |
+| 一键重新同步 `state.json` 里已有的全部域名 | `sessfork --refresh` |
 | 可选：缓存派生密钥，以后免钥匙串弹窗（见 FAQ） | `sessfork github.com --cache-key` |
 | 强制重新从钥匙串读取密钥 | `sessfork github.com --refresh-key` |
 | 删除已缓存的派生密钥 | `sessfork --purge-keys` |
@@ -173,6 +174,13 @@ Chromium 默认大约每 5 秒才将内存中的 `localStorage` 变更刷盘到 
 <summary><strong>不用了之后怎么彻底清除缓存的登录凭证？</strong></summary>
 
 执行 `sessfork --clear <域名>` 可按域名精细移除，执行 `sessfork --clear`（或直接 `rm -rf ~/.sessfork`）即可彻底清空全部本地快照。
+
+</details>
+
+<details>
+<summary><strong>每次新分叉域名或刷新 Cookie 后，都需要手动重启 AI 客户端吗？</strong></summary>
+
+不需要——只需在初次安装配置后重载一次 MCP。以后每当运行 `sessfork <域名>` 或 `sessfork --refresh` 时，`sessfork` 会同步原子更新位于 Playwright MCP `--output-dir` 沙箱内的 `0600` 镜像 `~/.sessfork/playwright-output/.sessfork-state.json`，AI 助手会直接调用 `browser_set_storage_state` 将最新登录态毫秒级热加载进运行中的 `sessfork-browser`，无需再关开或重启。
 
 </details>
 

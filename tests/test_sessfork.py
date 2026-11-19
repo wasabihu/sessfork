@@ -35,7 +35,15 @@ from sessfork.mcp_setup import (
     ensure_mcp_configured,
     install_agent_skills,
 )
-from sessfork.state import clear_cookies, load_storage_state, summarize_state, upsert_cookies
+from sessfork.state import (
+    clear_cookies,
+    hot_reload_state_path,
+    list_state_domains,
+    load_storage_state,
+    summarize_state,
+    upsert_cookies,
+    upsert_session_state,
+)
 
 
 def _unix_to_chromium_us(unix_ts: float) -> int:
@@ -472,6 +480,107 @@ class SessforkTestSuite(unittest.TestCase):
                 self.assertEqual(m_heal.call_args_list[1].kwargs["refresh"], True)
                 self.assertEqual(len(cookies2), 1)
                 self.assertEqual(cookies2[0]["value"], "fresh_val")
+
+    def test_hot_reload_mirror_and_refresh_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            empty_state = tmp_dir / "empty" / "state.json"
+            self.assertEqual(
+                main(["--refresh", "--state-file", str(empty_state), "--target", "none"]),
+                1,
+            )
+
+            state_file = tmp_dir / "store" / "state.json"
+            future_exp = time.time() + 3600
+            upsert_session_state(
+                new_cookies=[
+                    {
+                        "name": "old_sid",
+                        "value": "old_val",
+                        "domain": ".github.com",
+                        "path": "/",
+                        "expires": future_exp,
+                        "httpOnly": True,
+                        "secure": True,
+                        "sameSite": "Lax",
+                    },
+                    {
+                        "name": "sub_sid",
+                        "value": "sub_val",
+                        "domain": "gist.github.com",
+                        "path": "/",
+                        "expires": -1,
+                        "httpOnly": False,
+                        "secure": True,
+                        "sameSite": "Lax",
+                    },
+                ],
+                new_origins=[
+                    {
+                        "origin": "https://app.linear.app",
+                        "localStorage": [{"name": "token", "value": "jwt_123"}],
+                    }
+                ],
+                state_path=state_file,
+            )
+
+            mirror = hot_reload_state_path(state_file)
+            self.assertTrue(mirror.is_file())
+            self.assertEqual(stat.S_IMODE(os.stat(mirror).st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(os.stat(mirror.parent).st_mode), 0o700)
+            self.assertEqual(mirror.read_text(encoding="utf-8"), state_file.read_text(encoding="utf-8"))
+            self.assertEqual(list_state_domains(state_file), ["app.linear.app", "github.com"])
+            self.assertEqual(summarize_state(state_file)["hot_reload_path"], str(mirror))
+
+            db_path = tmp_dir / "Cookies"
+            conn = sqlite3.connect(str(db_path))
+            conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);")
+            conn.execute("INSERT INTO meta VALUES ('version', '24');")
+            conn.execute(
+                """
+                CREATE TABLE cookies (
+                    host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB,
+                    path TEXT, expires_utc INTEGER, is_secure INTEGER,
+                    is_httponly INTEGER, has_expires INTEGER, samesite INTEGER
+                );
+                """
+            )
+            conn.execute(
+                "INSERT INTO cookies VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                (
+                    ".github.com",
+                    "old_sid",
+                    "",
+                    _encrypt_cookie_blob("refreshed_val", ".github.com", self.aes_key),
+                    "/",
+                    _unix_to_chromium_us(time.time() + 7200),
+                    1,
+                    1,
+                    1,
+                    1,
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+            with mock.patch("sessfork.chrome.get_safe_storage_key", return_value=self.aes_key):
+                rc = main(
+                    [
+                        "--refresh",
+                        "--no-local-storage",
+                        "--db-path",
+                        str(db_path),
+                        "--state-file",
+                        str(state_file),
+                        "--target",
+                        "none",
+                    ]
+                )
+                self.assertEqual(rc, 0)
+
+            reloaded = load_storage_state(mirror)
+            by_name = {c["name"]: c["value"] for c in reloaded["cookies"]}
+            self.assertEqual(by_name["old_sid"], "refreshed_val")
 
 
 if __name__ == "__main__":

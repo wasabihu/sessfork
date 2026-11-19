@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here. This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.1.2] - 2026-11-19
+
+Zero-restart MCP hot reload and one-shot domain refresh.
+
+### Added
+- **Zero-Restart Hot Reload (`state.py`, `SKILL.md`)**: Atomically mirrors `state.json` (`0600`) inside Playwright MCP's `0700` `--output-dir` (`~/.sessfork/playwright-output/.sessfork-state.json`) so running `sessfork-browser` instances can hot-reload updated sessions in-memory via `browser_set_storage_state` without restarting MCP.
+- **One-Shot Refresh (`cli.py`, `state.py`)**: Added `-r` / `--refresh` to re-fork all domains currently saved in `state.json` (plus any newly specified domains) in a single command, powered by `list_state_domains()` subdomain collapsing.
+
 ## [0.1.1] - 2026-11-19
 
 Security hardening release.
@@ -26,5 +34,6 @@ First public release.
 - Bilingual documentation (English / 简体中文), SVG diagrams and an interactive guide on GitHub Pages.
 - `SECURITY.md` with threat model and private reporting channel.
 
+[0.1.2]: https://github.com/wasabihu/sessfork/releases/tag/v0.1.2
 [0.1.1]: https://github.com/wasabihu/sessfork/releases/tag/v0.1.1
 [0.1.0]: https://github.com/wasabihu/sessfork/releases/tag/v0.1.0

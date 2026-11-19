@@ -12,10 +12,14 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from sessfork.chrome import real_user_home
-from sessfork.state import DEFAULT_STATE_PATH, load_storage_state, save_storage_state_atomic
+from sessfork.state import (
+    DEFAULT_STATE_PATH,
+    PLAYWRIGHT_OUTPUT_DIRNAME,
+    load_storage_state,
+    save_storage_state_atomic,
+)
 
 MCP_SERVER_NAME = "sessfork-browser"
-PLAYWRIGHT_OUTPUT_DIRNAME = "playwright-output"
 DEFAULT_PLAYWRIGHT_MCP_PKG = "@playwright/mcp@0.0.85"
 
 
@@ -250,7 +254,7 @@ def install_agent_skills(home: Optional[Path] = None) -> List[Path]:
 
 _FALLBACK_SKILL_MD = """---
 name: sessfork
-description: Fork live Chrome login sessions (cookies) into a background headless Playwright MCP browser (`sessfork-browser`) so you can browse authenticated sites without stealing or interrupting the user's Chrome window focus.
+description: Fork live Chrome login sessions (Cookies + LocalStorage) into a background headless Playwright MCP browser (`sessfork-browser`) so you can browse authenticated sites without stealing or interrupting the user's Chrome window focus.
 ---
 # sessfork — Zero-Focus-Theft Authenticated Browser Skill
 
@@ -260,7 +264,8 @@ Use `sessfork` whenever a task requires reading or interacting with a website wh
 1. Fork or refresh the needed domain(s) from live Chrome into `~/.sessfork/state.json`:
    ```bash
    sessfork <domain1> [domain2 ...]
+   sessfork --refresh   # Re-fork all currently saved domains
    ```
-2. Use the `sessfork-browser` headless MCP tools (`browser_navigate`, `browser_snapshot`, etc.) to complete the web task silently in the background.
-3. Security rule: NEVER read, print, or echo `~/.sessfork/state.json` into the conversation context.
+2. Hot-reload into a running `sessfork-browser` without restarting MCP by calling `browser_set_storage_state` with `filename` set to `~/.sessfork/playwright-output/.sessfork-state.json` (the exact `Hot-reload path` printed by `sessfork --status`), then run `browser_navigate`, `browser_snapshot`, etc.
+3. Security rule: NEVER read, print, or echo `~/.sessfork/state.json`, `~/.sessfork/playwright-output/.sessfork-state.json`, or `~/.sessfork/keys.json` into the conversation context.
 """
