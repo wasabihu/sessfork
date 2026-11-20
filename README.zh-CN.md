@@ -146,6 +146,19 @@ sessfork console.cloud.google.com --profile "Profile 1"
 ## 常见问题（FAQ）
 
 <details>
+<summary><strong>sessfork 和 AI 专属桌面浏览器（如 ego-lite）有什么区别？</strong></summary>
+
+`ego-lite` 这类 AI 专属浏览器本质上是一套独立的 Chromium 桌面应用，通过导入 Chrome 数据和分工作区让 Agent 可视化并行操作。`sessfork` 走的是更轻量、最小权限的另一条路线：
+
+- **无需更换日常浏览器**：不用额外安装、维护或迁移到第二个桌面浏览器，继续使用你原本的 Chrome / Arc / Brave / Edge。
+- **按域名白名单最小权限隔离**：不必把主浏览器里的网银、主邮箱、公司内网、扩展程序和全部打开的标签页整套交出去；`sessfork` 只对显式指定的域名做单向快照（如 `sessfork github.com linear.app`），其余站点对 Agent 完全不可见。
+- **兼容标准 Playwright 生态**：产出标准的 Playwright `storageState` 文件，除了无缝对接官方 `@playwright/mcp`，也能直接复用在你自己的 Playwright 调试或自动化脚本里。
+
+如果你不介意多装一个桌面浏览器、喜欢可视化看 Agent 操作，或者经常需要有头浏览器过强风控校验，AI 专属浏览器很省心；如果你只想保留原生 Chrome、严格控制只给后台无头 Agent 放行一两个域名，`sessfork` 会更轻、隔离边界更清晰。
+
+</details>
+
+<details>
 <summary><strong>为什么提取 Cookie 时 macOS 会弹钥匙串授权窗口？</strong></summary>
 
 Chromium 会在系统钥匙串的 `"Chrome Safe Storage"` 条目下保存主加密口令。读取时点击 **允许** 即可授权当前用户读取自己的加密密钥。如果目标站点仅靠 `localStorage` 存 JWT，只需加 `--no-cookies` 即可完全免弹窗。

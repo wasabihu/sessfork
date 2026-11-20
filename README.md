@@ -150,6 +150,19 @@ sessfork console.cloud.google.com --profile "Profile 1"
 ## FAQ
 
 <details>
+<summary><strong>How is sessfork different from dedicated AI browsers (such as ego-lite)?</strong></summary>
+
+Dedicated AI browsers (like `ego-lite`) ship a separate Chromium desktop app with built-in workspaces and import your Chrome profile so agents can act visually alongside you. `sessfork` takes a deliberately lighter, least-privilege approach:
+
+- **Keep your existing browser**: No second desktop browser to install, maintain, or migrate to — keep using your native Chrome, Arc, Brave, or Edge as usual.
+- **Domain-scoped isolation (least privilege)**: Instead of handing an AI browser your entire profile (banking, primary email, corporate SSO, extensions, and all open tabs), `sessfork` forks **only the exact domains you allowlist** (e.g. `sessfork github.com linear.app`) into a one-way `0600` snapshot.
+- **Standard Playwright ecosystem**: Outputs standard Playwright `storageState` JSON, so it plugs straight into official `@playwright/mcp` as well as your own Playwright scripts and headless automation pipelines.
+
+Choose a dedicated AI browser if you want a visual cursor watching the agent click or routinely deal with heavy headed anti-bot flows; choose `sessfork` if you want a zero-dependency CLI that keeps your main browser untouched and exposes only selected domains to a silent headless agent.
+
+</details>
+
+<details>
 <summary><strong>Why does macOS ask for Keychain access when forking cookies?</strong></summary>
 
 Chromium encrypts cookie values using a master passphrase stored under `"Chrome Safe Storage"` in your macOS Keychain. Click **Allow** so macOS authorizes `security` to read that entry. If a site uses `localStorage` tokens (many modern SPAs), pass `--no-cookies` to bypass Keychain completely.
