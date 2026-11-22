@@ -197,6 +197,22 @@ Chromium 默认大约每 5 秒才将内存中的 `localStorage` 变更刷盘到 
 
 </details>
 
+<details>
+<summary><strong>在 macOS 上调用 <code>sessfork-browser</code> 报错 <code>Target page, context or browser has been closed</code> / <code>Mach rendezvous failed</code> 怎么办？</strong></summary>
+
+`@playwright/mcp` 默认调用系统 `/Applications/Google Chrome.app` 运行 `--headless`。在 macOS 上，当 `--isolated --storage-state=<state.json>` 包含较多 LocalStorage Origin 时，系统 Chrome 会在注入阶段触发 `Mach rendezvous failed` 崩溃，导致所有 MCP 调用报错 `Target page, context or browser has been closed`。
+
+`sessfork` 在 macOS 上会自动扫描 Playwright 缓存中版本号最高的 `chrome-headless-shell` 可执行文件，并在 MCP 配置中自动写入 `--executable-path=<chrome-headless-shell>` 以绕开系统 Chrome 崩溃。如果本机尚未安装 `chrome-headless-shell`，或旧版配置尚未写入该参数，执行以下两行命令并重载一次 `sessfork-browser` 即可恢复：
+
+```bash
+npx -y playwright-core install chromium-headless-shell
+sessfork --setup
+```
+
+可运行 `sessfork --status` 检查检测到的路径和 MCP 配置绑定状态。如需显式回退到系统 Chrome 或自定义浏览器可执行文件路径，可在运行 `sessfork --setup` 前设置 `SESSFORK_BROWSER_EXECUTABLE_PATH=system`（或 `none`，或具体可执行文件路径）。
+
+</details>
+
 ---
 
 ## 安全设计与合规边界

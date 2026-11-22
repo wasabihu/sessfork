@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import platform as platform_mod
+import re
 import shutil
 import stat
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from sessfork.chrome import real_user_home
 from sessfork.state import (
@@ -21,6 +23,103 @@ from sessfork.state import (
 
 MCP_SERVER_NAME = "sessfork-browser"
 DEFAULT_PLAYWRIGHT_MCP_PKG = "@playwright/mcp@0.0.85"
+BROWSER_EXECUTABLE_ENV = "SESSFORK_BROWSER_EXECUTABLE_PATH"
+_DISABLE_PINNING_VALUES = frozenset({"system", "none"})
+_HEADLESS_SHELL_DIR_RE = re.compile(r"^chromium_headless_shell-(\d+)$")
+
+
+def _headless_shell_relative_candidates(plat: str, arch: str) -> Tuple[str, ...]:
+    if plat == "darwin":
+        if arch in ("arm64", "aarch64"):
+            return ("chrome-headless-shell-mac-arm64/chrome-headless-shell",)
+        if arch in ("x86_64", "amd64", "x64"):
+            return ("chrome-headless-shell-mac-x64/chrome-headless-shell",)
+        return ()
+    if plat.startswith("linux"):
+        if arch in ("x86_64", "amd64", "x64"):
+            return (
+                "chrome-headless-shell-linux64/chrome-headless-shell",
+                "chrome-linux/headless_shell",
+            )
+        if arch in ("arm64", "aarch64"):
+            return (
+                "chrome-headless-shell-linux-arm64/chrome-headless-shell",
+                "chrome-linux/headless_shell",
+            )
+        return ()
+    return ()
+
+
+def find_playwright_headless_shell(
+    cache_dir: Optional[Path] = None,
+    platform: Optional[str] = None,
+    machine: Optional[str] = None,
+) -> Optional[Path]:
+    """Locate the highest-revision Playwright chrome-headless-shell executable for the host arch.
+
+    Respects `SESSFORK_BROWSER_EXECUTABLE_PATH` (`"system"` / `"none"` disables auto-pinning; an
+    explicit executable file path overrides discovery) and `PLAYWRIGHT_BROWSERS_PATH`.
+    """
+    override = os.environ.get(BROWSER_EXECUTABLE_ENV, "").strip()
+    if override:
+        if override.lower() in _DISABLE_PINNING_VALUES:
+            return None
+        cand = Path(override).expanduser()
+        if cand.is_file() and os.access(cand, os.X_OK):
+            return cand.resolve()
+        return None
+
+    plat = (platform or sys.platform).lower()
+    arch = (machine or platform_mod.machine()).lower()
+    rel_candidates = _headless_shell_relative_candidates(plat, arch)
+    if not rel_candidates:
+        return None
+
+    rel_cache = (
+        Path("Library") / "Caches" / "ms-playwright"
+        if plat == "darwin"
+        else Path(".cache") / "ms-playwright"
+    )
+    if cache_dir is not None:
+        root_dirs = [Path(cache_dir).expanduser()]
+    else:
+        env_browsers = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
+        if env_browsers and env_browsers != "0":
+            root_dirs = [Path(env_browsers).expanduser()]
+        else:
+            real_home = real_user_home()
+            root_dirs = [real_home / rel_cache]
+            if not os.environ.get("SESSFORK_HOME"):
+                env_home = Path.home().expanduser()
+                if env_home.resolve() != real_home.resolve():
+                    root_dirs.append(env_home / rel_cache)
+
+    for root_dir in root_dirs:
+        if not root_dir.is_dir():
+            continue
+        revisions: List[Tuple[int, Path]] = []
+        try:
+            entries = list(root_dir.iterdir())
+        except OSError:
+            continue
+
+        for entry in entries:
+            match = _HEADLESS_SHELL_DIR_RE.match(entry.name)
+            if not match or entry.is_symlink() or not entry.is_dir():
+                continue
+            revisions.append((int(match.group(1)), entry))
+
+        revisions.sort(key=lambda item: item[0], reverse=True)
+        for _, rev_dir in revisions:
+            for rel in rel_candidates:
+                rel_path = Path(rel)
+                sub_dir = rev_dir / rel_path.parent
+                cand = rev_dir / rel_path
+                if sub_dir.is_symlink() or cand.is_symlink():
+                    continue
+                if cand.is_file() and os.access(cand, os.X_OK):
+                    return cand.resolve()
+    return None
 
 
 def resolve_npx_command() -> str:
@@ -38,7 +137,7 @@ def resolve_npx_command() -> str:
     return "npx"
 
 
-def _build_mcp_env(cmd: str) -> Dict[str, str]:
+def _build_mcp_env(cmd: str, platform: Optional[str] = None) -> Dict[str, str]:
     """Build a deterministic PATH (and macOS Playwright browser cache) for GUI-launched MCP servers."""
     candidates: List[str] = []
     cmd_path = Path(cmd)
@@ -62,8 +161,14 @@ def _build_mcp_env(cmd: str) -> Dict[str, str]:
             path_entries.append(entry)
 
     env_map: Dict[str, str] = {"PATH": ":".join(path_entries)}
-    if sys.platform == "darwin":
-        pw_cache = real_user_home() / "Library" / "Caches" / "ms-playwright"
+    plat = (platform or sys.platform).lower()
+    if plat == "darwin":
+        pw_env = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
+        pw_cache = (
+            Path(pw_env).expanduser()
+            if (pw_env and pw_env != "0")
+            else (real_user_home() / "Library" / "Caches" / "ms-playwright")
+        )
         if pw_cache.is_dir():
             env_map["PLAYWRIGHT_BROWSERS_PATH"] = str(pw_cache)
     return env_map
@@ -72,28 +177,166 @@ def _build_mcp_env(cmd: str) -> Dict[str, str]:
 def build_playwright_mcp_entry(
     state_path: Path = DEFAULT_STATE_PATH,
     npx_cmd: Optional[str] = None,
+    platform: Optional[str] = None,
+    cache_dir: Optional[Path] = None,
+    machine: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build a clean stdio MCP entry (omits 'type' key for Antigravity schema compatibility).
 
     `--output-dir` keeps Playwright MCP snapshots/screenshots under `~/.sessfork/playwright-output`
     instead of a `.playwright-mcp/` folder in whatever project the agent happens to run in.
+    On macOS (or when `SESSFORK_BROWSER_EXECUTABLE_PATH` is explicitly set), pins Playwright's
+    `chrome-headless-shell` via `--executable-path` to avoid system Chrome headless multi-origin
+    `storageState` hydration crashes (`Mach rendezvous failed`).
     """
     resolved_state = state_path.expanduser().resolve()
     output_dir = resolved_state.parent / PLAYWRIGHT_OUTPUT_DIRNAME
     cmd = npx_cmd or resolve_npx_command()
     mcp_pkg = os.environ.get("SESSFORK_PLAYWRIGHT_MCP_PKG", DEFAULT_PLAYWRIGHT_MCP_PKG).strip() or DEFAULT_PLAYWRIGHT_MCP_PKG
+    args = [
+        "-y",
+        mcp_pkg,
+        "--headless",
+        "--isolated",
+        "--caps=storage",
+        f"--storage-state={resolved_state}",
+        f"--output-dir={output_dir}",
+    ]
+    plat = (platform or sys.platform).lower()
+    override = os.environ.get(BROWSER_EXECUTABLE_ENV, "").strip()
+    has_explicit_override = bool(override and override.lower() not in _DISABLE_PINNING_VALUES)
+    if plat == "darwin" or has_explicit_override:
+        exec_path = find_playwright_headless_shell(
+            cache_dir=cache_dir,
+            platform=plat,
+            machine=machine,
+        )
+        if exec_path is not None:
+            args.append(f"--executable-path={exec_path}")
     return {
         "command": cmd,
-        "args": [
-            "-y",
-            mcp_pkg,
-            "--headless",
-            "--isolated",
-            "--caps=storage",
-            f"--storage-state={resolved_state}",
-            f"--output-dir={output_dir}",
-        ],
-        "env": _build_mcp_env(cmd),
+        "args": args,
+        "env": _build_mcp_env(cmd, platform=plat),
+    }
+
+
+def _extract_executable_path_arg(args: Any) -> Optional[str]:
+    if not isinstance(args, list):
+        return None
+    for idx, item in enumerate(args):
+        if not isinstance(item, str):
+            continue
+        if item.startswith("--executable-path="):
+            val = item.split("=", 1)[1].strip()
+            return val or None
+        if item == "--executable-path" and idx + 1 < len(args) and isinstance(args[idx + 1], str):
+            val = args[idx + 1].strip()
+            return val or None
+    return None
+
+
+def inspect_mcp_headless_shell(
+    config_paths: Optional[Iterable[Path]] = None,
+    target: str = "auto",
+    home: Optional[Path] = None,
+    cache_dir: Optional[Path] = None,
+    platform: Optional[str] = None,
+    machine: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Inspect chrome-headless-shell detection and whether wired MCP configs pin `--executable-path`."""
+    plat = (platform or sys.platform).lower()
+    override = os.environ.get(BROWSER_EXECUTABLE_ENV, "").strip()
+    auto_pin_disabled = override.lower() in _DISABLE_PINNING_VALUES
+    has_explicit_override = bool(override and not auto_pin_disabled)
+    detected = find_playwright_headless_shell(
+        cache_dir=cache_dir,
+        platform=plat,
+        machine=machine,
+    )
+    paths = list(config_paths) if config_paths is not None else target_mcp_config_paths(target, home=home)
+
+    pinned_configs: List[str] = []
+    unpinned_configs: List[str] = []
+    stale_configs: List[str] = []
+    seen: set[Path] = set()
+
+    for cfg_path in paths:
+        if cfg_path in seen or not cfg_path.is_file():
+            continue
+        seen.add(cfg_path)
+        try:
+            raw = cfg_path.read_text(encoding="utf-8").strip()
+            doc = json.loads(raw) if raw else {}
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(doc, dict):
+            continue
+        servers = doc.get("mcpServers")
+        if not isinstance(servers, dict):
+            continue
+        entry = servers.get(MCP_SERVER_NAME)
+        if not isinstance(entry, dict):
+            continue
+        pinned_exec = _extract_executable_path_arg(entry.get("args"))
+        if not pinned_exec:
+            unpinned_configs.append(str(cfg_path))
+        else:
+            exec_file = Path(pinned_exec).expanduser()
+            if exec_file.is_file() and os.access(exec_file, os.X_OK):
+                pinned_configs.append(str(cfg_path))
+            else:
+                stale_configs.append(str(cfg_path))
+
+    warning: Optional[str] = None
+    if stale_configs:
+        if auto_pin_disabled:
+            warning = (
+                f"Wired MCP config(s) reference a missing --executable-path ({', '.join(stale_configs)}). "
+                "Run `sessfork --setup` to remove the stale flag, then reload MCP."
+            )
+        elif has_explicit_override and detected is None:
+            warning = (
+                f"Wired MCP config(s) reference a missing --executable-path ({', '.join(stale_configs)}), "
+                f"and {BROWSER_EXECUTABLE_ENV}={override!r} does not point to an executable file. "
+                f"Fix or unset {BROWSER_EXECUTABLE_ENV}, then run `sessfork --setup` and reload MCP."
+            )
+        elif detected is not None:
+            warning = (
+                f"Wired MCP config(s) reference a missing --executable-path ({', '.join(stale_configs)}). "
+                f"Run `sessfork --setup` to update to {detected}, then reload MCP."
+            )
+        else:
+            warning = (
+                f"Wired MCP config(s) reference a missing --executable-path ({', '.join(stale_configs)}). "
+                "Run `npx -y playwright-core install chromium-headless-shell` followed by `sessfork --setup`, then reload MCP."
+            )
+    elif has_explicit_override and detected is None:
+        warning = (
+            f"{BROWSER_EXECUTABLE_ENV}={override!r} does not point to an executable file; "
+            "--executable-path will be omitted. Fix or unset "
+            f"{BROWSER_EXECUTABLE_ENV} (or set it to 'system'/'none' to disable auto-pinning)."
+        )
+    elif plat == "darwin" and not auto_pin_disabled:
+        if detected is None:
+            warning = (
+                "Playwright chrome-headless-shell not found. On macOS, system Chrome in headless mode "
+                "can crash when loading multi-origin storageState ('Mach rendezvous failed'). "
+                "Install it with `npx -y playwright-core install chromium-headless-shell` followed by `sessfork --setup`."
+            )
+        elif unpinned_configs:
+            warning = (
+                f"Wired MCP config(s) do not pin --executable-path ({', '.join(unpinned_configs)}). "
+                "On macOS, run `sessfork --setup` to pin chrome-headless-shell and avoid headless Chrome "
+                "multi-origin crashes, then reload MCP."
+            )
+
+    return {
+        "playwright_headless_shell": str(detected) if detected is not None else None,
+        "auto_pin_disabled": auto_pin_disabled,
+        "pinned_mcp_configs": pinned_configs,
+        "unpinned_mcp_configs": unpinned_configs,
+        "stale_mcp_configs": stale_configs,
+        "warning": warning,
     }
 
 
@@ -267,5 +510,6 @@ Use `sessfork` whenever a task requires reading or interacting with a website wh
    sessfork --refresh   # Re-fork all currently saved domains
    ```
 2. Hot-reload into a running `sessfork-browser` without restarting MCP by calling `browser_set_storage_state` with `filename` set to `~/.sessfork/playwright-output/.sessfork-state.json` (the exact `Hot-reload path` printed by `sessfork --status`), then run `browser_navigate`, `browser_snapshot`, etc.
-3. Security rule: NEVER read, print, or echo `~/.sessfork/state.json`, `~/.sessfork/playwright-output/.sessfork-state.json`, or `~/.sessfork/keys.json` into the conversation context.
+3. On macOS, `sessfork --setup` automatically pins Playwright's `chrome-headless-shell` via `--executable-path` to avoid system Chrome headless multi-origin crashes (`Target page, context or browser has been closed` / `Mach rendezvous failed`). If that error occurs, run `npx -y playwright-core install chromium-headless-shell && sessfork --setup` and reload MCP once.
+4. Security rule: NEVER read, print, or echo `~/.sessfork/state.json`, `~/.sessfork/playwright-output/.sessfork-state.json`, or `~/.sessfork/keys.json` into the conversation context.
 """

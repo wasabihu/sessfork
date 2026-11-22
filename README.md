@@ -201,6 +201,22 @@ No — only reload MCP once right after initial installation. Whenever you run `
 
 </details>
 
+<details>
+<summary><strong>Why does <code>sessfork-browser</code> fail on macOS with <code>Target page, context or browser has been closed</code> / <code>Mach rendezvous failed</code>?</strong></summary>
+
+`@playwright/mcp` defaults to system `/Applications/Google Chrome.app` in `--headless` mode. On macOS, system Chrome can crash mid-hydration with `Mach rendezvous failed` when `--isolated --storage-state=<state.json>` contains many LocalStorage origins, causing every MCP call to fail with `Target page, context or browser has been closed`.
+
+`sessfork` automatically detects Playwright's `chrome-headless-shell` binary (highest `chromium_headless_shell-<rev>` for your CPU architecture) and pins `--executable-path=<chrome-headless-shell>` in your MCP config on macOS. If it is not installed yet (or your config was created by an older version), install it and re-wire MCP once, then reload `sessfork-browser`:
+
+```bash
+npx -y playwright-core install chromium-headless-shell
+sessfork --setup
+```
+
+Check `sessfork --status` to confirm the detected binary and pinned config status. To opt out and use system Chrome (or pin a custom executable on any OS), set `SESSFORK_BROWSER_EXECUTABLE_PATH=system` (or `none`, or an executable path) before running `sessfork --setup`.
+
+</details>
+
 ---
 
 ## Security & Responsible Use

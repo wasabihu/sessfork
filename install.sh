@@ -3,7 +3,7 @@ set -euo pipefail
 
 REPO_URL="https://github.com/wasabihu/sessfork"
 # Pinned release by default; override with SESSFORK_REF=main (or another tag) for bleeding edge
-SESSFORK_REF="${SESSFORK_REF:-v0.1.2}"
+SESSFORK_REF="${SESSFORK_REF:-v0.1.3}"
 TARBALL_URL="${REPO_URL}/archive/${SESSFORK_REF}.tar.gz"
 RUNTIME_DIR="${HOME}/.sessfork/runtime"
 BIN_DIR="${HOME}/.local/bin"

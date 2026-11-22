@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here. This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.1.3] - 2026-11-23
+
+Fix macOS headless Chrome multi-origin `storageState` crashes by auto-pinning Playwright's `chrome-headless-shell`.
+
+### Fixed
+- **macOS Multi-Origin Headless Crash (`mcp_setup.py`)**: Added shallow Playwright cache discovery (`find_playwright_headless_shell()`) that selects the highest numeric `chromium_headless_shell-<rev>` binary for the host architecture (skipping symlinks and non-executable files) and automatically appends `--executable-path=<chrome-headless-shell>` in `build_playwright_mcp_entry()` on macOS. This avoids system Chrome's `--headless --isolated --storage-state` crash (`Mach rendezvous failed` / `Target page, context or browser has been closed`) when hydrating many LocalStorage origins. Supports `PLAYWRIGHT_BROWSERS_PATH` and `SESSFORK_BROWSER_EXECUTABLE_PATH` (including `system` / `none` to disable auto-pinning, or an explicit executable path on any OS).
+- **MCP Diagnostics & Setup Guidance (`mcp_setup.py`, `cli.py`)**: Added `inspect_mcp_headless_shell()` and surfaced `playwright_headless_shell`, pinned/unpinned/stale MCP config status, and actionable macOS warnings in `sessfork --status` (text and `--json`) and `sessfork --setup`.
+
 ## [0.1.2] - 2026-11-19
 
 Zero-restart MCP hot reload and one-shot domain refresh.
@@ -34,6 +42,7 @@ First public release.
 - Bilingual documentation (English / 简体中文), SVG diagrams and an interactive guide on GitHub Pages.
 - `SECURITY.md` with threat model and private reporting channel.
 
+[0.1.3]: https://github.com/wasabihu/sessfork/releases/tag/v0.1.3
 [0.1.2]: https://github.com/wasabihu/sessfork/releases/tag/v0.1.2
 [0.1.1]: https://github.com/wasabihu/sessfork/releases/tag/v0.1.1
 [0.1.0]: https://github.com/wasabihu/sessfork/releases/tag/v0.1.0

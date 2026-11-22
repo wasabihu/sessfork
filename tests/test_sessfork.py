@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import json
 import os
 import sqlite3
@@ -32,7 +34,10 @@ from sessfork.crypto import (
 from sessfork.mcp_setup import (
     DEFAULT_PLAYWRIGHT_MCP_PKG,
     MCP_SERVER_NAME,
+    build_playwright_mcp_entry,
     ensure_mcp_configured,
+    find_playwright_headless_shell,
+    inspect_mcp_headless_shell,
     install_agent_skills,
 )
 from sessfork.state import (
@@ -581,6 +586,505 @@ class SessforkTestSuite(unittest.TestCase):
             reloaded = load_storage_state(mirror)
             by_name = {c["name"]: c["value"] for c in reloaded["cookies"]}
             self.assertEqual(by_name["old_sid"], "refreshed_val")
+
+    def test_find_playwright_headless_shell_revisions_arches_and_overrides(self) -> None:
+        def _make_exec(path: Path) -> Path:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            os.chmod(path, 0o755)
+            return path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "ms-playwright"
+            cache.mkdir()
+
+            # Lower numeric revision (999 > 1254 lexicographically, must NOT beat 1254)
+            _make_exec(cache / "chromium_headless_shell-999" / "chrome-headless-shell-mac-arm64" / "chrome-headless-shell")
+            # Target highest valid revision 1254
+            mac_arm = _make_exec(
+                cache / "chromium_headless_shell-1254" / "chrome-headless-shell-mac-arm64" / "chrome-headless-shell"
+            )
+            mac_x64 = _make_exec(
+                cache / "chromium_headless_shell-1254" / "chrome-headless-shell-mac-x64" / "chrome-headless-shell"
+            )
+            # Higher revisions that must be skipped: missing binary, non-executable, symlinked binary, symlinked dir
+            (cache / "chromium_headless_shell-1300" / "chrome-headless-shell-mac-arm64").mkdir(parents=True)
+            non_exec = cache / "chromium_headless_shell-1400" / "chrome-headless-shell-mac-arm64" / "chrome-headless-shell"
+            non_exec.parent.mkdir(parents=True)
+            non_exec.write_text("not executable", encoding="utf-8")
+            os.chmod(non_exec, 0o644)
+
+            sym_bin_dir = cache / "chromium_headless_shell-1500" / "chrome-headless-shell-mac-arm64"
+            sym_bin_dir.mkdir(parents=True)
+            os.symlink(mac_arm, sym_bin_dir / "chrome-headless-shell")
+
+            outside_arch = Path(tmp) / "outside_arch"
+            _make_exec(outside_arch / "chrome-headless-shell")
+            sym_arch_rev = cache / "chromium_headless_shell-1550"
+            sym_arch_rev.mkdir(parents=True)
+            os.symlink(outside_arch, sym_arch_rev / "chrome-headless-shell-mac-arm64")
+
+            outside_rev = Path(tmp) / "outside_rev"
+            _make_exec(outside_rev / "chrome-headless-shell-mac-arm64" / "chrome-headless-shell")
+            os.symlink(outside_rev, cache / "chromium_headless_shell-1600")
+
+            # Non-headless-shell browser directory must be ignored
+            _make_exec(cache / "chromium-1999" / "chrome-headless-shell-mac-arm64" / "chrome-headless-shell")
+
+            # Linux cache layouts
+            linux_cache = Path(tmp) / "linux-playwright"
+            linux_x64 = _make_exec(
+                linux_cache / "chromium_headless_shell-1200" / "chrome-headless-shell-linux64" / "chrome-headless-shell"
+            )
+            linux_arm = _make_exec(
+                linux_cache / "chromium_headless_shell-1200" / "chrome-headless-shell-linux-arm64" / "chrome-headless-shell"
+            )
+            legacy_linux_cache = Path(tmp) / "legacy-linux-playwright"
+            legacy_linux = _make_exec(
+                legacy_linux_cache / "chromium_headless_shell-1100" / "chrome-linux" / "headless_shell"
+            )
+
+            clean_env = {
+                k: v
+                for k, v in os.environ.items()
+                if k not in ("SESSFORK_BROWSER_EXECUTABLE_PATH", "PLAYWRIGHT_BROWSERS_PATH")
+            }
+            with mock.patch.dict(os.environ, clean_env, clear=True):
+                self.assertEqual(
+                    find_playwright_headless_shell(cache_dir=cache, platform="darwin", machine="arm64"),
+                    mac_arm.resolve(),
+                )
+                self.assertEqual(
+                    find_playwright_headless_shell(cache_dir=cache, platform="darwin", machine="x86_64"),
+                    mac_x64.resolve(),
+                )
+                self.assertEqual(
+                    find_playwright_headless_shell(cache_dir=linux_cache, platform="linux", machine="x86_64"),
+                    linux_x64.resolve(),
+                )
+                self.assertEqual(
+                    find_playwright_headless_shell(cache_dir=linux_cache, platform="linux", machine="aarch64"),
+                    linux_arm.resolve(),
+                )
+                self.assertEqual(
+                    find_playwright_headless_shell(cache_dir=legacy_linux_cache, platform="linux", machine="x86_64"),
+                    legacy_linux.resolve(),
+                )
+
+                # PLAYWRIGHT_BROWSERS_PATH env var discovery when cache_dir is omitted
+                with mock.patch.dict(os.environ, {"PLAYWRIGHT_BROWSERS_PATH": str(cache)}):
+                    self.assertEqual(
+                        find_playwright_headless_shell(platform="darwin", machine="arm64"),
+                        mac_arm.resolve(),
+                    )
+
+                # Explicit disable via "system" or "none"
+                with mock.patch.dict(os.environ, {"SESSFORK_BROWSER_EXECUTABLE_PATH": "system"}):
+                    self.assertIsNone(
+                        find_playwright_headless_shell(cache_dir=cache, platform="darwin", machine="arm64")
+                    )
+                with mock.patch.dict(os.environ, {"SESSFORK_BROWSER_EXECUTABLE_PATH": "NONE"}):
+                    self.assertIsNone(
+                        find_playwright_headless_shell(cache_dir=cache, platform="darwin", machine="arm64")
+                    )
+
+                # Explicit custom binary path override
+                custom_bin = _make_exec(Path(tmp) / "custom-browser")
+                with mock.patch.dict(os.environ, {"SESSFORK_BROWSER_EXECUTABLE_PATH": str(custom_bin)}):
+                    self.assertEqual(
+                        find_playwright_headless_shell(cache_dir=cache, platform="linux", machine="x86_64"),
+                        custom_bin.resolve(),
+                    )
+
+                # Nonexistent custom path returns None cleanly without error
+                with mock.patch.dict(os.environ, {"SESSFORK_BROWSER_EXECUTABLE_PATH": str(Path(tmp) / "missing")}):
+                    self.assertIsNone(
+                        find_playwright_headless_shell(cache_dir=cache, platform="darwin", machine="arm64")
+                    )
+
+                # Default OS cache discovery: real_user_home() priority, sandbox $HOME fallback,
+                # SESSFORK_HOME isolation, and PLAYWRIGHT_BROWSERS_PATH="0" fallback to OS default cache
+                real_home = Path(tmp) / "real-home"
+                sandbox_home = Path(tmp) / "sandbox-home"
+                empty_home = Path(tmp) / "empty-home"
+                for d in (real_home, sandbox_home, empty_home):
+                    d.mkdir()
+                real_mac_bin = _make_exec(
+                    real_home
+                    / "Library"
+                    / "Caches"
+                    / "ms-playwright"
+                    / "chromium_headless_shell-1240"
+                    / "chrome-headless-shell-mac-arm64"
+                    / "chrome-headless-shell"
+                )
+                sandbox_mac_bin = _make_exec(
+                    sandbox_home
+                    / "Library"
+                    / "Caches"
+                    / "ms-playwright"
+                    / "chromium_headless_shell-1254"
+                    / "chrome-headless-shell-mac-arm64"
+                    / "chrome-headless-shell"
+                )
+                real_linux_bin = _make_exec(
+                    real_home
+                    / ".cache"
+                    / "ms-playwright"
+                    / "chromium_headless_shell-1210"
+                    / "chrome-headless-shell-linux64"
+                    / "chrome-headless-shell"
+                )
+
+                base_env = {
+                    k: v
+                    for k, v in clean_env.items()
+                    if k not in ("HOME", "SESSFORK_HOME")
+                }
+                base_env["HOME"] = str(sandbox_home)
+                with mock.patch.dict(os.environ, base_env, clear=True):
+                    # real_user_home() takes priority over distinct sandbox $HOME when both have a shell
+                    with mock.patch("sessfork.mcp_setup.real_user_home", return_value=real_home):
+                        self.assertEqual(
+                            find_playwright_headless_shell(platform="darwin", machine="arm64"),
+                            real_mac_bin.resolve(),
+                        )
+                        # PLAYWRIGHT_BROWSERS_PATH="0" falls back to OS default cache (macOS & Linux)
+                        with mock.patch.dict(os.environ, {"PLAYWRIGHT_BROWSERS_PATH": "0"}):
+                            self.assertEqual(
+                                find_playwright_headless_shell(platform="darwin", machine="arm64"),
+                                real_mac_bin.resolve(),
+                            )
+                            self.assertEqual(
+                                find_playwright_headless_shell(platform="linux", machine="x86_64"),
+                                real_linux_bin.resolve(),
+                            )
+
+                    # When real_user_home() has no cache and SESSFORK_HOME is unset, falls back to sandbox $HOME
+                    with mock.patch("sessfork.mcp_setup.real_user_home", return_value=empty_home):
+                        self.assertEqual(
+                            find_playwright_headless_shell(platform="darwin", machine="arm64"),
+                            sandbox_mac_bin.resolve(),
+                        )
+
+                    # When SESSFORK_HOME is explicitly set, do NOT leak/fall back to sandbox $HOME
+                    with mock.patch.dict(os.environ, {"SESSFORK_HOME": str(empty_home)}):
+                        self.assertIsNone(
+                            find_playwright_headless_shell(platform="darwin", machine="arm64")
+                        )
+
+    def test_build_playwright_mcp_entry_headless_shell_pinning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            state_file = tmp_dir / "state.json"
+            cache = tmp_dir / "ms-playwright"
+            mac_bin = cache / "chromium_headless_shell-1254" / "chrome-headless-shell-mac-arm64" / "chrome-headless-shell"
+            mac_bin.parent.mkdir(parents=True)
+            mac_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            os.chmod(mac_bin, 0o755)
+
+            linux_bin = cache / "chromium_headless_shell-1254" / "chrome-headless-shell-linux64" / "chrome-headless-shell"
+            linux_bin.parent.mkdir(parents=True)
+            linux_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            os.chmod(linux_bin, 0o755)
+
+            empty_cache = tmp_dir / "empty-cache"
+            empty_cache.mkdir()
+
+            clean_env = {
+                k: v
+                for k, v in os.environ.items()
+                if k not in ("SESSFORK_BROWSER_EXECUTABLE_PATH", "PLAYWRIGHT_BROWSERS_PATH")
+            }
+            with mock.patch.dict(os.environ, clean_env, clear=True):
+                # macOS auto-pins detected chrome-headless-shell
+                entry_mac = build_playwright_mcp_entry(
+                    state_path=state_file,
+                    npx_cmd="/opt/homebrew/bin/npx",
+                    platform="darwin",
+                    cache_dir=cache,
+                    machine="arm64",
+                )
+                self.assertIn(f"--executable-path={mac_bin.resolve()}", entry_mac["args"])
+
+                # macOS without installed shell omits --executable-path cleanly
+                entry_missing = build_playwright_mcp_entry(
+                    state_path=state_file,
+                    npx_cmd="/opt/homebrew/bin/npx",
+                    platform="darwin",
+                    cache_dir=empty_cache,
+                    machine="arm64",
+                )
+                self.assertFalse(any(a.startswith("--executable-path") for a in entry_missing["args"]))
+
+                # macOS with SESSFORK_BROWSER_EXECUTABLE_PATH=system disables pinning
+                with mock.patch.dict(os.environ, {"SESSFORK_BROWSER_EXECUTABLE_PATH": "system"}):
+                    entry_sys = build_playwright_mcp_entry(
+                        state_path=state_file,
+                        npx_cmd="/opt/homebrew/bin/npx",
+                        platform="darwin",
+                        cache_dir=cache,
+                        machine="arm64",
+                    )
+                    self.assertFalse(any(a.startswith("--executable-path") for a in entry_sys["args"]))
+
+                # Linux does NOT auto-pin unless SESSFORK_BROWSER_EXECUTABLE_PATH is explicitly set
+                entry_linux = build_playwright_mcp_entry(
+                    state_path=state_file,
+                    npx_cmd="/usr/bin/npx",
+                    platform="linux",
+                    cache_dir=cache,
+                    machine="x86_64",
+                )
+                self.assertFalse(any(a.startswith("--executable-path") for a in entry_linux["args"]))
+
+                with mock.patch.dict(os.environ, {"SESSFORK_BROWSER_EXECUTABLE_PATH": str(linux_bin)}):
+                    entry_linux_override = build_playwright_mcp_entry(
+                        state_path=state_file,
+                        npx_cmd="/usr/bin/npx",
+                        platform="linux",
+                        cache_dir=cache,
+                        machine="x86_64",
+                    )
+                    self.assertIn(f"--executable-path={linux_bin.resolve()}", entry_linux_override["args"])
+
+    def test_inspect_mcp_headless_shell_and_cli_status_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox_home = Path(tmp) / "home"
+            sandbox_home.mkdir()
+            state_file = sandbox_home / ".sessfork" / "state.json"
+            cache = Path(tmp) / "ms-playwright"
+            mac_bin = cache / "chromium_headless_shell-1254" / "chrome-headless-shell-mac-arm64" / "chrome-headless-shell"
+            mac_bin.parent.mkdir(parents=True)
+            mac_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            os.chmod(mac_bin, 0o755)
+            empty_cache = Path(tmp) / "empty-cache"
+            empty_cache.mkdir()
+
+            cfg_path = sandbox_home / ".gemini" / "config" / "mcp_config.json"
+            cfg_path.parent.mkdir(parents=True)
+
+            # 1. Unpinned wired config on macOS -> warns to run `sessfork --setup`
+            cfg_path.write_text(
+                json.dumps({"mcpServers": {MCP_SERVER_NAME: {"command": "npx", "args": ["-y", "@playwright/mcp@0.0.85"]}}}),
+                encoding="utf-8",
+            )
+            clean_env = {
+                k: v
+                for k, v in os.environ.items()
+                if k not in ("SESSFORK_BROWSER_EXECUTABLE_PATH", "PLAYWRIGHT_BROWSERS_PATH")
+            }
+            with mock.patch.dict(os.environ, clean_env, clear=True):
+                res_unpinned = inspect_mcp_headless_shell(
+                    config_paths=[cfg_path],
+                    cache_dir=cache,
+                    platform="darwin",
+                    machine="arm64",
+                )
+                self.assertEqual(res_unpinned["playwright_headless_shell"], str(mac_bin.resolve()))
+                self.assertEqual(res_unpinned["pinned_mcp_configs"], [])
+                self.assertEqual(res_unpinned["unpinned_mcp_configs"], [str(cfg_path)])
+                self.assertIn("sessfork --setup", res_unpinned["warning"] or "")
+
+                # 2. Stale --executable-path pointing to missing binary -> warns
+                cfg_path.write_text(
+                    json.dumps(
+                        {
+                            "mcpServers": {
+                                MCP_SERVER_NAME: {
+                                    "command": "npx",
+                                    "args": ["-y", "@playwright/mcp@0.0.85", "--executable-path=/nonexistent/shell"],
+                                }
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                res_stale = inspect_mcp_headless_shell(
+                    config_paths=[cfg_path],
+                    cache_dir=cache,
+                    platform="darwin",
+                    machine="arm64",
+                )
+                self.assertEqual(res_stale["stale_mcp_configs"], [str(cfg_path)])
+                self.assertIn("missing --executable-path", res_stale["warning"] or "")
+
+                # 3. Missing chrome-headless-shell on macOS -> warns with install command
+                res_missing = inspect_mcp_headless_shell(
+                    config_paths=[],
+                    cache_dir=empty_cache,
+                    platform="darwin",
+                    machine="arm64",
+                )
+                self.assertIsNone(res_missing["playwright_headless_shell"])
+                self.assertIn("playwright-core install chromium-headless-shell", res_missing["warning"] or "")
+                self.assertIn("sessfork --setup", res_missing["warning"] or "")
+
+                # 4. Linux without chrome-headless-shell -> no macOS crash warning
+                res_linux = inspect_mcp_headless_shell(
+                    config_paths=[],
+                    cache_dir=empty_cache,
+                    platform="linux",
+                    machine="x86_64",
+                )
+                self.assertIsNone(res_linux["warning"])
+
+                # 4b. Explicitly disabled via SESSFORK_BROWSER_EXECUTABLE_PATH=system -> no warning on macOS
+                with mock.patch.dict(os.environ, {"SESSFORK_BROWSER_EXECUTABLE_PATH": "system"}):
+                    res_disabled = inspect_mcp_headless_shell(
+                        config_paths=[],
+                        cache_dir=empty_cache,
+                        platform="darwin",
+                        machine="arm64",
+                    )
+                    self.assertTrue(res_disabled["auto_pin_disabled"])
+                    self.assertIsNone(res_disabled["playwright_headless_shell"])
+                    self.assertIsNone(res_disabled["warning"])
+
+                # 4b2. Invalid explicit SESSFORK_BROWSER_EXECUTABLE_PATH warns explicitly on macOS & Linux
+                bad_override = str(Path(tmp) / "does-not-exist-browser")
+                non_exec_override = Path(tmp) / "non-exec-browser"
+                non_exec_override.write_text("#!/bin/sh\n", encoding="utf-8")
+                os.chmod(non_exec_override, 0o644)
+
+                with mock.patch.dict(os.environ, {"SESSFORK_BROWSER_EXECUTABLE_PATH": bad_override}):
+                    res_bad_mac = inspect_mcp_headless_shell(
+                        config_paths=[],
+                        cache_dir=cache,
+                        platform="darwin",
+                        machine="arm64",
+                    )
+                    self.assertIsNone(res_bad_mac["playwright_headless_shell"])
+                    self.assertFalse(res_bad_mac["auto_pin_disabled"])
+                    self.assertIn("SESSFORK_BROWSER_EXECUTABLE_PATH", res_bad_mac["warning"] or "")
+                    self.assertNotIn("playwright-core install chromium-headless-shell", res_bad_mac["warning"] or "")
+
+                    res_bad_linux = inspect_mcp_headless_shell(
+                        config_paths=[],
+                        cache_dir=cache,
+                        platform="linux",
+                        machine="x86_64",
+                    )
+                    self.assertIsNone(res_bad_linux["playwright_headless_shell"])
+                    self.assertIn("SESSFORK_BROWSER_EXECUTABLE_PATH", res_bad_linux["warning"] or "")
+
+                    # Stale MCP config + invalid override keeps stale warning intact AND flags bad env override
+                    res_stale_and_bad = inspect_mcp_headless_shell(
+                        config_paths=[cfg_path],
+                        cache_dir=cache,
+                        platform="darwin",
+                        machine="arm64",
+                    )
+                    self.assertEqual(res_stale_and_bad["stale_mcp_configs"], [str(cfg_path)])
+                    self.assertIn("missing --executable-path", res_stale_and_bad["warning"] or "")
+                    self.assertIn("SESSFORK_BROWSER_EXECUTABLE_PATH", res_stale_and_bad["warning"] or "")
+
+                with mock.patch.dict(os.environ, {"SESSFORK_BROWSER_EXECUTABLE_PATH": str(non_exec_override)}):
+                    res_nonexec = inspect_mcp_headless_shell(
+                        config_paths=[],
+                        cache_dir=cache,
+                        platform="linux",
+                        machine="x86_64",
+                    )
+                    self.assertIsNone(res_nonexec["playwright_headless_shell"])
+                    self.assertIn("SESSFORK_BROWSER_EXECUTABLE_PATH", res_nonexec["warning"] or "")
+
+                # 4c. Two-token ["--executable-path", "<path>"] is also recognized as pinned
+                cfg_path.write_text(
+                    json.dumps(
+                        {
+                            "mcpServers": {
+                                MCP_SERVER_NAME: {
+                                    "command": "npx",
+                                    "args": ["-y", "@playwright/mcp@0.0.85", "--executable-path", str(mac_bin)],
+                                }
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                res_two_tok = inspect_mcp_headless_shell(
+                    config_paths=[cfg_path],
+                    cache_dir=cache,
+                    platform="darwin",
+                    machine="arm64",
+                )
+                self.assertEqual(res_two_tok["pinned_mcp_configs"], [str(cfg_path)])
+                self.assertEqual(res_two_tok["unpinned_mcp_configs"], [])
+                self.assertEqual(res_two_tok["stale_mcp_configs"], [])
+                self.assertIsNone(res_two_tok["warning"])
+
+                # 5. CLI --setup and --status on macOS (missing shell -> warning; installed shell -> pinned & clean)
+                env_missing = dict(clean_env)
+                env_missing["HOME"] = str(sandbox_home)
+                env_missing["SESSFORK_HOME"] = str(sandbox_home)
+                env_missing["PLAYWRIGHT_BROWSERS_PATH"] = str(empty_cache)
+                with mock.patch.dict(os.environ, env_missing, clear=True), \
+                    mock.patch("sessfork.mcp_setup.sys.platform", "darwin"), \
+                    mock.patch("sessfork.mcp_setup.platform_mod.machine", return_value="arm64"), \
+                    mock.patch("sessfork.mcp_setup.resolve_npx_command", return_value="/opt/homebrew/bin/npx"):
+                    out_buf = io.StringIO()
+                    with contextlib.redirect_stdout(out_buf):
+                        rc = main(["--setup", "--target", "antigravity", "--state-file", str(state_file), "--json"])
+                    self.assertEqual(rc, 0)
+                    setup_payload = json.loads(out_buf.getvalue())
+                    self.assertIsNone(setup_payload["playwright_headless_shell"])
+                    self.assertIn("playwright-core install chromium-headless-shell", setup_payload["warning"] or "")
+
+                    out_setup_text = io.StringIO()
+                    with contextlib.redirect_stdout(out_setup_text):
+                        rc = main(["--setup", "--target", "antigravity", "--state-file", str(state_file)])
+                    self.assertEqual(rc, 0)
+                    self.assertIn("playwright-core install chromium-headless-shell", out_setup_text.getvalue())
+
+                    out_text = io.StringIO()
+                    with contextlib.redirect_stdout(out_text):
+                        rc = main(["--status", "--target", "antigravity", "--state-file", str(state_file)])
+                    self.assertEqual(rc, 0)
+                    self.assertIn("Playwright headless shell:", out_text.getvalue())
+                    self.assertIn("playwright-core install chromium-headless-shell", out_text.getvalue())
+
+                    # Also verify --status text when state file does not exist yet
+                    missing_state = sandbox_home / ".sessfork" / "does-not-exist.json"
+                    out_no_state = io.StringIO()
+                    with contextlib.redirect_stdout(out_no_state):
+                        rc = main(["--status", "--target", "antigravity", "--state-file", str(missing_state)])
+                    self.assertEqual(rc, 0)
+                    self.assertIn("Playwright headless shell: not found", out_no_state.getvalue())
+                    self.assertIn("playwright-core install chromium-headless-shell", out_no_state.getvalue())
+
+                # Now with chrome-headless-shell installed -> --setup pins it, --status reports pinned & no warning
+                env_present = dict(clean_env)
+                env_present["HOME"] = str(sandbox_home)
+                env_present["SESSFORK_HOME"] = str(sandbox_home)
+                env_present["PLAYWRIGHT_BROWSERS_PATH"] = str(cache)
+                with mock.patch.dict(os.environ, env_present, clear=True), \
+                    mock.patch("sessfork.mcp_setup.sys.platform", "darwin"), \
+                    mock.patch("sessfork.mcp_setup.platform_mod.machine", return_value="arm64"), \
+                    mock.patch("sessfork.mcp_setup.resolve_npx_command", return_value="/opt/homebrew/bin/npx"):
+                    out_setup = io.StringIO()
+                    with contextlib.redirect_stdout(out_setup):
+                        rc = main(["--setup", "--target", "antigravity", "--state-file", str(state_file), "--json"])
+                    self.assertEqual(rc, 0)
+                    setup_ok = json.loads(out_setup.getvalue())
+                    self.assertEqual(setup_ok["playwright_headless_shell"], str(mac_bin.resolve()))
+                    self.assertIsNone(setup_ok["warning"])
+
+                    wired_doc = json.loads(cfg_path.read_text(encoding="utf-8"))
+                    self.assertIn(
+                        f"--executable-path={mac_bin.resolve()}",
+                        wired_doc["mcpServers"][MCP_SERVER_NAME]["args"],
+                    )
+
+                    out_status = io.StringIO()
+                    with contextlib.redirect_stdout(out_status):
+                        rc = main(["--status", "--target", "antigravity", "--state-file", str(state_file), "--json"])
+                    self.assertEqual(rc, 0)
+                    status_payload = json.loads(out_status.getvalue())
+                    self.assertEqual(status_payload["playwright_headless_shell"], str(mac_bin.resolve()))
+                    self.assertEqual(status_payload["pinned_mcp_configs"], [str(cfg_path)])
+                    self.assertEqual(status_payload["unpinned_mcp_configs"], [])
+                    self.assertIsNone(status_payload["warning"])
 
 
 if __name__ == "__main__":

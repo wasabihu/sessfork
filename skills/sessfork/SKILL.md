@@ -50,6 +50,7 @@ After running `sessfork <domain>` or `sessfork --refresh` inside an already-runn
 Use the `sessfork-browser` MCP tools (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_take_screenshot`) to execute the web workflow in the background.
 
 - Note: Chromium batches `LocalStorage` flushes to disk every ~5 seconds; if the user *just* signed in a second ago and a token is missing, wait 5 seconds and re-run `sessfork <domain>` + `browser_set_storage_state`.
+- macOS headless crash recovery: `sessfork --setup` automatically pins Playwright's `chrome-headless-shell` via `--executable-path` on macOS so multi-origin `storageState` files do not hit system Chrome's `Mach rendezvous failed` crash. If `sessfork-browser` fails with `Target page, context or browser has been closed`, run `npx -y playwright-core install chromium-headless-shell && sessfork --setup`, verify with `sessfork --status`, and ask the user to reload `sessfork-browser` once.
 
 ## Security Guardrails
 

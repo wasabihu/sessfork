@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sessfork"
-version = "0.1.2"
+version = "0.1.3"
 description = "Fork live Chrome auth sessions into headless AI agent browsers (Antigravity, Claude Code, Cursor, Playwright MCP) with zero window focus theft and zero runtime dependencies."
 readme = "README.md"
 license = { text = "MIT" }

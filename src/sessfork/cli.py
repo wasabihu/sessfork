@@ -20,6 +20,7 @@ from sessfork.localstorage import LevelDBFormatError
 from sessfork.mcp_setup import (
     MCP_SERVER_NAME,
     ensure_mcp_configured,
+    inspect_mcp_headless_shell,
     install_agent_skills,
     target_mcp_config_paths,
 )
@@ -203,9 +204,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     if args.status:
         info = summarize_state(state_path)
-        wired = [str(p) for p in target_mcp_config_paths(args.target) if p.is_file()]
+        config_paths = target_mcp_config_paths(args.target)
+        wired = [str(p) for p in config_paths if p.is_file()]
         info["wired_mcp_configs"] = wired
         info["cached_key_browsers"] = list_cached_key_browsers()
+        shell_info = inspect_mcp_headless_shell(config_paths=config_paths)
+        info["playwright_headless_shell"] = shell_info["playwright_headless_shell"]
+        info["auto_pin_disabled"] = shell_info["auto_pin_disabled"]
+        info["pinned_mcp_configs"] = shell_info["pinned_mcp_configs"]
+        info["unpinned_mcp_configs"] = shell_info["unpinned_mcp_configs"]
+        info["stale_mcp_configs"] = shell_info["stale_mcp_configs"]
+        info["warning"] = shell_info["warning"]
         _emit_status(info, args.as_json)
         return 0
 
@@ -287,6 +296,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 1
 
     if has_fork_request:
+        shell_info = (
+            inspect_mcp_headless_shell(config_paths=target_mcp_config_paths(args.target))
+            if args.target != "none"
+            else None
+        )
         result = {
             "ok": True,
             "browser": args.browser,
@@ -302,6 +316,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "updated_mcp_configs": [str(p) for p in updated_mcp],
             "installed_skills": [str(p) for p in installed_skills],
         }
+        if shell_info is not None:
+            result["playwright_headless_shell"] = shell_info["playwright_headless_shell"]
+            result["warning"] = shell_info["warning"]
         if args.as_json:
             print(json.dumps(result, indent=2, ensure_ascii=False))
         else:
@@ -320,9 +337,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 print(f"Wired headless MCP '{MCP_SERVER_NAME}' in {cfg}")
             for sk in installed_skills:
                 print(f"Installed Agent Skill in {sk}")
+            if shell_info is not None and shell_info["warning"]:
+                print(f"Warning: {shell_info['warning']}", file=sys.stderr)
         return 0
 
     if did_work:
+        shell_info = inspect_mcp_headless_shell(config_paths=target_mcp_config_paths(args.target))
         payload = {
             "ok": True,
             "action": "setup",
@@ -330,6 +350,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "mcp_server": MCP_SERVER_NAME,
             "updated_mcp_configs": [str(p) for p in updated_mcp],
             "installed_skills": [str(p) for p in installed_skills],
+            "playwright_headless_shell": shell_info["playwright_headless_shell"],
+            "warning": shell_info["warning"],
         }
         if args.as_json:
             print(json.dumps(payload, indent=2, ensure_ascii=False))
@@ -339,8 +361,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 print(f"  + Updated MCP config: {cfg}")
             for sk in installed_skills:
                 print(f"  + Installed SKILL.md: {sk}")
+            if shell_info["playwright_headless_shell"]:
+                print(f"  + Playwright headless shell: {shell_info['playwright_headless_shell']}")
             if not updated_mcp and not installed_skills:
                 print("  = MCP config and SKILL.md were already up to date.")
+            if shell_info["warning"]:
+                print(f"  ! Warning: {shell_info['warning']}")
         return 0
 
     print(
@@ -362,6 +388,30 @@ def _emit(payload: dict, as_json: bool, text: str) -> None:
         print(text)
 
 
+def _emit_mcp_shell_status(info: dict) -> None:
+    if info.get("wired_mcp_configs"):
+        print(f"Wired MCP config(s): {', '.join(info['wired_mcp_configs'])}")
+    pinned = info.get("pinned_mcp_configs") or []
+    unpinned = info.get("unpinned_mcp_configs") or []
+    stale = info.get("stale_mcp_configs") or []
+    total_wired = len(pinned) + len(unpinned) + len(stale)
+    shell_path = info.get("playwright_headless_shell")
+    if info.get("auto_pin_disabled"):
+        print("Playwright headless shell: auto-pinning disabled via SESSFORK_BROWSER_EXECUTABLE_PATH")
+    elif shell_path:
+        if total_wired > 0:
+            print(
+                f"Playwright headless shell: {shell_path} "
+                f"(pinned in {len(pinned)}/{total_wired} wired MCP config(s))"
+            )
+        else:
+            print(f"Playwright headless shell: {shell_path}")
+    else:
+        print("Playwright headless shell: not found")
+    if info.get("warning"):
+        print(f"Warning: {info['warning']}")
+
+
 def _emit_status(info: dict, as_json: bool) -> None:
     if as_json:
         print(json.dumps(info, indent=2, ensure_ascii=False))
@@ -374,6 +424,7 @@ def _emit_status(info: dict, as_json: bool) -> None:
                 f"{', '.join(info['cached_key_browsers'])} (used only with --cache-key; "
                 "remove with `sessfork --purge-keys`)"
             )
+        _emit_mcp_shell_status(info)
         return
     print(
         f"State file: {info['path']} "
@@ -399,8 +450,7 @@ def _emit_status(info: dict, as_json: bool) -> None:
             f"{', '.join(info['cached_key_browsers'])} (used only with --cache-key; "
             "remove with `sessfork --purge-keys`)"
         )
-    if info.get("wired_mcp_configs"):
-        print(f"Wired MCP config(s): {', '.join(info['wired_mcp_configs'])}")
+    _emit_mcp_shell_status(info)
 
 
 if __name__ == "__main__":
