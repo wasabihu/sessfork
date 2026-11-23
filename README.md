@@ -5,7 +5,7 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](pyproject.toml)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-22c55e.svg)](pyproject.toml)
 
-**English** · [简体中文](README.zh-CN.md) · [Interactive Visual Guide](https://wasabihu.github.io/sessfork/)
+**English** · [简体中文](README.zh-CN.md) · [Interactive Visual Guide](https://wasabihu.github.io/sessfork/) · [Stress Benchmarks](docs/benchmarks.md)
 
 **Fork live Chrome auth sessions (Cookies + LocalStorage) into headless AI agent browsers — zero window focus theft, zero runtime dependencies.**
 
@@ -241,8 +241,14 @@ Check `sessfork --status` to confirm the detected binary and pinned config statu
 ## Development & Tests
 
 ```bash
+# Unit & multi-process concurrency tests
 PYTHONPATH=src python3 -m unittest discover -s tests -v
+
+# Reproducible 5-scenario local stress benchmark (SQLite WAL, 16-proc flock, live MCP hot-reload & 6x isolatedContext)
+python3 scripts/stress_test.py
 ```
+
+See [docs/benchmarks.md](docs/benchmarks.md) for measured macOS ARM64 results (100-domain extraction in `26.6 ms`, `0%` lost updates under 16-process concurrency, `20/20` 50-origin MCP hot reloads, and `0` cross-context leaks across 6 isolated contexts).
 
 ## License
 

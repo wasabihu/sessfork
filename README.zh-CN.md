@@ -5,7 +5,7 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](pyproject.toml)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-22c55e.svg)](pyproject.toml)
 
-[English](README.md) · **简体中文** · [交互式可视化指南](https://wasabihu.github.io/sessfork/)
+[English](README.md) · **简体中文** · [交互式可视化指南](https://wasabihu.github.io/sessfork/) · [压测与基准数据](docs/benchmarks.md)
 
 **一键把本地 Chrome 登录态（Cookies + LocalStorage）无锁分叉到 AI 后台无头浏览器 —— 零窗口抢焦点、零运行时依赖。**
 
@@ -237,8 +237,14 @@ sessfork --setup
 ## 本地开发与测试
 
 ```bash
+# 单元测试与多进程并发回归测试
 PYTHONPATH=src python3 -m unittest discover -s tests -v
+
+# 可复现的 5 维度全本地压测（SQLite WAL 争用、16 并发锁、50-Origin MCP 热重载与 6 路上下文隔离）
+python3 scripts/stress_test.py
 ```
+
+实测基准数据见 [docs/benchmarks.md](docs/benchmarks.md)（macOS ARM64：100 域名全量提取 `26.6 ms`、16 进程并发写入丢更新率 `0%`、50-Origin 热重载 `20/20` 零崩溃、6 路 `isolatedContext` 交叉验证 `0` 串号泄漏）。
 
 ## 开源协议
 
