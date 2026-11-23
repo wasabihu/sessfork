@@ -432,6 +432,8 @@ _UI_HTML_TEMPLATE = """<!doctype html>
       align-items: center;
       justify-content: center;
       gap: 8px;
+      white-space: nowrap;
+      flex-shrink: 0;
       cursor: pointer;
       transition: background 180ms ease, border-color 180ms ease, transform 150ms ease;
     }
@@ -672,6 +674,7 @@ _UI_HTML_TEMPLATE = """<!doctype html>
       background: rgba(11, 15, 25, 0.55);
       border: 1px solid var(--border);
     }
+    .domain-item > div { min-width: 0; }
     .domain-name { font-family: var(--font-mono); font-size: 13px; font-weight: 600; word-break: break-all; }
     .domain-meta { font-size: 11.5px; color: var(--fg-muted); }
     .toast {
