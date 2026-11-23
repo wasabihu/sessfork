@@ -215,9 +215,9 @@ Chromium 会在系统钥匙串的 `"Chrome Safe Storage"` 条目下保存主加�
 <details>
 <summary><strong>支持哪些系统？</strong></summary>
 
-- **macOS**：完整支持，已在真实 Chrome 配置上验证。
-- **Linux**：实验性支持，有单元测试覆盖，但还没在多种真实 Chrome / Secret Service 环境中验证，欢迎反馈问题。
-- **Windows**：不支持（Windows 版 Chromium 使用 DPAPI / 应用绑定加密）。
+- **macOS（`arm64` / `x64`）**：完整支持并在真实 Chrome 配置上充分验证，提供 `sessfork-mcp` 预编译包。
+- **Linux（`x64` / `arm64`）**：已支持（纯内存 `libcrypto` AES-128-CBC + Secret Service / `peanuts`，Ubuntu 全版本 CI 通过，提供 `x64` / `arm64` 预编译包）。
+- **Windows**：暂不原生支持——Windows 版 Chrome 127+ 启用了应用绑定加密（App-Bound Encryption `v20`），非提权用户态无法在不做进程注入的情况下合法解密；Windows 用户推荐在 **WSL2** 中使用。
 
 </details>
 

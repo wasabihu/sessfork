@@ -219,9 +219,9 @@ By default `sessfork` does **not** store the derived decryption key anywhere, so
 <details>
 <summary><strong>Which platforms are supported?</strong></summary>
 
-- **macOS**: fully supported and tested on real Chrome profiles.
-- **Linux**: experimental — covered by unit tests, but not yet verified against many real-world Chrome/Secret Service setups. Bug reports welcome.
-- **Windows**: not supported (Chromium on Windows uses DPAPI / app-bound encryption).
+- **macOS (`arm64` / `x64`)**: fully supported and tested on real Chrome profiles, with prebuilt `sessfork-mcp` binaries.
+- **Linux (`x64` / `arm64`)**: supported (in-memory OpenSSL `libcrypto` AES-128-CBC + Secret Service / `peanuts`, verified on Ubuntu CI, with prebuilt `sessfork-mcp` binaries for `x64` & `arm64`).
+- **Windows**: not natively supported — Chrome 127+ on Windows enforces App-Bound Encryption (`v20`), which cannot be decrypted from unprivileged user space without process injection or privilege escalation. On Windows, run inside **WSL2**.
 
 </details>
 

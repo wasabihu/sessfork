@@ -18,7 +18,7 @@ Reproducible locally via `python3 scripts/stress_test.py --heavy-compare` (see [
 
 ## Install Standalone (No Python or Node.js Required)
 
-### Option 1 · Prebuilt Binary (macOS arm64 / macOS x64 / Linux x64, with SHA-256 verification)
+### Option 1 · Prebuilt Binary (macOS arm64 / macOS x64 / Linux x64 / Linux arm64, with SHA-256 verification)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/main/install.sh | bash -s -- --rust-mcp-only

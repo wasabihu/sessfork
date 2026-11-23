@@ -3,7 +3,7 @@ set -euo pipefail
 
 REPO_URL="https://github.com/wasabihu/sessfork"
 # Pinned release by default; override with SESSFORK_REF=main (or another tag) for bleeding edge
-SESSFORK_REF="${SESSFORK_REF:-v0.1.3}"
+SESSFORK_REF="${SESSFORK_REF:-v0.1.4}"
 TARBALL_URL="${REPO_URL}/archive/${SESSFORK_REF}.tar.gz"
 RUNTIME_DIR="${HOME}/.sessfork/runtime"
 BIN_DIR="${HOME}/.local/bin"
@@ -50,6 +50,7 @@ install_rust_mcp_binary() {
     Darwin:arm64|Darwin:aarch64) asset="sessfork-mcp-darwin-arm64.tar.gz" ;;
     Darwin:x86_64|Darwin:amd64)  asset="sessfork-mcp-darwin-x64.tar.gz" ;;
     Linux:x86_64|Linux:amd64)    asset="sessfork-mcp-linux-x64.tar.gz" ;;
+    Linux:aarch64|Linux:arm64)   asset="sessfork-mcp-linux-arm64.tar.gz" ;;
     *)
       echo "Error: No prebuilt sessfork-mcp binary for ${os_name}/${arch_name}." >&2
       echo "Build from source instead: cargo install --git ${REPO_URL} sessfork-mcp" >&2
