@@ -107,6 +107,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Agent MCP config to auto-wire (default: auto-detect Antigravity/Claude/Cursor; use 'none' to skip)",
     )
     parser.add_argument(
+        "--cdp-endpoint",
+        default=None,
+        help=(
+            "Attach Playwright MCP to an external CDP server such as `moli serve` "
+            "(e.g. 'http://127.0.0.1:9222'); pass 'local' or 'none' to switch back to local headless Chromium"
+        ),
+    )
+    parser.add_argument(
         "--replace",
         action="store_true",
         help="Replace existing state.json instead of incrementally merging domains",
@@ -214,6 +222,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         info["pinned_mcp_configs"] = shell_info["pinned_mcp_configs"]
         info["unpinned_mcp_configs"] = shell_info["unpinned_mcp_configs"]
         info["stale_mcp_configs"] = shell_info["stale_mcp_configs"]
+        info["cdp_mcp_configs"] = shell_info["cdp_mcp_configs"]
         info["warning"] = shell_info["warning"]
         _emit_status(info, args.as_json)
         return 0
@@ -251,8 +260,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     installed_skills: List[Path] = []
 
     try:
-        if args.setup:
-            updated_mcp = ensure_mcp_configured([args.target], state_path=state_path)
+        if args.setup or (args.cdp_endpoint is not None and not has_fork_request):
+            updated_mcp = ensure_mcp_configured(
+                [args.target],
+                state_path=state_path,
+                cdp_endpoint=args.cdp_endpoint,
+            )
             installed_skills = install_agent_skills()
             did_work = True
 
@@ -276,7 +289,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 replace_all=args.replace,
             )
             if args.target != "none":
-                more_mcp = ensure_mcp_configured([args.target], state_path=saved_path)
+                more_mcp = ensure_mcp_configured(
+                    [args.target],
+                    state_path=saved_path,
+                    cdp_endpoint=args.cdp_endpoint,
+                )
                 for p in more_mcp:
                     if p not in updated_mcp:
                         updated_mcp.append(p)
@@ -318,6 +335,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         }
         if shell_info is not None:
             result["playwright_headless_shell"] = shell_info["playwright_headless_shell"]
+            result["cdp_mcp_configs"] = shell_info["cdp_mcp_configs"]
             result["warning"] = shell_info["warning"]
         if args.as_json:
             print(json.dumps(result, indent=2, ensure_ascii=False))
@@ -351,6 +369,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "updated_mcp_configs": [str(p) for p in updated_mcp],
             "installed_skills": [str(p) for p in installed_skills],
             "playwright_headless_shell": shell_info["playwright_headless_shell"],
+            "cdp_mcp_configs": shell_info["cdp_mcp_configs"],
             "warning": shell_info["warning"],
         }
         if args.as_json:
@@ -361,7 +380,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 print(f"  + Updated MCP config: {cfg}")
             for sk in installed_skills:
                 print(f"  + Installed SKILL.md: {sk}")
-            if shell_info["playwright_headless_shell"]:
+            if shell_info["cdp_mcp_configs"]:
+                unique_eps = sorted(set(shell_info["cdp_mcp_configs"].values()))
+                print(f"  + External CDP endpoint(s): {', '.join(unique_eps)}")
+            elif shell_info["playwright_headless_shell"]:
                 print(f"  + Playwright headless shell: {shell_info['playwright_headless_shell']}")
             if not updated_mcp and not installed_skills:
                 print("  = MCP config and SKILL.md were already up to date.")
@@ -391,12 +413,21 @@ def _emit(payload: dict, as_json: bool, text: str) -> None:
 def _emit_mcp_shell_status(info: dict) -> None:
     if info.get("wired_mcp_configs"):
         print(f"Wired MCP config(s): {', '.join(info['wired_mcp_configs'])}")
+    cdp_configs = info.get("cdp_mcp_configs") or {}
+    if cdp_configs:
+        unique_eps = sorted(set(cdp_configs.values()))
+        print(
+            f"External CDP backend: {', '.join(unique_eps)} "
+            f"(wired in {len(cdp_configs)} config(s); pass `--cdp-endpoint local` to reset)"
+        )
     pinned = info.get("pinned_mcp_configs") or []
     unpinned = info.get("unpinned_mcp_configs") or []
     stale = info.get("stale_mcp_configs") or []
     total_wired = len(pinned) + len(unpinned) + len(stale)
     shell_path = info.get("playwright_headless_shell")
-    if info.get("auto_pin_disabled"):
+    if cdp_configs and total_wired == 0:
+        pass
+    elif info.get("auto_pin_disabled"):
         print("Playwright headless shell: auto-pinning disabled via SESSFORK_BROWSER_EXECUTABLE_PATH")
     elif shell_path:
         if total_wired > 0:

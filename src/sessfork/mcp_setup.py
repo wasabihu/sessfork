@@ -14,8 +14,9 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
+from urllib.parse import urlparse
 
-from sessfork.chrome import real_user_home
+from sessfork.chrome import BrowserProfileError, real_user_home
 from sessfork.state import (
     DEFAULT_STATE_PATH,
     PLAYWRIGHT_OUTPUT_DIRNAME,
@@ -26,8 +27,29 @@ from sessfork.state import (
 MCP_SERVER_NAME = "sessfork-browser"
 DEFAULT_PLAYWRIGHT_MCP_PKG = "@playwright/mcp@0.0.85"
 BROWSER_EXECUTABLE_ENV = "SESSFORK_BROWSER_EXECUTABLE_PATH"
+CDP_ENDPOINT_ENV = "SESSFORK_CDP_ENDPOINT"
 _DISABLE_PINNING_VALUES = frozenset({"system", "none"})
+_DISABLE_CDP_VALUES = frozenset({"none", "local", "off"})
 _HEADLESS_SHELL_DIR_RE = re.compile(r"^chromium_headless_shell-(\d+)$")
+
+
+def normalize_cdp_endpoint(raw: str) -> Optional[str]:
+    """Validate and normalize an external CDP endpoint URL (e.g. 'http://127.0.0.1:9222' for Moli).
+
+    Returns `None` when given 'local', 'none', 'off', or an empty string.
+    """
+    text = raw.strip()
+    if not text or text.lower() in _DISABLE_CDP_VALUES:
+        return None
+    if any(ch in text for ch in " \t\r\n;|&$`'\"\\<>"):
+        raise BrowserProfileError(f"Invalid characters in --cdp-endpoint URL: {raw!r}")
+    parsed = urlparse(text)
+    if parsed.scheme not in ("http", "https", "ws", "wss") or not parsed.hostname:
+        raise BrowserProfileError(
+            f"Invalid --cdp-endpoint URL {raw!r}; expected http(s):// or ws(s):// with a host "
+            "(e.g. 'http://127.0.0.1:9222' for `moli serve`, or 'local' to reset)."
+        )
+    return text.rstrip("/")
 
 
 def _headless_shell_relative_candidates(plat: str, arch: str) -> Tuple[str, ...]:
@@ -182,19 +204,44 @@ def build_playwright_mcp_entry(
     platform: Optional[str] = None,
     cache_dir: Optional[Path] = None,
     machine: Optional[str] = None,
+    cdp_endpoint: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build a clean stdio MCP entry (omits 'type' key for Antigravity schema compatibility).
 
     `--output-dir` keeps Playwright MCP snapshots/screenshots under `~/.sessfork/playwright-output`
     instead of a `.playwright-mcp/` folder in whatever project the agent happens to run in.
-    On macOS (or when `SESSFORK_BROWSER_EXECUTABLE_PATH` is explicitly set), pins Playwright's
-    `chrome-headless-shell` via `--executable-path` to avoid system Chrome headless multi-origin
-    `storageState` hydration crashes (`Mach rendezvous failed`).
+    When `cdp_endpoint` (or `SESSFORK_CDP_ENDPOINT`) is provided, attaches to an external CDP
+    server such as `moli serve` (`http://127.0.0.1:9222`) instead of launching local Chromium.
+    Otherwise on macOS (or when `SESSFORK_BROWSER_EXECUTABLE_PATH` is explicitly set), pins
+    Playwright's `chrome-headless-shell` via `--executable-path` to avoid system Chrome headless
+    multi-origin `storageState` hydration crashes (`Mach rendezvous failed`).
     """
     resolved_state = state_path.expanduser().resolve()
     output_dir = resolved_state.parent / PLAYWRIGHT_OUTPUT_DIRNAME
     cmd = npx_cmd or resolve_npx_command()
     mcp_pkg = os.environ.get("SESSFORK_PLAYWRIGHT_MCP_PKG", DEFAULT_PLAYWRIGHT_MCP_PKG).strip() or DEFAULT_PLAYWRIGHT_MCP_PKG
+    plat = (platform or sys.platform).lower()
+
+    if cdp_endpoint is not None:
+        normalized_cdp = normalize_cdp_endpoint(cdp_endpoint)
+    else:
+        env_cdp = os.environ.get(CDP_ENDPOINT_ENV, "").strip()
+        normalized_cdp = normalize_cdp_endpoint(env_cdp) if env_cdp else None
+
+    if normalized_cdp is not None:
+        args = [
+            "-y",
+            mcp_pkg,
+            f"--cdp-endpoint={normalized_cdp}",
+            "--caps=storage",
+            f"--output-dir={output_dir}",
+        ]
+        return {
+            "command": cmd,
+            "args": args,
+            "env": _build_mcp_env(cmd, platform=plat),
+        }
+
     args = [
         "-y",
         mcp_pkg,
@@ -204,7 +251,6 @@ def build_playwright_mcp_entry(
         f"--storage-state={resolved_state}",
         f"--output-dir={output_dir}",
     ]
-    plat = (platform or sys.platform).lower()
     override = os.environ.get(BROWSER_EXECUTABLE_ENV, "").strip()
     has_explicit_override = bool(override and override.lower() not in _DISABLE_PINNING_VALUES)
     if plat == "darwin" or has_explicit_override:
@@ -222,19 +268,47 @@ def build_playwright_mcp_entry(
     }
 
 
-def _extract_executable_path_arg(args: Any) -> Optional[str]:
+def _extract_cli_arg(args: Any, flag: str) -> Optional[str]:
     if not isinstance(args, list):
         return None
+    prefix = f"{flag}="
     for idx, item in enumerate(args):
         if not isinstance(item, str):
             continue
-        if item.startswith("--executable-path="):
+        if item.startswith(prefix):
             val = item.split("=", 1)[1].strip()
             return val or None
-        if item == "--executable-path" and idx + 1 < len(args) and isinstance(args[idx + 1], str):
+        if item == flag and idx + 1 < len(args) and isinstance(args[idx + 1], str):
             val = args[idx + 1].strip()
             return val or None
     return None
+
+
+def _extract_executable_path_arg(args: Any) -> Optional[str]:
+    return _extract_cli_arg(args, "--executable-path")
+
+
+def _extract_cdp_endpoint_arg(args: Any) -> Optional[str]:
+    return _extract_cli_arg(args, "--cdp-endpoint")
+
+
+def _read_existing_cdp_endpoint(cfg_path: Path) -> Optional[str]:
+    if not cfg_path.is_file():
+        return None
+    try:
+        raw = cfg_path.read_text(encoding="utf-8").strip()
+        doc = json.loads(raw) if raw else {}
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    servers = doc.get("mcpServers")
+    if not isinstance(servers, dict):
+        return None
+    entry = servers.get(MCP_SERVER_NAME)
+    if not isinstance(entry, dict):
+        return None
+    return _extract_cdp_endpoint_arg(entry.get("args"))
 
 
 def inspect_mcp_headless_shell(
@@ -245,7 +319,7 @@ def inspect_mcp_headless_shell(
     platform: Optional[str] = None,
     machine: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Inspect chrome-headless-shell detection and whether wired MCP configs pin `--executable-path`."""
+    """Inspect chrome-headless-shell detection, pinned `--executable-path`, and `--cdp-endpoint` configs."""
     plat = (platform or sys.platform).lower()
     override = os.environ.get(BROWSER_EXECUTABLE_ENV, "").strip()
     auto_pin_disabled = override.lower() in _DISABLE_PINNING_VALUES
@@ -260,6 +334,7 @@ def inspect_mcp_headless_shell(
     pinned_configs: List[str] = []
     unpinned_configs: List[str] = []
     stale_configs: List[str] = []
+    cdp_configs: Dict[str, str] = {}
     seen: set[Path] = set()
 
     for cfg_path in paths:
@@ -279,6 +354,10 @@ def inspect_mcp_headless_shell(
         entry = servers.get(MCP_SERVER_NAME)
         if not isinstance(entry, dict):
             continue
+        cdp_ep = _extract_cdp_endpoint_arg(entry.get("args"))
+        if cdp_ep:
+            cdp_configs[str(cfg_path)] = cdp_ep
+            continue
         pinned_exec = _extract_executable_path_arg(entry.get("args"))
         if not pinned_exec:
             unpinned_configs.append(str(cfg_path))
@@ -289,6 +368,7 @@ def inspect_mcp_headless_shell(
             else:
                 stale_configs.append(str(cfg_path))
 
+    all_wired_use_cdp = bool(cdp_configs) and not (pinned_configs or unpinned_configs or stale_configs)
     warning: Optional[str] = None
     if stale_configs:
         if auto_pin_disabled:
@@ -312,13 +392,13 @@ def inspect_mcp_headless_shell(
                 f"Wired MCP config(s) reference a missing --executable-path ({', '.join(stale_configs)}). "
                 "Run `npx -y playwright-core install chromium-headless-shell` followed by `sessfork --setup`, then reload MCP."
             )
-    elif has_explicit_override and detected is None:
+    elif has_explicit_override and detected is None and not all_wired_use_cdp:
         warning = (
             f"{BROWSER_EXECUTABLE_ENV}={override!r} does not point to an executable file; "
             "--executable-path will be omitted. Fix or unset "
             f"{BROWSER_EXECUTABLE_ENV} (or set it to 'system'/'none' to disable auto-pinning)."
         )
-    elif plat == "darwin" and not auto_pin_disabled:
+    elif plat == "darwin" and not auto_pin_disabled and not all_wired_use_cdp:
         if detected is None:
             warning = (
                 "Playwright chrome-headless-shell not found. On macOS, system Chrome in headless mode "
@@ -338,6 +418,7 @@ def inspect_mcp_headless_shell(
         "pinned_mcp_configs": pinned_configs,
         "unpinned_mcp_configs": unpinned_configs,
         "stale_mcp_configs": stale_configs,
+        "cdp_mcp_configs": cdp_configs,
         "warning": warning,
     }
 
@@ -398,8 +479,18 @@ def ensure_mcp_configured(
     state_path: Path = DEFAULT_STATE_PATH,
     home: Optional[Path] = None,
     npx_cmd: Optional[str] = None,
+    cdp_endpoint: Optional[str] = None,
+    preserve_existing_cdp: bool = True,
 ) -> List[Path]:
     """Idempotently register `sessfork-browser` in each target's MCP configuration."""
+    # Validate explicit or env CDP endpoint before touching any files
+    if cdp_endpoint is not None:
+        normalize_cdp_endpoint(cdp_endpoint)
+    else:
+        env_cdp = os.environ.get(CDP_ENDPOINT_ENV, "").strip()
+        if env_cdp:
+            normalize_cdp_endpoint(env_cdp)
+
     # Ensure the state file exists on disk so Playwright MCP never errors on startup
     resolved_state = state_path.expanduser().resolve()
     if not resolved_state.is_file():
@@ -412,7 +503,12 @@ def ensure_mcp_configured(
         except OSError:
             pass
 
-    entry = build_playwright_mcp_entry(state_path=resolved_state, npx_cmd=npx_cmd)
+    default_entry = build_playwright_mcp_entry(
+        state_path=resolved_state,
+        npx_cmd=npx_cmd,
+        cdp_endpoint=cdp_endpoint,
+    )
+    has_env_cdp = bool(os.environ.get(CDP_ENDPOINT_ENV, "").strip())
     updated_files: List[Path] = []
 
     seen: set[Path] = set()
@@ -423,6 +519,15 @@ def ensure_mcp_configured(
             if cfg_path in seen:
                 continue
             seen.add(cfg_path)
+            entry = default_entry
+            if preserve_existing_cdp and cdp_endpoint is None and not has_env_cdp:
+                existing_cdp = _read_existing_cdp_endpoint(cfg_path)
+                if existing_cdp:
+                    entry = build_playwright_mcp_entry(
+                        state_path=resolved_state,
+                        npx_cmd=npx_cmd,
+                        cdp_endpoint=existing_cdp,
+                    )
             if _upsert_mcp_json(cfg_path, MCP_SERVER_NAME, entry):
                 updated_files.append(cfg_path)
 

@@ -70,6 +70,23 @@ Inside a single running `sessfork-browser` MCP server, 6 separate `isolatedConte
 | Cross-context cookie / LocalStorage leaks | **0** |
 | Total RSS with 6 active isolated contexts | **1,218.9 MB** (~105 MB/context above base) |
 
+### 6. Optional Lightweight CDP Backend: `chrome-headless-shell` vs. `lexmount/moli` (`v1.1.27`)
+
+`sessfork` defaults to local `chrome-headless-shell` for maximum web compatibility (99.9% task pass rate on Lexbench), and also supports attaching to an external Rust headless browser such as [`lexmount/moli`](https://github.com/lexmount/moli) via `sessfork --setup --cdp-endpoint http://127.0.0.1:9222`.
+
+Measured on the same Apple Silicon macOS host against the same local `127.0.0.1` auth echo server and `@playwright/mcp@0.0.85`:
+
+| Metric | `chrome-headless-shell` (default) | `moli 1.1.27` (`--cdp-endpoint`) | Delta |
+| :--- | :---: | :---: | :---: |
+| CDP ready / idle browser RSS | ~400+ ms | **68.5 ms / 12.7 MB** | Fast cold start |
+| `browser_navigate` + `browser_snapshot` | Pass | **Pass** (full AX tree) | Compatible |
+| `browser_set_storage_state` hot-reload (Cookie + LS) | 50-origin: 263.8 ms | **10-origin: 52.3 ms** / 50-origin: 672.5 ms | 0 stale reads |
+| 6× `isolatedContext` interleaved verification | 6 / 6 (0 leaks) | **6 / 6 (0 leaks)** | Identical isolation |
+| 6× `isolatedContext` total elapsed time | 3,413.1 ms | **778.6 ms** | **4.4× faster** |
+| 6× `isolatedContext` total RSS (browser + Node MCP) | 1,218.9 MB | **382.5 MB** (`moli`: 125.9 MB + Node: 256.6 MB) | **-68.6% memory** |
+
+> **Trade-off**: Per Moli's Lexbench, Moli achieves an 80.7% task pass rate vs. Chrome's 99.9%. Use `moli serve` when memory/concurrency matters most on DOM-first workloads, and switch back anytime with `sessfork --setup --cdp-endpoint local`.
+
 ## Caveats & Scope
 
 - Scenarios 4–5 measure `@playwright/mcp` + `chrome-headless-shell` against a local `127.0.0.1` server; real-world external sites add network RTT and site-specific JS execution time.

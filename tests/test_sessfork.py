@@ -40,6 +40,7 @@ from sessfork.mcp_setup import (
     find_playwright_headless_shell,
     inspect_mcp_headless_shell,
     install_agent_skills,
+    normalize_cdp_endpoint,
 )
 from sessfork.state import (
     clear_cookies,
@@ -1150,6 +1151,105 @@ class SessforkTestSuite(unittest.TestCase):
             os.symlink(victim, sym_state.parent / ".state.json.lock")
             with self.assertRaises(BrowserProfileError):
                 upsert_session_state([], state_path=sym_state)
+
+    def test_cdp_endpoint_setup_preservation_reset_and_validation(self) -> None:
+        self.assertEqual(normalize_cdp_endpoint("http://127.0.0.1:9222/"), "http://127.0.0.1:9222")
+        self.assertEqual(normalize_cdp_endpoint("ws://127.0.0.1:9222/devtools/browser/1"), "ws://127.0.0.1:9222/devtools/browser/1")
+        self.assertIsNone(normalize_cdp_endpoint("local"))
+        self.assertIsNone(normalize_cdp_endpoint("NONE"))
+        for bad in ("ftp://127.0.0.1:9222", "file:///etc/passwd", "http://127.0.0.1:9222;id", "127.0.0.1:9222"):
+            with self.assertRaises(BrowserProfileError, msg=f"Expected rejection for {bad!r}"):
+                normalize_cdp_endpoint(bad)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox_home = Path(tmp)
+            state_file = sandbox_home / ".sessfork" / "state.json"
+            cfg_path = sandbox_home / ".gemini" / "config" / "mcp_config.json"
+            empty_cache = sandbox_home / "empty-ms-playwright"
+            empty_cache.mkdir()
+
+            clean_env = {
+                k: v
+                for k, v in os.environ.items()
+                if k not in ("SESSFORK_CDP_ENDPOINT", "SESSFORK_BROWSER_EXECUTABLE_PATH", "PLAYWRIGHT_BROWSERS_PATH")
+            }
+            clean_env["HOME"] = str(sandbox_home)
+            clean_env["SESSFORK_HOME"] = str(sandbox_home)
+            clean_env["PLAYWRIGHT_BROWSERS_PATH"] = str(empty_cache)
+
+            with mock.patch.dict(os.environ, clean_env, clear=True), \
+                mock.patch("sessfork.mcp_setup.sys.platform", "darwin"), \
+                mock.patch("sessfork.mcp_setup.platform_mod.machine", return_value="arm64"), \
+                mock.patch("sessfork.mcp_setup.resolve_npx_command", return_value="/opt/homebrew/bin/npx"):
+                # 1. Wire external CDP endpoint (e.g. `moli serve`) via CLI
+                out_setup = io.StringIO()
+                with contextlib.redirect_stdout(out_setup):
+                    rc = main(
+                        [
+                            "--setup",
+                            "--target",
+                            "antigravity",
+                            "--state-file",
+                            str(state_file),
+                            "--cdp-endpoint",
+                            "http://127.0.0.1:9222/",
+                            "--json",
+                        ]
+                    )
+                self.assertEqual(rc, 0)
+                setup_doc = json.loads(out_setup.getvalue())
+                self.assertEqual(setup_doc["cdp_mcp_configs"], {str(cfg_path): "http://127.0.0.1:9222"})
+                self.assertIsNone(setup_doc["warning"])
+
+                wired_args = json.loads(cfg_path.read_text(encoding="utf-8"))["mcpServers"][MCP_SERVER_NAME]["args"]
+                self.assertIn("--cdp-endpoint=http://127.0.0.1:9222", wired_args)
+                self.assertIn("--caps=storage", wired_args)
+                self.assertNotIn("--headless", wired_args)
+                self.assertNotIn("--isolated", wired_args)
+                self.assertFalse(any(a.startswith("--executable-path") for a in wired_args))
+                self.assertFalse(any(a.startswith("--storage-state") for a in wired_args))
+
+                # 2. Subsequent ensure_mcp_configured (as called by `sessfork github.com`) preserves CDP endpoint
+                updated_again = ensure_mcp_configured(
+                    ["antigravity"],
+                    state_path=state_file,
+                    home=sandbox_home,
+                    npx_cmd="/opt/homebrew/bin/npx",
+                )
+                self.assertEqual(updated_again, [])
+                wired_args_after = json.loads(cfg_path.read_text(encoding="utf-8"))["mcpServers"][MCP_SERVER_NAME]["args"]
+                self.assertIn("--cdp-endpoint=http://127.0.0.1:9222", wired_args_after)
+
+                # 3. `--status` reports external CDP backend cleanly without spurious chrome-headless-shell warning
+                out_status = io.StringIO()
+                with contextlib.redirect_stdout(out_status):
+                    rc = main(["--status", "--target", "antigravity", "--state-file", str(state_file)])
+                self.assertEqual(rc, 0)
+                self.assertIn("External CDP backend: http://127.0.0.1:9222", out_status.getvalue())
+                self.assertNotIn("Warning:", out_status.getvalue())
+
+                # 4. `--cdp-endpoint local` resets cleanly back to local headless mode
+                out_reset = io.StringIO()
+                with contextlib.redirect_stdout(out_reset):
+                    rc = main(
+                        [
+                            "--setup",
+                            "--target",
+                            "antigravity",
+                            "--state-file",
+                            str(state_file),
+                            "--cdp-endpoint",
+                            "local",
+                            "--json",
+                        ]
+                    )
+                self.assertEqual(rc, 0)
+                reset_doc = json.loads(out_reset.getvalue())
+                self.assertEqual(reset_doc["cdp_mcp_configs"], {})
+                wired_local = json.loads(cfg_path.read_text(encoding="utf-8"))["mcpServers"][MCP_SERVER_NAME]["args"]
+                self.assertIn("--headless", wired_local)
+                self.assertIn("--isolated", wired_local)
+                self.assertFalse(any(a.startswith("--cdp-endpoint") for a in wired_local))
 
 
 if __name__ == "__main__":
