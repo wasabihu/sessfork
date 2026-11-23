@@ -17,6 +17,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from sessfork.chrome import BrowserProfileError, real_user_home
+from sessfork.moli_bridge import MOLI_INSTALL_CMD, find_moli_binary, get_moli_version
 from sessfork.state import (
     DEFAULT_STATE_PATH,
     PLAYWRIGHT_OUTPUT_DIRNAME,
@@ -25,9 +26,11 @@ from sessfork.state import (
 )
 
 MCP_SERVER_NAME = "sessfork-browser"
+MCP_MOLI_SERVER_NAME = "sessfork-moli"
 DEFAULT_PLAYWRIGHT_MCP_PKG = "@playwright/mcp@0.0.85"
 BROWSER_EXECUTABLE_ENV = "SESSFORK_BROWSER_EXECUTABLE_PATH"
 CDP_ENDPOINT_ENV = "SESSFORK_CDP_ENDPOINT"
+VALID_ENGINES = ("chrome", "moli", "dual")
 _DISABLE_PINNING_VALUES = frozenset({"system", "none"})
 _DISABLE_CDP_VALUES = frozenset({"none", "local", "off"})
 _HEADLESS_SHELL_DIR_RE = re.compile(r"^chromium_headless_shell-(\d+)$")
@@ -161,16 +164,42 @@ def resolve_npx_command() -> str:
     return "npx"
 
 
-def _build_mcp_env(cmd: str, platform: Optional[str] = None) -> Dict[str, str]:
+def resolve_sessfork_command() -> str:
+    """Resolve an absolute `sessfork` CLI path for GUI-launched managed MCP bridges."""
+    found = shutil.which("sessfork")
+    if found:
+        return found
+    for candidate in (
+        str(real_user_home() / ".local" / "bin" / "sessfork"),
+        str(Path.home().expanduser() / ".local" / "bin" / "sessfork"),
+        str(Path(sys.executable).resolve().parent / "sessfork"),
+        "/opt/homebrew/bin/sessfork",
+        "/usr/local/bin/sessfork",
+    ):
+        cand_path = Path(candidate)
+        if cand_path.is_file() and os.access(cand_path, os.X_OK):
+            return str(cand_path)
+    return "sessfork"
+
+
+def _build_mcp_env(
+    cmd: str,
+    platform: Optional[str] = None,
+    extra_bins: Iterable[Optional[str]] = (),
+) -> Dict[str, str]:
     """Build a deterministic PATH (and macOS Playwright browser cache) for GUI-launched MCP servers."""
     candidates: List[str] = []
-    cmd_path = Path(cmd)
-    if cmd_path.is_absolute():
-        candidates.append(str(cmd_path.parent))
-        if cmd_path.exists():
-            candidates.append(str(cmd_path.resolve().parent))
+    for raw_bin in (cmd, *extra_bins):
+        if not raw_bin:
+            continue
+        bin_path = Path(raw_bin)
+        if bin_path.is_absolute():
+            candidates.append(str(bin_path.parent))
+            if bin_path.exists():
+                candidates.append(str(bin_path.resolve().parent))
     candidates.extend(
         (
+            str(real_user_home() / ".local" / "bin"),
             "/opt/homebrew/bin",
             "/usr/local/bin",
             "/usr/bin",
@@ -196,6 +225,44 @@ def _build_mcp_env(cmd: str, platform: Optional[str] = None) -> Dict[str, str]:
         if pw_cache.is_dir():
             env_map["PLAYWRIGHT_BROWSERS_PATH"] = str(pw_cache)
     return env_map
+
+
+def build_managed_moli_mcp_entry(
+    state_path: Path = DEFAULT_STATE_PATH,
+    sessfork_cmd: Optional[str] = None,
+    npx_cmd: Optional[str] = None,
+    moli_bin: Optional[Path] = None,
+    platform: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build a zero-daemon managed Moli MCP entry (`sessfork --mcp-bridge moli`).
+
+    Spawns a private ephemeral `moli serve` on a free loopback port and attaches
+    `@playwright/mcp` over stdio, cleaning up Moli automatically on exit.
+    """
+    resolved_moli = find_moli_binary(moli_bin)
+    if resolved_moli is None:
+        raise BrowserProfileError(
+            "Moli binary not found. Install it first with:\n"
+            f"  {MOLI_INSTALL_CMD}\n"
+            "Then re-run `sessfork --engine moli` or `sessfork --engine dual`."
+        )
+    resolved_state = state_path.expanduser().resolve()
+    cmd = sessfork_cmd or resolve_sessfork_command()
+    npx = npx_cmd or resolve_npx_command()
+    plat = (platform or sys.platform).lower()
+    args = [
+        "--mcp-bridge",
+        "moli",
+        "--state-file",
+        str(resolved_state),
+    ]
+    env_map = _build_mcp_env(cmd, platform=plat, extra_bins=(npx, str(resolved_moli)))
+    env_map["SESSFORK_MOLI_PATH"] = str(resolved_moli)
+    return {
+        "command": cmd,
+        "args": args,
+        "env": env_map,
+    }
 
 
 def build_playwright_mcp_entry(
@@ -292,23 +359,37 @@ def _extract_cdp_endpoint_arg(args: Any) -> Optional[str]:
     return _extract_cli_arg(args, "--cdp-endpoint")
 
 
-def _read_existing_cdp_endpoint(cfg_path: Path) -> Optional[str]:
+def _extract_mcp_bridge_arg(args: Any) -> Optional[str]:
+    return _extract_cli_arg(args, "--mcp-bridge")
+
+
+def _detect_existing_config_mode(cfg_path: Path) -> Tuple[Optional[str], Optional[str]]:
+    """Return `(engine_mode, custom_cdp_endpoint)` from an existing MCP config file."""
     if not cfg_path.is_file():
-        return None
+        return None, None
     try:
         raw = cfg_path.read_text(encoding="utf-8").strip()
         doc = json.loads(raw) if raw else {}
     except (OSError, json.JSONDecodeError):
-        return None
+        return None, None
     if not isinstance(doc, dict):
-        return None
+        return None, None
     servers = doc.get("mcpServers")
     if not isinstance(servers, dict):
-        return None
-    entry = servers.get(MCP_SERVER_NAME)
-    if not isinstance(entry, dict):
-        return None
-    return _extract_cdp_endpoint_arg(entry.get("args"))
+        return None, None
+    primary = servers.get(MCP_SERVER_NAME)
+    moli_companion = servers.get(MCP_MOLI_SERVER_NAME)
+    if isinstance(primary, dict) and isinstance(moli_companion, dict):
+        return "dual", None
+    if isinstance(primary, dict):
+        bridge = _extract_mcp_bridge_arg(primary.get("args"))
+        if bridge == "moli":
+            return "moli", None
+        cdp_ep = _extract_cdp_endpoint_arg(primary.get("args"))
+        if cdp_ep:
+            return "cdp", cdp_ep
+        return "chrome", None
+    return None, None
 
 
 def inspect_mcp_headless_shell(
@@ -319,7 +400,7 @@ def inspect_mcp_headless_shell(
     platform: Optional[str] = None,
     machine: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Inspect chrome-headless-shell detection, pinned `--executable-path`, and `--cdp-endpoint` configs."""
+    """Inspect chrome-headless-shell, Moli binary, engine modes, and `--cdp-endpoint` configs."""
     plat = (platform or sys.platform).lower()
     override = os.environ.get(BROWSER_EXECUTABLE_ENV, "").strip()
     auto_pin_disabled = override.lower() in _DISABLE_PINNING_VALUES
@@ -329,12 +410,15 @@ def inspect_mcp_headless_shell(
         platform=plat,
         machine=machine,
     )
+    moli_path = find_moli_binary()
+    moli_ver = get_moli_version(moli_path) if moli_path is not None else None
     paths = list(config_paths) if config_paths is not None else target_mcp_config_paths(target, home=home)
 
     pinned_configs: List[str] = []
     unpinned_configs: List[str] = []
     stale_configs: List[str] = []
     cdp_configs: Dict[str, str] = {}
+    engine_modes: Dict[str, str] = {}
     seen: set[Path] = set()
 
     for cfg_path in paths:
@@ -354,10 +438,20 @@ def inspect_mcp_headless_shell(
         entry = servers.get(MCP_SERVER_NAME)
         if not isinstance(entry, dict):
             continue
+
+        has_moli_companion = isinstance(servers.get(MCP_MOLI_SERVER_NAME), dict)
+        bridge = _extract_mcp_bridge_arg(entry.get("args"))
+        if bridge == "moli":
+            engine_modes[str(cfg_path)] = "moli"
+            continue
+
         cdp_ep = _extract_cdp_endpoint_arg(entry.get("args"))
         if cdp_ep:
             cdp_configs[str(cfg_path)] = cdp_ep
+            engine_modes[str(cfg_path)] = "cdp"
             continue
+
+        engine_modes[str(cfg_path)] = "dual" if has_moli_companion else "chrome"
         pinned_exec = _extract_executable_path_arg(entry.get("args"))
         if not pinned_exec:
             unpinned_configs.append(str(cfg_path))
@@ -368,7 +462,9 @@ def inspect_mcp_headless_shell(
             else:
                 stale_configs.append(str(cfg_path))
 
-    all_wired_use_cdp = bool(cdp_configs) and not (pinned_configs or unpinned_configs or stale_configs)
+    all_wired_non_chrome = bool(engine_modes) and all(
+        mode in ("cdp", "moli") for mode in engine_modes.values()
+    )
     warning: Optional[str] = None
     if stale_configs:
         if auto_pin_disabled:
@@ -392,13 +488,13 @@ def inspect_mcp_headless_shell(
                 f"Wired MCP config(s) reference a missing --executable-path ({', '.join(stale_configs)}). "
                 "Run `npx -y playwright-core install chromium-headless-shell` followed by `sessfork --setup`, then reload MCP."
             )
-    elif has_explicit_override and detected is None and not all_wired_use_cdp:
+    elif has_explicit_override and detected is None and not all_wired_non_chrome:
         warning = (
             f"{BROWSER_EXECUTABLE_ENV}={override!r} does not point to an executable file; "
             "--executable-path will be omitted. Fix or unset "
             f"{BROWSER_EXECUTABLE_ENV} (or set it to 'system'/'none' to disable auto-pinning)."
         )
-    elif plat == "darwin" and not auto_pin_disabled and not all_wired_use_cdp:
+    elif plat == "darwin" and not auto_pin_disabled and not all_wired_non_chrome:
         if detected is None:
             warning = (
                 "Playwright chrome-headless-shell not found. On macOS, system Chrome in headless mode "
@@ -419,6 +515,9 @@ def inspect_mcp_headless_shell(
         "unpinned_mcp_configs": unpinned_configs,
         "stale_mcp_configs": stale_configs,
         "cdp_mcp_configs": cdp_configs,
+        "engine_modes": engine_modes,
+        "moli_binary": str(moli_path) if moli_path is not None else None,
+        "moli_version": moli_ver,
         "warning": warning,
     }
 
@@ -480,15 +579,25 @@ def ensure_mcp_configured(
     home: Optional[Path] = None,
     npx_cmd: Optional[str] = None,
     cdp_endpoint: Optional[str] = None,
+    engine: Optional[str] = None,
+    sessfork_cmd: Optional[str] = None,
+    moli_bin: Optional[Path] = None,
     preserve_existing_cdp: bool = True,
 ) -> List[Path]:
-    """Idempotently register `sessfork-browser` in each target's MCP configuration."""
+    """Idempotently register `sessfork-browser` (and `sessfork-moli` in `dual` mode)."""
+    if engine is not None and engine not in VALID_ENGINES:
+        raise BrowserProfileError(
+            f"Unsupported --engine {engine!r}; choose from: {', '.join(VALID_ENGINES)}."
+        )
+    if engine is not None and cdp_endpoint is not None:
+        raise BrowserProfileError("Cannot combine --engine and --cdp-endpoint in the same command.")
+
     # Validate explicit or env CDP endpoint before touching any files
     if cdp_endpoint is not None:
         normalize_cdp_endpoint(cdp_endpoint)
     else:
         env_cdp = os.environ.get(CDP_ENDPOINT_ENV, "").strip()
-        if env_cdp:
+        if env_cdp and engine is None:
             normalize_cdp_endpoint(env_cdp)
 
     # Ensure the state file exists on disk so Playwright MCP never errors on startup
@@ -503,14 +612,57 @@ def ensure_mcp_configured(
         except OSError:
             pass
 
-    default_entry = build_playwright_mcp_entry(
-        state_path=resolved_state,
-        npx_cmd=npx_cmd,
-        cdp_endpoint=cdp_endpoint,
-    )
-    has_env_cdp = bool(os.environ.get(CDP_ENDPOINT_ENV, "").strip())
-    updated_files: List[Path] = []
+    def _build_updates_for_mode(
+        mode: str,
+        custom_cdp: Optional[str] = None,
+    ) -> Dict[str, Optional[Dict[str, Any]]]:
+        if mode == "moli":
+            moli_entry = build_managed_moli_mcp_entry(
+                state_path=resolved_state,
+                sessfork_cmd=sessfork_cmd,
+                npx_cmd=npx_cmd,
+                moli_bin=moli_bin,
+            )
+            return {MCP_SERVER_NAME: moli_entry, MCP_MOLI_SERVER_NAME: None}
+        if mode == "dual":
+            chrome_entry = build_playwright_mcp_entry(
+                state_path=resolved_state,
+                npx_cmd=npx_cmd,
+                cdp_endpoint="local",
+            )
+            moli_entry = build_managed_moli_mcp_entry(
+                state_path=resolved_state,
+                sessfork_cmd=sessfork_cmd,
+                npx_cmd=npx_cmd,
+                moli_bin=moli_bin,
+            )
+            return {MCP_SERVER_NAME: chrome_entry, MCP_MOLI_SERVER_NAME: moli_entry}
+        if mode == "cdp" and custom_cdp:
+            cdp_entry = build_playwright_mcp_entry(
+                state_path=resolved_state,
+                npx_cmd=npx_cmd,
+                cdp_endpoint=custom_cdp,
+            )
+            return {MCP_SERVER_NAME: cdp_entry, MCP_MOLI_SERVER_NAME: None}
+        chrome_entry = build_playwright_mcp_entry(
+            state_path=resolved_state,
+            npx_cmd=npx_cmd,
+            cdp_endpoint="local",
+        )
+        return {MCP_SERVER_NAME: chrome_entry, MCP_MOLI_SERVER_NAME: None}
 
+    has_env_cdp = bool(os.environ.get(CDP_ENDPOINT_ENV, "").strip())
+    explicit_updates: Optional[Dict[str, Optional[Dict[str, Any]]]] = None
+    if engine is not None:
+        explicit_updates = _build_updates_for_mode(engine)
+    elif cdp_endpoint is not None:
+        norm_ep = normalize_cdp_endpoint(cdp_endpoint)
+        explicit_updates = _build_updates_for_mode("cdp" if norm_ep else "chrome", norm_ep)
+    elif has_env_cdp:
+        norm_ep = normalize_cdp_endpoint(os.environ.get(CDP_ENDPOINT_ENV, ""))
+        explicit_updates = _build_updates_for_mode("cdp" if norm_ep else "chrome", norm_ep)
+
+    updated_files: List[Path] = []
     seen: set[Path] = set()
     for target in targets:
         if target == "none":
@@ -519,16 +671,20 @@ def ensure_mcp_configured(
             if cfg_path in seen:
                 continue
             seen.add(cfg_path)
-            entry = default_entry
-            if preserve_existing_cdp and cdp_endpoint is None and not has_env_cdp:
-                existing_cdp = _read_existing_cdp_endpoint(cfg_path)
-                if existing_cdp:
-                    entry = build_playwright_mcp_entry(
-                        state_path=resolved_state,
-                        npx_cmd=npx_cmd,
-                        cdp_endpoint=existing_cdp,
-                    )
-            if _upsert_mcp_json(cfg_path, MCP_SERVER_NAME, entry):
+            if explicit_updates is not None:
+                updates = explicit_updates
+            elif preserve_existing_cdp:
+                existing_mode, existing_cdp = _detect_existing_config_mode(cfg_path)
+                if existing_mode in ("moli", "dual") and find_moli_binary(moli_bin) is not None:
+                    updates = _build_updates_for_mode(existing_mode)
+                elif existing_mode == "cdp" and existing_cdp:
+                    updates = _build_updates_for_mode("cdp", existing_cdp)
+                else:
+                    updates = _build_updates_for_mode("chrome")
+            else:
+                updates = _build_updates_for_mode("chrome")
+
+            if _sync_mcp_servers(cfg_path, updates):
                 updated_files.append(cfg_path)
 
     return updated_files
@@ -555,7 +711,7 @@ def _exclusive_mcp_cfg_lock(cfg_path: Path) -> Iterator[None]:
         os.close(fd)
 
 
-def _upsert_mcp_json(cfg_path: Path, server_name: str, entry: Dict[str, Any]) -> bool:
+def _sync_mcp_servers(cfg_path: Path, updates: Dict[str, Optional[Dict[str, Any]]]) -> bool:
     with _exclusive_mcp_cfg_lock(cfg_path):
         cfg_path.parent.mkdir(parents=True, exist_ok=True)
         doc: Dict[str, Any] = {}
@@ -571,10 +727,19 @@ def _upsert_mcp_json(cfg_path: Path, server_name: str, entry: Dict[str, Any]) ->
             servers = {}
             doc["mcpServers"] = servers
 
-        if servers.get(server_name) == entry:
+        changed = False
+        for server_name, entry in updates.items():
+            if entry is None:
+                if server_name in servers:
+                    del servers[server_name]
+                    changed = True
+            elif servers.get(server_name) != entry:
+                servers[server_name] = entry
+                changed = True
+
+        if not changed:
             return False
 
-        servers[server_name] = entry
         payload = json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
         fd, tmp_name = tempfile.mkstemp(prefix=".mcp_", suffix=".tmp", dir=str(cfg_path.parent))
         try:
@@ -587,6 +752,10 @@ def _upsert_mcp_json(cfg_path: Path, server_name: str, entry: Dict[str, Any]) ->
                 os.unlink(tmp_name)
             raise
         return True
+
+
+def _upsert_mcp_json(cfg_path: Path, server_name: str, entry: Dict[str, Any]) -> bool:
+    return _sync_mcp_servers(cfg_path, {server_name: entry})
 
 
 def bundled_skill_markdown() -> str:

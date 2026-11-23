@@ -12,8 +12,11 @@ import sqlite3
 import stat
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
 from unittest import mock
 
@@ -34,6 +37,7 @@ from sessfork.crypto import (
 )
 from sessfork.mcp_setup import (
     DEFAULT_PLAYWRIGHT_MCP_PKG,
+    MCP_MOLI_SERVER_NAME,
     MCP_SERVER_NAME,
     build_playwright_mcp_entry,
     ensure_mcp_configured,
@@ -42,6 +46,7 @@ from sessfork.mcp_setup import (
     install_agent_skills,
     normalize_cdp_endpoint,
 )
+from sessfork.ui_server import create_ui_server
 from sessfork.state import (
     clear_cookies,
     hot_reload_state_path,
@@ -1250,6 +1255,187 @@ class SessforkTestSuite(unittest.TestCase):
                 self.assertIn("--headless", wired_local)
                 self.assertIn("--isolated", wired_local)
                 self.assertFalse(any(a.startswith("--cdp-endpoint") for a in wired_local))
+
+    def test_managed_moli_and_dual_engine_modes_plus_preservation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox_home = Path(tmp)
+            state_file = sandbox_home / ".sessfork" / "state.json"
+            cfg_path = sandbox_home / ".gemini" / "config" / "mcp_config.json"
+            fake_moli = sandbox_home / "bin" / "moli"
+            fake_moli.parent.mkdir(parents=True)
+            fake_moli.write_text("#!/bin/sh\necho 'moli 1.1.27'\n", encoding="utf-8")
+            os.chmod(fake_moli, 0o755)
+
+            clean_env = {
+                k: v
+                for k, v in os.environ.items()
+                if k not in ("SESSFORK_CDP_ENDPOINT", "SESSFORK_MOLI_PATH", "SESSFORK_BROWSER_EXECUTABLE_PATH")
+            }
+            clean_env["HOME"] = str(sandbox_home)
+            clean_env["SESSFORK_HOME"] = str(sandbox_home)
+            clean_env["SESSFORK_MOLI_PATH"] = str(fake_moli)
+
+            with mock.patch.dict(os.environ, clean_env, clear=True), \
+                mock.patch("sessfork.mcp_setup.resolve_npx_command", return_value="/opt/homebrew/bin/npx"), \
+                mock.patch("sessfork.mcp_setup.resolve_sessfork_command", return_value="/usr/local/bin/sessfork"):
+                # 1. Dual mode wires BOTH sessfork-browser (lazy chrome) AND sessfork-moli (managed bridge)
+                out_dual = io.StringIO()
+                with contextlib.redirect_stdout(out_dual):
+                    rc = main(
+                        [
+                            "--with-moli",
+                            "--target",
+                            "antigravity",
+                            "--state-file",
+                            str(state_file),
+                            "--json",
+                        ]
+                    )
+                self.assertEqual(rc, 0)
+                dual_doc = json.loads(out_dual.getvalue())
+                self.assertEqual(dual_doc["engine_modes"], {str(cfg_path): "dual"})
+
+                servers = json.loads(cfg_path.read_text(encoding="utf-8"))["mcpServers"]
+                self.assertIn(MCP_SERVER_NAME, servers)
+                self.assertIn(MCP_MOLI_SERVER_NAME, servers)
+                self.assertIn("--headless", servers[MCP_SERVER_NAME]["args"])
+                self.assertIn("--mcp-bridge", servers[MCP_MOLI_SERVER_NAME]["args"])
+                self.assertIn("moli", servers[MCP_MOLI_SERVER_NAME]["args"])
+
+                # 2. Subsequent ensure_mcp_configured without --engine preserves dual mode
+                self.assertEqual(
+                    ensure_mcp_configured(["antigravity"], state_path=state_file, home=sandbox_home),
+                    [],
+                )
+
+                # 3. Switching to single `moli` mode removes `sessfork-moli` and moves `sessfork-browser` to bridge
+                out_moli = io.StringIO()
+                with contextlib.redirect_stdout(out_moli):
+                    rc = main(
+                        [
+                            "--engine",
+                            "moli",
+                            "--target",
+                            "antigravity",
+                            "--state-file",
+                            str(state_file),
+                            "--json",
+                        ]
+                    )
+                self.assertEqual(rc, 0)
+                servers_moli = json.loads(cfg_path.read_text(encoding="utf-8"))["mcpServers"]
+                self.assertNotIn(MCP_MOLI_SERVER_NAME, servers_moli)
+                self.assertIn("--mcp-bridge", servers_moli[MCP_SERVER_NAME]["args"])
+
+                # 4. Switching back to `chrome` restores single local headless browser
+                out_chrome = io.StringIO()
+                with contextlib.redirect_stdout(out_chrome):
+                    rc = main(
+                        [
+                            "--engine",
+                            "chrome",
+                            "--target",
+                            "antigravity",
+                            "--state-file",
+                            str(state_file),
+                            "--json",
+                        ]
+                    )
+                self.assertEqual(rc, 0)
+                servers_chrome = json.loads(cfg_path.read_text(encoding="utf-8"))["mcpServers"]
+                self.assertNotIn(MCP_MOLI_SERVER_NAME, servers_chrome)
+                self.assertIn("--headless", servers_chrome[MCP_SERVER_NAME]["args"])
+
+    def test_local_ui_server_csrf_redaction_and_engine_switch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox_home = Path(tmp)
+            state_file = sandbox_home / ".sessfork" / "state.json"
+            fake_moli = sandbox_home / "bin" / "moli"
+            fake_moli.parent.mkdir(parents=True)
+            fake_moli.write_text("#!/bin/sh\necho 'moli 1.1.27'\n", encoding="utf-8")
+            os.chmod(fake_moli, 0o755)
+
+            upsert_cookies(
+                [
+                    {
+                        "name": "sid",
+                        "value": "SUPER_SECRET_COOKIE_VALUE_DO_NOT_LEAK",
+                        "domain": ".github.com",
+                        "path": "/",
+                        "expires": time.time() + 3600,
+                        "httpOnly": True,
+                        "secure": True,
+                        "sameSite": "Lax",
+                    }
+                ],
+                state_path=state_file,
+            )
+
+            clean_env = {
+                k: v
+                for k, v in os.environ.items()
+                if k not in ("SESSFORK_CDP_ENDPOINT", "SESSFORK_MOLI_PATH", "SESSFORK_BROWSER_EXECUTABLE_PATH")
+            }
+            clean_env["HOME"] = str(sandbox_home)
+            clean_env["SESSFORK_HOME"] = str(sandbox_home)
+            clean_env["SESSFORK_MOLI_PATH"] = str(fake_moli)
+
+            with mock.patch.dict(os.environ, clean_env, clear=True), \
+                mock.patch("sessfork.mcp_setup.resolve_npx_command", return_value="/opt/homebrew/bin/npx"), \
+                mock.patch("sessfork.mcp_setup.resolve_sessfork_command", return_value="/usr/local/bin/sessfork"):
+                server, url, token = create_ui_server(state_path=state_file, target="antigravity", port=0)
+                t = threading.Thread(target=server.serve_forever, daemon=True)
+                t.start()
+                try:
+                    # 1. GET / serves HTML and never leaks raw secret cookie values
+                    html = urllib.request.urlopen(url, timeout=5).read().decode("utf-8")
+                    self.assertIn("sessfork Studio", html)
+                    self.assertNotIn("SUPER_SECRET_COOKIE_VALUE_DO_NOT_LEAK", html)
+
+                    # 2. GET /api/status is redacted
+                    status_raw = urllib.request.urlopen(url + "api/status", timeout=5).read().decode("utf-8")
+                    self.assertNotIn("SUPER_SECRET_COOKIE_VALUE_DO_NOT_LEAK", status_raw)
+                    status = json.loads(status_raw)
+                    self.assertTrue(status["ok"])
+                    self.assertEqual(status["data"]["state"]["total_cookies"], 1)
+
+                    # 3. POST without CSRF token is rejected with 403
+                    bad_req = urllib.request.Request(
+                        url + "api/engine",
+                        data=json.dumps({"engine": "dual"}).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as ctx_err:
+                        urllib.request.urlopen(bad_req, timeout=5)
+                    self.assertEqual(ctx_err.exception.code, 403)
+                    ctx_err.exception.close()
+
+                    # 4. POST with valid CSRF token switches engine to dual
+                    ok_req = urllib.request.Request(
+                        url + "api/engine",
+                        data=json.dumps({"engine": "dual"}).encode("utf-8"),
+                        headers={"Content-Type": "application/json", "X-Sessfork-Token": token},
+                        method="POST",
+                    )
+                    res = json.loads(urllib.request.urlopen(ok_req, timeout=5).read().decode("utf-8"))
+                    self.assertTrue(res["ok"])
+                    self.assertEqual(res["data"]["active_engine"], "dual")
+
+                    # 5. POST /api/clear removes github.com cleanly
+                    clr_req = urllib.request.Request(
+                        url + "api/clear",
+                        data=json.dumps({"domain": "github.com"}).encode("utf-8"),
+                        headers={"Content-Type": "application/json", "X-Sessfork-Token": token},
+                        method="POST",
+                    )
+                    clr = json.loads(urllib.request.urlopen(clr_req, timeout=5).read().decode("utf-8"))
+                    self.assertTrue(clr["ok"])
+                    self.assertEqual(clr["removed_cookies"], 1)
+                    self.assertEqual(clr["remaining_cookies"], 0)
+                finally:
+                    server.shutdown()
+                    server.server_close()
 
 
 if __name__ == "__main__":

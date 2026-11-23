@@ -134,7 +134,9 @@ sessfork console.cloud.google.com --profile "Profile 1"
 | 从 Arc / Brave / Edge 等其他浏览器分叉 | `sessfork x.com --browser arc` |
 | 指定 Chrome 分身账号目录 | `sessfork github.com --profile "Profile 1"` |
 | 同时为 Antigravity + Claude Code + Cursor 写入配置 | `sessfork --setup --target all` |
-| 接入外部轻量 CDP 浏览器（如 `moli serve`，6 路并发省 68.6% 内存） | `sessfork --setup --cdp-endpoint http://127.0.0.1:9222` |
+| 打开本机可视化配置台（`127.0.0.1`、零依赖一键切引擎与管理域名） | `sessfork --ui` |
+| 一键切换无头引擎（`chrome` 默认 / `moli` 自动托管 / `dual` 双通道惰性兜底） | `sessfork --engine dual`（或 `chrome` / `moli`） |
+| 接入外部已启动的 CDP 浏览器（如手动 `moli serve`） | `sessfork --setup --cdp-endpoint http://127.0.0.1:9222` |
 | 从外部 CDP 切回本地默认 `chrome-headless-shell` | `sessfork --setup --cdp-endpoint local` |
 | 安全查看已缓存的域名与键数量（完全脱敏） | `sessfork --status` |
 | 一键重新同步 `state.json` 里已有的全部域名 | `sessfork --refresh` |

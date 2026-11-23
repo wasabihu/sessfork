@@ -19,11 +19,13 @@ from sessfork.crypto import (
 from sessfork.localstorage import LevelDBFormatError
 from sessfork.mcp_setup import (
     MCP_SERVER_NAME,
+    VALID_ENGINES,
     ensure_mcp_configured,
     inspect_mcp_headless_shell,
     install_agent_skills,
     target_mcp_config_paths,
 )
+from sessfork.moli_bridge import run_managed_moli_mcp
 from sessfork.state import (
     DEFAULT_STATE_PATH,
     clear_state,
@@ -32,6 +34,7 @@ from sessfork.state import (
     summarize_state,
     upsert_session_state,
 )
+from sessfork.ui_server import serve_ui
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -107,12 +110,49 @@ def build_parser() -> argparse.ArgumentParser:
         help="Agent MCP config to auto-wire (default: auto-detect Antigravity/Claude/Cursor; use 'none' to skip)",
     )
     parser.add_argument(
+        "--engine",
+        choices=VALID_ENGINES,
+        default=None,
+        help=(
+            "Browser engine mode for MCP wiring: 'chrome' (default chrome-headless-shell), "
+            "'moli' (auto-managed Rust Moli, zero manual `moli serve`), or "
+            "'dual' (fast `sessfork-moli` + lazy 0 MB `sessfork-browser` Chrome fallback)"
+        ),
+    )
+    parser.add_argument(
+        "--with-moli",
+        action="store_true",
+        help="Shorthand for `--engine dual` (wires both managed `sessfork-moli` and lazy Chrome fallback)",
+    )
+    parser.add_argument(
         "--cdp-endpoint",
         default=None,
         help=(
             "Attach Playwright MCP to an external CDP server such as `moli serve` "
             "(e.g. 'http://127.0.0.1:9222'); pass 'local' or 'none' to switch back to local headless Chromium"
         ),
+    )
+    parser.add_argument(
+        "--ui",
+        action="store_true",
+        help="Launch the local 127.0.0.1 web control panel to switch engines and manage forked domains",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=0,
+        help="Optional loopback port for `--ui` (default: random free port)",
+    )
+    parser.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Do not automatically open the system browser when running `--ui`",
+    )
+    parser.add_argument(
+        "--mcp-bridge",
+        choices=("moli",),
+        default=None,
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--replace",
@@ -183,6 +223,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parser.parse_args(argv)
     state_path: Path = args.state_file.expanduser()
 
+    if args.mcp_bridge == "moli":
+        try:
+            return run_managed_moli_mcp(state_path=state_path)
+        except (BrowserProfileError, OSError) as exc:
+            print(f"sessfork error: {exc}", file=sys.stderr)
+            return 1
+
+    if args.ui:
+        return serve_ui(
+            state_path=state_path,
+            target=args.target,
+            port=args.port,
+            open_browser=not args.no_open,
+        )
+
+    effective_engine = args.engine
+    if args.with_moli:
+        if effective_engine is not None and effective_engine != "dual":
+            print("sessfork error: cannot combine --with-moli with a different --engine", file=sys.stderr)
+            return 1
+        effective_engine = "dual"
+
     if args.clear:
         rem_c, left_c, rem_o, left_o = clear_state(args.domains, state_path=state_path)
         payload = {
@@ -223,6 +285,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         info["unpinned_mcp_configs"] = shell_info["unpinned_mcp_configs"]
         info["stale_mcp_configs"] = shell_info["stale_mcp_configs"]
         info["cdp_mcp_configs"] = shell_info["cdp_mcp_configs"]
+        info["engine_modes"] = shell_info["engine_modes"]
+        info["moli_binary"] = shell_info["moli_binary"]
+        info["moli_version"] = shell_info["moli_version"]
         info["warning"] = shell_info["warning"]
         _emit_status(info, args.as_json)
         return 0
@@ -260,11 +325,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     installed_skills: List[Path] = []
 
     try:
-        if args.setup or (args.cdp_endpoint is not None and not has_fork_request):
+        if args.setup or ((args.cdp_endpoint is not None or effective_engine is not None) and not has_fork_request):
             updated_mcp = ensure_mcp_configured(
                 [args.target],
                 state_path=state_path,
                 cdp_endpoint=args.cdp_endpoint,
+                engine=effective_engine,
             )
             installed_skills = install_agent_skills()
             did_work = True
@@ -293,6 +359,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     [args.target],
                     state_path=saved_path,
                     cdp_endpoint=args.cdp_endpoint,
+                    engine=effective_engine,
                 )
                 for p in more_mcp:
                     if p not in updated_mcp:
@@ -336,6 +403,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if shell_info is not None:
             result["playwright_headless_shell"] = shell_info["playwright_headless_shell"]
             result["cdp_mcp_configs"] = shell_info["cdp_mcp_configs"]
+            result["engine_modes"] = shell_info["engine_modes"]
+            result["moli_binary"] = shell_info["moli_binary"]
             result["warning"] = shell_info["warning"]
         if args.as_json:
             print(json.dumps(result, indent=2, ensure_ascii=False))
@@ -370,6 +439,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "installed_skills": [str(p) for p in installed_skills],
             "playwright_headless_shell": shell_info["playwright_headless_shell"],
             "cdp_mcp_configs": shell_info["cdp_mcp_configs"],
+            "engine_modes": shell_info["engine_modes"],
+            "moli_binary": shell_info["moli_binary"],
             "warning": shell_info["warning"],
         }
         if args.as_json:
@@ -380,11 +451,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 print(f"  + Updated MCP config: {cfg}")
             for sk in installed_skills:
                 print(f"  + Installed SKILL.md: {sk}")
+            if shell_info["engine_modes"]:
+                modes_str = ", ".join(sorted(set(shell_info["engine_modes"].values())))
+                print(f"  + Active engine mode(s): {modes_str}")
             if shell_info["cdp_mcp_configs"]:
                 unique_eps = sorted(set(shell_info["cdp_mcp_configs"].values()))
                 print(f"  + External CDP endpoint(s): {', '.join(unique_eps)}")
             elif shell_info["playwright_headless_shell"]:
                 print(f"  + Playwright headless shell: {shell_info['playwright_headless_shell']}")
+            if shell_info["moli_binary"]:
+                ver = f" ({shell_info['moli_version']})" if shell_info.get("moli_version") else ""
+                print(f"  + Moli binary: {shell_info['moli_binary']}{ver}")
             if not updated_mcp and not installed_skills:
                 print("  = MCP config and SKILL.md were already up to date.")
             if shell_info["warning"]:
@@ -413,6 +490,13 @@ def _emit(payload: dict, as_json: bool, text: str) -> None:
 def _emit_mcp_shell_status(info: dict) -> None:
     if info.get("wired_mcp_configs"):
         print(f"Wired MCP config(s): {', '.join(info['wired_mcp_configs'])}")
+    engine_modes = info.get("engine_modes") or {}
+    if engine_modes:
+        modes_str = ", ".join(sorted(set(engine_modes.values())))
+        print(f"Active engine mode(s): {modes_str} (switch anytime via `sessfork --engine chrome|moli|dual` or `sessfork --ui`)")
+    if info.get("moli_binary"):
+        ver = f" ({info['moli_version']})" if info.get("moli_version") else ""
+        print(f"Moli binary: {info['moli_binary']}{ver}")
     cdp_configs = info.get("cdp_mcp_configs") or {}
     if cdp_configs:
         unique_eps = sorted(set(cdp_configs.values()))
@@ -425,7 +509,7 @@ def _emit_mcp_shell_status(info: dict) -> None:
     stale = info.get("stale_mcp_configs") or []
     total_wired = len(pinned) + len(unpinned) + len(stale)
     shell_path = info.get("playwright_headless_shell")
-    if cdp_configs and total_wired == 0:
+    if (cdp_configs or (engine_modes and all(m in ("cdp", "moli") for m in engine_modes.values()))) and total_wired == 0:
         pass
     elif info.get("auto_pin_disabled"):
         print("Playwright headless shell: auto-pinning disabled via SESSFORK_BROWSER_EXECUTABLE_PATH")

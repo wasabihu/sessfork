@@ -49,6 +49,7 @@ After running `sessfork <domain>` or `sessfork --refresh` inside an already-runn
 
 Use the `sessfork-browser` MCP tools (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_take_screenshot`) to execute the web workflow in the background.
 
+- **Dual-engine smart routing (`sessfork --engine dual`)**: If both `sessfork-moli` (managed Rust Moli headless browser) and `sessfork-browser` (`chrome-headless-shell`) are configured, prefer `sessfork-moli` first for fast DOM-first reading, research, and multi-context workloads (4.4x faster, 68.6% less RAM, 12.7 MB idle). If a site fails due to anti-bot checks or unsupported browser features on Moli, automatically fall back to `sessfork-browser` (Chrome stays unloaded at 0 MB until called).
 - Note: Chromium batches `LocalStorage` flushes to disk every ~5 seconds; if the user *just* signed in a second ago and a token is missing, wait 5 seconds and re-run `sessfork <domain>` + `browser_set_storage_state`.
 - macOS headless crash recovery: `sessfork --setup` automatically pins Playwright's `chrome-headless-shell` via `--executable-path` on macOS so multi-origin `storageState` files do not hit system Chrome's `Mach rendezvous failed` crash. If `sessfork-browser` fails with `Target page, context or browser has been closed`, run `npx -y playwright-core install chromium-headless-shell && sessfork --setup`, verify with `sessfork --status`, and ask the user to reload `sessfork-browser` once.
 

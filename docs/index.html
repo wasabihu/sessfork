@@ -833,6 +833,104 @@
         --fg-muted: #CBD5E1;
       }
     }
+
+    /* Stress benchmarks & Chrome vs Moli comparison */
+    .bench-kpis {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+    @media (max-width: 900px) {
+      .bench-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 520px) {
+      .bench-kpis { grid-template-columns: 1fr; }
+    }
+    .bench-kpi {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .bench-kpi-val {
+      font-family: var(--font-mono);
+      font-size: 1.5rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      color: var(--accent);
+    }
+    .bench-kpi-title {
+      font-size: 0.9rem;
+      font-weight: 700;
+      color: var(--fg);
+    }
+    .bench-kpi-sub {
+      font-size: 0.8rem;
+      color: var(--fg-muted);
+    }
+    .bench-compare {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 22px 24px;
+      display: grid;
+      gap: 18px;
+    }
+    .bench-compare-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .bench-bars {
+      display: grid;
+      gap: 16px;
+    }
+    .bench-row {
+      display: grid;
+      gap: 8px;
+    }
+    .bench-row-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.86rem;
+      font-weight: 600;
+      color: var(--fg);
+    }
+    .bench-bar-line {
+      display: grid;
+      grid-template-columns: 150px 1fr 98px;
+      align-items: center;
+      gap: 12px;
+      font-size: 0.8rem;
+    }
+    @media (max-width: 600px) {
+      .bench-bar-line { grid-template-columns: 112px 1fr 76px; gap: 8px; }
+    }
+    .bench-bar-track {
+      height: 12px;
+      border-radius: 999px;
+      background: rgba(148, 163, 184, 0.14);
+      overflow: hidden;
+    }
+    .bench-bar-fill {
+      height: 100%;
+      border-radius: 999px;
+      transition: width 300ms ease;
+    }
+    .fill-chrome { background: linear-gradient(90deg, #38BDF8, #6366F1); }
+    .fill-moli { background: linear-gradient(90deg, #22C55E, #10B981); }
+    .bench-val-mono {
+      font-family: var(--font-mono);
+      text-align: right;
+      font-weight: 700;
+      color: var(--fg);
+    }
   </style>
 </head>
 <body>
@@ -1001,6 +1099,15 @@
             </div>
           </div>
 
+          <div>
+            <span class="field-label" data-i18n="labelEngine"></span>
+            <div class="chips" id="engine-chips">
+              <button type="button" class="chip" data-engine="chrome" aria-pressed="true" data-i18n="engChrome">Chrome 默认</button>
+              <button type="button" class="chip" data-engine="dual" aria-pressed="false" data-i18n="engDual">Dual 双通道 (推荐)</button>
+              <button type="button" class="chip" data-engine="moli" aria-pressed="false" data-i18n="engMoli">Moli Rust (-69% RAM)</button>
+            </div>
+          </div>
+
           <div class="toggle-row">
             <div>
               <div style="font-weight: 600; font-size: 0.92rem;" data-i18n="jwtTitle"></div>
@@ -1039,6 +1146,85 @@
               </button>
             </div>
             <pre class="output-pre" id="generated-uvx"></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Stress Benchmarks & Chrome vs Moli -->
+    <section class="section" id="benchmarks">
+      <div class="section-head">
+        <div>
+          <div class="section-eyebrow" data-i18n="benchEyebrow"></div>
+          <h2 data-i18n="benchTitle"></h2>
+          <p class="section-sub" data-i18n="benchSub"></p>
+        </div>
+        <a class="btn" href="https://github.com/wasabihu/sessfork/blob/main/docs/benchmarks.md" target="_blank" rel="noopener noreferrer" data-i18n="benchReportBtn"></a>
+      </div>
+
+      <div class="bench-kpis">
+        <div class="bench-kpi">
+          <span class="bench-kpi-val">26.6 ms</span>
+          <span class="bench-kpi-title" data-i18n="kpi1Title"></span>
+          <span class="bench-kpi-sub" data-i18n="kpi1Sub"></span>
+        </div>
+        <div class="bench-kpi">
+          <span class="bench-kpi-val">0.0%</span>
+          <span class="bench-kpi-title" data-i18n="kpi2Title"></span>
+          <span class="bench-kpi-sub" data-i18n="kpi2Sub"></span>
+        </div>
+        <div class="bench-kpi">
+          <span class="bench-kpi-val">200 / 200</span>
+          <span class="bench-kpi-title" data-i18n="kpi3Title"></span>
+          <span class="bench-kpi-sub" data-i18n="kpi3Sub"></span>
+        </div>
+        <div class="bench-kpi">
+          <span class="bench-kpi-val">0 Leaks</span>
+          <span class="bench-kpi-title" data-i18n="kpi4Title"></span>
+          <span class="bench-kpi-sub" data-i18n="kpi4Sub"></span>
+        </div>
+      </div>
+
+      <div class="bench-compare">
+        <div class="bench-compare-head">
+          <div>
+            <strong style="font-size: 1rem;" data-i18n="cmpTitle"></strong>
+            <div style="font-size: 0.82rem; color: var(--fg-muted); margin-top: 2px;" data-i18n="cmpSub"></div>
+          </div>
+          <code style="font-family: var(--font-mono); font-size: 0.8rem; padding: 6px 10px; border-radius: 8px; background: var(--bg-code); border: 1px solid var(--border); color: #86EFAC;">sessfork --engine dual &amp;&amp; sessfork --ui</code>
+        </div>
+        <div class="bench-bars">
+          <div class="bench-row">
+            <div class="bench-row-label">
+              <span data-i18n="barTimeLabel"></span>
+              <span style="color: var(--accent);">4.4x faster</span>
+            </div>
+            <div class="bench-bar-line">
+              <span style="color: var(--fg-muted);">chrome-headless-shell</span>
+              <div class="bench-bar-track"><div class="bench-bar-fill fill-chrome" style="width: 100%;"></div></div>
+              <span class="bench-val-mono">3,413 ms</span>
+            </div>
+            <div class="bench-bar-line">
+              <span style="color: #86EFAC;">Moli 1.1.27 (Rust)</span>
+              <div class="bench-bar-track"><div class="bench-bar-fill fill-moli" style="width: 22.8%;"></div></div>
+              <span class="bench-val-mono">779 ms</span>
+            </div>
+          </div>
+          <div class="bench-row">
+            <div class="bench-row-label">
+              <span data-i18n="barRamLabel"></span>
+              <span style="color: var(--accent);">-68.6% RAM</span>
+            </div>
+            <div class="bench-bar-line">
+              <span style="color: var(--fg-muted);">chrome-headless-shell</span>
+              <div class="bench-bar-track"><div class="bench-bar-fill fill-chrome" style="width: 100%;"></div></div>
+              <span class="bench-val-mono">1,219 MB</span>
+            </div>
+            <div class="bench-bar-line">
+              <span style="color: #86EFAC;">Moli 1.1.27 (Rust)</span>
+              <div class="bench-bar-track"><div class="bench-bar-fill fill-moli" style="width: 31.4%;"></div></div>
+              <span class="bench-val-mono">383 MB</span>
+            </div>
           </div>
         </div>
       </div>
@@ -1123,6 +1309,26 @@
           labelCustomDomain: "自定义域名或 URL",
           btnAdd: "添加",
           labelBrowser: "2. 选择你的日常浏览器",
+          labelEngine: "3. 无头引擎模式（或运行 sessfork --ui 可视化配置）",
+          engChrome: "Chrome 默认 (99.9% 兼容)",
+          engDual: "Dual 双通道 (推荐 · 惰性兜底)",
+          engMoli: "Moli Rust (-69% 内存 / 4.4x)",
+          benchEyebrow: "实测压测与双引擎对比 · Apple Silicon",
+          benchTitle: "硬核压测数据：自己先压到极限，再交给并发 Agent",
+          benchSub: "全本地可一键复现（python3 scripts/stress_test.py）。并发锁将 16 进程丢更新率从 57.5% 压到 0.0%，接入 Rust Moli 可再省 68.6% 内存。",
+          benchReportBtn: "查看完整压测报告",
+          kpi1Title: "100 域名全量提取",
+          kpi1Sub: "2,000 Cookie + 2,000 LS 键（211k/s）",
+          kpi2Title: "16 进程并发丢更新率",
+          kpi2Sub: "fcntl.flock 修复前 57.5% -> 0.0%",
+          kpi3Title: "SQLite WAL 活写争用",
+          kpi3Sub: "后台 5,795 提交期间 0 损坏",
+          kpi4Title: "6 路上下文并发隔离",
+          kpi4Sub: "交叉核验 6/6 全绿、0 串号",
+          cmpTitle: "6 路 isolatedContext 并发实测：chrome-headless-shell vs lexmount/moli",
+          cmpSub: "Dual 模式下平时仅 Moli 空载 12.7 MB；Chrome 在未触发兜底前为 0 MB 惰性未启动。",
+          barTimeLabel: "6 路并发建立 + 乱序交叉核验总耗时",
+          barRamLabel: "6 路并发总 RSS 内存（浏览器 + Node MCP）",
           jwtTitle: "仅同步 LocalStorage JWT（--no-cookies）",
           jwtDesc: "适用于 Supabase / SPA / localhost，跳过系统钥匙串授权弹窗。",
           outPromptTag: "直接复制发给 AI 助手（最省事）",
@@ -1169,6 +1375,26 @@
           labelCustomDomain: "Custom domain or full URL",
           btnAdd: "Add",
           labelBrowser: "2. Source Chromium browser",
+          labelEngine: "3. Headless engine mode (or run `sessfork --ui`)",
+          engChrome: "Chrome Default (99.9% compat)",
+          engDual: "Dual Auto-Fallback (Recommended)",
+          engMoli: "Moli Rust (-69% RAM / 4.4x)",
+          benchEyebrow: "Reproducible Stress Benchmarks · Apple Silicon",
+          benchTitle: "Stress-tested under real multi-agent load",
+          benchSub: "Reproduce locally with `python3 scripts/stress_test.py`. Cross-process flock eliminated a 57.5% lost-update race; optional managed Moli cuts 6-context RAM by 68.6%.",
+          benchReportBtn: "Full Benchmark Report",
+          kpi1Title: "100-Domain Extraction",
+          kpi1Sub: "2,000 cookies + 2,000 LS keys (211k/s)",
+          kpi2Title: "16-Proc Lost Updates",
+          kpi2Sub: "Fixed 57.5% -> 0.0% via fcntl.flock",
+          kpi3Title: "Live SQLite WAL Storm",
+          kpi3Sub: "0 errors across 5,795 live commits",
+          kpi4Title: "6x Isolated Contexts",
+          kpi4Sub: "6/6 interleaved checks, zero cross-leaks",
+          cmpTitle: "6x isolatedContext benchmark: chrome-headless-shell vs. lexmount/moli",
+          cmpSub: "In Dual mode, Moli idles at 12.7 MB while Chrome stays unloaded at 0 MB until fallback is needed.",
+          barTimeLabel: "6x isolatedContext setup + interleaved verify",
+          barRamLabel: "6x active total RSS (browser + Node MCP)",
           jwtTitle: "LocalStorage JWT only (--no-cookies)",
           jwtDesc: "Skip macOS Keychain prompts completely for SPA & localhost apps.",
           outPromptTag: "Paste straight to your AI Agent (Easiest)",
@@ -1231,6 +1457,7 @@
         lang: (navigator.language || "").toLowerCase().startsWith("zh") ? "zh" : "en",
         domains: ["github.com"],
         browser: "chrome",
+        engine: "chrome",
         noCookies: false,
         simSafe: true
       };
@@ -1301,6 +1528,7 @@
         const doms = state.domains.length ? state.domains : ["github.com"];
         const flags = [];
         if (state.browser !== "chrome") flags.push("--browser " + state.browser);
+        if (state.engine !== "chrome") flags.push("--engine " + state.engine);
         if (state.noCookies) flags.push("--no-cookies");
         const suffix = flags.length ? " " + flags.join(" ") : "";
         const cli = "sessfork " + doms.join(" ") + suffix;
@@ -1308,9 +1536,15 @@
 
         const browserCap = state.browser.charAt(0).toUpperCase() + state.browser.slice(1);
         const domList = doms.join(", ");
+        const engineNoteZh = state.engine === "dual"
+          ? "，并启用 Dual 双通道（优先轻量 sessfork-moli，遇反爬自动回退 Chrome）"
+          : (state.engine === "moli" ? "，并使用轻量托管 Moli 引擎（--engine moli）" : "");
+        const engineNoteEn = state.engine === "dual"
+          ? " with dual-engine routing (prefer sessfork-moli, fall back to Chrome if needed)"
+          : (state.engine === "moli" ? " using the managed Moli engine (--engine moli)" : "");
         const promptText = state.lang === "zh"
-          ? `用 sessfork 把我 ${browserCap} 里的 ${domList} 登录态${state.noCookies ? "（仅 LocalStorage，加 --no-cookies）" : ""}分叉到 sessfork-browser，并在后台无头浏览器里帮我完成检查，别切换或打断我当前的浏览器窗口。`
-          : `Use sessfork to fork my ${domList} session from ${browserCap}${state.noCookies ? " (with --no-cookies)" : ""} into sessfork-browser, then inspect it silently in the background without touching my active browser window.`;
+          ? `用 sessfork 把我 ${browserCap} 里的 ${domList} 登录态${state.noCookies ? "（仅 LocalStorage，加 --no-cookies）" : ""}分叉到后台无头浏览器${engineNoteZh}，帮我静默完成检查，别切换或打断我当前的浏览器窗口。`
+          : `Use sessfork to fork my ${domList} session from ${browserCap}${state.noCookies ? " (with --no-cookies)" : ""}${engineNoteEn}, then inspect it silently in the background without touching my active browser window.`;
 
         document.getElementById("generated-prompt").textContent = promptText;
         document.getElementById("generated-cli").textContent = cli;
@@ -1542,6 +1776,16 @@
         if (!chip) return;
         state.browser = chip.getAttribute("data-browser");
         document.querySelectorAll("#browser-chips .chip").forEach((btn) => {
+          btn.setAttribute("aria-pressed", String(btn === chip));
+        });
+        renderBuilder();
+      });
+
+      document.getElementById("engine-chips").addEventListener("click", (e) => {
+        const chip = e.target.closest("[data-engine]");
+        if (!chip) return;
+        state.engine = chip.getAttribute("data-engine");
+        document.querySelectorAll("#engine-chips .chip").forEach((btn) => {
           btn.setAttribute("aria-pressed", String(btn === chip));
         });
         renderBuilder();

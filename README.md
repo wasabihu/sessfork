@@ -138,7 +138,9 @@ sessfork console.cloud.google.com --profile "Profile 1"
 | Choose source browser (`chrome`, `arc`, `brave`, `edge`, `canary`) | `sessfork x.com --browser arc` |
 | Target specific profile folder | `sessfork github.com --profile "Profile 1"` |
 | Wire Antigravity + Claude Code + Cursor explicitly | `sessfork --setup --target all` |
-| Attach MCP to an external CDP browser (e.g. `moli serve`, -68.6% RAM) | `sessfork --setup --cdp-endpoint http://127.0.0.1:9222` |
+| Open the local visual control panel (`127.0.0.1`, zero deps) | `sessfork --ui` |
+| Switch headless engine (`chrome` default / `moli` Rust / `dual` fallback) | `sessfork --engine dual` *(or `chrome` / `moli`)* |
+| Attach MCP to an existing external CDP server (`moli serve`) | `sessfork --setup --cdp-endpoint http://127.0.0.1:9222` |
 | Switch back from external CDP to local `chrome-headless-shell` | `sessfork --setup --cdp-endpoint local` |
 | Inspect cached domains & origins (redacted, safe) | `sessfork --status` |
 | Re-fork all domains currently saved in `state.json` | `sessfork --refresh` |
