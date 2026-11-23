@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 
 from sessfork.chrome import (
@@ -78,8 +80,33 @@ def _write_json_0600(payload: str, target: Path) -> Path:
     return target
 
 
-def save_storage_state_atomic(state: Dict[str, Any], state_path: Path = DEFAULT_STATE_PATH) -> Path:
-    """Atomically write storageState JSON (and its Playwright --output-dir mirror) with 0600 mode."""
+def _state_lock_path(target: Path) -> Path:
+    return target.parent / f".{target.name}.lock"
+
+
+@contextlib.contextmanager
+def _exclusive_state_lock(state_path: Path) -> Iterator[None]:
+    """Serialize read-modify-write cycles across concurrent processes and threads."""
+    target = state_path.expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(target.parent, 0o700)
+    lock_path = _state_lock_path(target)
+    if lock_path.is_symlink():
+        raise BrowserProfileError(f"Refusing to use symlinked state lock file: {lock_path}")
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(str(lock_path), flags, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def _save_storage_state_unlocked(state: Dict[str, Any], state_path: Path = DEFAULT_STATE_PATH) -> Path:
     target = state_path.expanduser().resolve()
     payload = json.dumps(state, indent=2, ensure_ascii=False) + "\n"
     saved = _write_json_0600(payload, target)
@@ -87,6 +114,12 @@ def save_storage_state_atomic(state: Dict[str, Any], state_path: Path = DEFAULT_
     if mirror != saved:
         _write_json_0600(payload, mirror)
     return saved
+
+
+def save_storage_state_atomic(state: Dict[str, Any], state_path: Path = DEFAULT_STATE_PATH) -> Path:
+    """Atomically write storageState JSON (and its Playwright --output-dir mirror) with 0600 mode."""
+    with _exclusive_state_lock(state_path):
+        return _save_storage_state_unlocked(state, state_path)
 
 
 def upsert_session_state(
@@ -103,69 +136,73 @@ def upsert_session_state(
 
     Returns `(saved_path, upserted_cookies, total_cookies, upserted_ls_keys, total_origins)`.
     """
-    now = time.time()
-    existing = {"cookies": [], "origins": []} if replace_all else load_storage_state(state_path)
-
-    # 1. Merge & prune expired cookies
-    merged_cookies: Dict[Tuple[str, str, str], CookieDict] = {}
-    for item in existing["cookies"]:
-        exp = item.get("expires", -1)
-        if isinstance(exp, (int, float)) and exp != -1 and exp <= now:
-            continue
-        merged_cookies[_cookie_identity(item)] = item
-
-    upserted_cookies = 0
-    for item in new_cookies:
-        merged_cookies[_cookie_identity(item)] = item
-        upserted_cookies += 1
-
-    sorted_cookies = sorted(
-        merged_cookies.values(),
-        key=lambda c: (str(c.get("domain", "")), str(c.get("name", ""))),
-    )
-
-    # 2. Merge LocalStorage origins
-    merged_origins: Dict[str, List[Dict[str, str]]] = {}
+    new_cookies_list = list(new_cookies)
+    new_origins_list = None if new_origins is None else list(new_origins)
     norm_refreshed = [normalize_domain_filter(d) for d in (refreshed_domains or []) if d.strip()]
 
-    for entry in existing.get("origins", []):
-        if not isinstance(entry, dict):
-            continue
-        origin_url = str(entry.get("origin", "")).strip()
-        ls_items = entry.get("localStorage")
-        if not origin_url or not isinstance(ls_items, list):
-            continue
-        # If we are refreshing this domain's LocalStorage, drop old snapshot first
-        # so keys removed via localStorage.removeItem() in Chrome are also removed here.
-        if new_origins is not None and norm_refreshed and _origin_matches_filters(origin_url, norm_refreshed):
-            continue
-        merged_origins[origin_url] = ls_items
+    with _exclusive_state_lock(state_path):
+        now = time.time()
+        existing = {"cookies": [], "origins": []} if replace_all else load_storage_state(state_path)
 
-    upserted_ls_keys = 0
-    if new_origins is not None:
-        for entry in new_origins:
+        # 1. Merge & prune expired cookies
+        merged_cookies: Dict[Tuple[str, str, str], CookieDict] = {}
+        for item in existing["cookies"]:
+            exp = item.get("expires", -1)
+            if isinstance(exp, (int, float)) and exp != -1 and exp <= now:
+                continue
+            merged_cookies[_cookie_identity(item)] = item
+
+        upserted_cookies = 0
+        for item in new_cookies_list:
+            merged_cookies[_cookie_identity(item)] = item
+            upserted_cookies += 1
+
+        sorted_cookies = sorted(
+            merged_cookies.values(),
+            key=lambda c: (str(c.get("domain", "")), str(c.get("name", ""))),
+        )
+
+        # 2. Merge LocalStorage origins
+        merged_origins: Dict[str, List[Dict[str, str]]] = {}
+
+        for entry in existing.get("origins", []):
+            if not isinstance(entry, dict):
+                continue
             origin_url = str(entry.get("origin", "")).strip()
-            ls_items = entry.get("localStorage", [])
+            ls_items = entry.get("localStorage")
             if not origin_url or not isinstance(ls_items, list):
                 continue
-            if ls_items:
-                merged_origins[origin_url] = ls_items
-                upserted_ls_keys += len(ls_items)
-            else:
-                merged_origins.pop(origin_url, None)
+            # If we are refreshing this domain's LocalStorage, drop old snapshot first
+            # so keys removed via localStorage.removeItem() in Chrome are also removed here.
+            if new_origins_list is not None and norm_refreshed and _origin_matches_filters(origin_url, norm_refreshed):
+                continue
+            merged_origins[origin_url] = ls_items
 
-    sorted_origins: List[OriginEntry] = [
-        {"origin": orig, "localStorage": merged_origins[orig]}
-        for orig in sorted(merged_origins.keys())
-        if merged_origins[orig]
-    ]
+        upserted_ls_keys = 0
+        if new_origins_list is not None:
+            for entry in new_origins_list:
+                origin_url = str(entry.get("origin", "")).strip()
+                ls_items = entry.get("localStorage", [])
+                if not origin_url or not isinstance(ls_items, list):
+                    continue
+                if ls_items:
+                    merged_origins[origin_url] = ls_items
+                    upserted_ls_keys += len(ls_items)
+                else:
+                    merged_origins.pop(origin_url, None)
 
-    out_state = {
-        "cookies": sorted_cookies,
-        "origins": sorted_origins,
-    }
-    saved = save_storage_state_atomic(out_state, state_path)
-    return saved, upserted_cookies, len(sorted_cookies), upserted_ls_keys, len(sorted_origins)
+        sorted_origins: List[OriginEntry] = [
+            {"origin": orig, "localStorage": merged_origins[orig]}
+            for orig in sorted(merged_origins.keys())
+            if merged_origins[orig]
+        ]
+
+        out_state = {
+            "cookies": sorted_cookies,
+            "origins": sorted_origins,
+        }
+        saved = _save_storage_state_unlocked(out_state, state_path)
+        return saved, upserted_cookies, len(sorted_cookies), upserted_ls_keys, len(sorted_origins)
 
 
 def upsert_cookies(
@@ -192,34 +229,35 @@ def clear_state(
     Returns `(removed_cookies, remaining_cookies, removed_origins, remaining_origins)`.
     """
     filters = [normalize_domain_filter(d) for d in (domains or []) if d.strip()]
-    state = load_storage_state(state_path)
-    before_cookies = len(state["cookies"])
-    before_origins = len(state["origins"])
+    with _exclusive_state_lock(state_path):
+        state = load_storage_state(state_path)
+        before_cookies = len(state["cookies"])
+        before_origins = len(state["origins"])
 
-    if not filters:
-        state["cookies"] = []
-        state["origins"] = []
-    else:
-        state["cookies"] = [
-            item
-            for item in state["cookies"]
-            if not _origin_matches_filters(str(item.get("domain", "")), filters)
-        ]
-        state["origins"] = [
-            entry
-            for entry in state["origins"]
-            if not _origin_matches_filters(str(entry.get("origin", "")), filters)
-        ]
+        if not filters:
+            state["cookies"] = []
+            state["origins"] = []
+        else:
+            state["cookies"] = [
+                item
+                for item in state["cookies"]
+                if not _origin_matches_filters(str(item.get("domain", "")), filters)
+            ]
+            state["origins"] = [
+                entry
+                for entry in state["origins"]
+                if not _origin_matches_filters(str(entry.get("origin", "")), filters)
+            ]
 
-    save_storage_state_atomic(state, state_path)
-    rem_cookies = len(state["cookies"])
-    rem_origins = len(state["origins"])
-    return (
-        before_cookies - rem_cookies,
-        rem_cookies,
-        before_origins - rem_origins,
-        rem_origins,
-    )
+        _save_storage_state_unlocked(state, state_path)
+        rem_cookies = len(state["cookies"])
+        rem_origins = len(state["origins"])
+        return (
+            before_cookies - rem_cookies,
+            rem_cookies,
+            before_origins - rem_origins,
+            rem_origins,
+        )
 
 
 def clear_cookies(

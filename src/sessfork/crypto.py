@@ -7,8 +7,10 @@ packages and never exposes derived keys in subprocess command lines.
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import ctypes.util
+import fcntl
 import hashlib
 import json
 import os
@@ -17,7 +19,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 AES_BLOCK_SIZE = 16
 CHROMIUM_CBC_IV = b" " * AES_BLOCK_SIZE
@@ -115,6 +117,31 @@ def load_cached_aes_key(browser: str, cache_path: Optional[Path] = None) -> Opti
     return _decode_aes_hex(keys.get(browser))
 
 
+@contextlib.contextmanager
+def _exclusive_key_cache_lock(target: Path) -> Iterator[None]:
+    """Serialize concurrent read-modify-write operations on the derived key cache."""
+    resolved = target.expanduser().resolve()
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(resolved.parent, 0o700)
+    except OSError:
+        pass
+    lock_path = resolved.parent / f".{resolved.name}.lock"
+    if lock_path.is_symlink():
+        raise CryptoError(f"Refusing to use symlinked key cache lock file: {lock_path}")
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(str(lock_path), flags, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
 def save_cached_aes_key_atomic(
     browser: str,
     key: bytes,
@@ -124,9 +151,10 @@ def save_cached_aes_key_atomic(
     if len(key) != AES_BLOCK_SIZE:
         raise CryptoError(f"Derived AES key must be {AES_BLOCK_SIZE} bytes, got {len(key)}")
     target = (cache_path or _default_key_cache_path()).expanduser().resolve()
-    keys = _load_key_cache_dict(target)
-    keys[browser] = key.hex()
-    return _write_key_cache_atomic(keys, target)
+    with _exclusive_key_cache_lock(target):
+        keys = _load_key_cache_dict(target)
+        keys[browser] = key.hex()
+        return _write_key_cache_atomic(keys, target)
 
 
 def clear_cached_aes_keys(
@@ -137,25 +165,28 @@ def clear_cached_aes_keys(
     target = (cache_path or _default_key_cache_path()).expanduser()
     if not target.is_file():
         return 0
-    keys = _load_key_cache_dict(target)
-    if browser is None:
-        count = len(keys)
-        try:
-            target.unlink()
-        except OSError:
-            pass
-        return count
-    if browser not in keys:
-        return 0
-    del keys[browser]
-    if not keys:
-        try:
-            target.unlink()
-        except OSError:
-            pass
-    else:
-        _write_key_cache_atomic(keys, target)
-    return 1
+    with _exclusive_key_cache_lock(target):
+        if not target.is_file():
+            return 0
+        keys = _load_key_cache_dict(target)
+        if browser is None:
+            count = len(keys)
+            try:
+                target.unlink()
+            except OSError:
+                pass
+            return count
+        if browser not in keys:
+            return 0
+        del keys[browser]
+        if not keys:
+            try:
+                target.unlink()
+            except OSError:
+                pass
+        else:
+            _write_key_cache_atomic(keys, target)
+        return 1
 
 
 def list_cached_key_browsers(cache_path: Optional[Path] = None) -> List[str]:

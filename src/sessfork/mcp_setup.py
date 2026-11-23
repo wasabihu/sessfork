@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import platform as platform_mod
@@ -11,7 +13,7 @@ import stat
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from sessfork.chrome import real_user_home
 from sessfork.state import (
@@ -427,37 +429,59 @@ def ensure_mcp_configured(
     return updated_files
 
 
-def _upsert_mcp_json(cfg_path: Path, server_name: str, entry: Dict[str, Any]) -> bool:
-    cfg_path.parent.mkdir(parents=True, exist_ok=True)
-    doc: Dict[str, Any] = {}
-    file_mode = 0o600
-    if cfg_path.is_file():
-        file_mode = stat.S_IMODE(cfg_path.stat().st_mode)
-        raw = cfg_path.read_text(encoding="utf-8").strip()
-        if raw:
-            doc = json.loads(raw)
-
-    servers = doc.get("mcpServers")
-    if not isinstance(servers, dict):
-        servers = {}
-        doc["mcpServers"] = servers
-
-    if servers.get(server_name) == entry:
-        return False
-
-    servers[server_name] = entry
-    payload = json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
-    fd, tmp_name = tempfile.mkstemp(prefix=".mcp_", suffix=".tmp", dir=str(cfg_path.parent))
+@contextlib.contextmanager
+def _exclusive_mcp_cfg_lock(cfg_path: Path) -> Iterator[None]:
+    """Serialize concurrent read-modify-write updates to an agent MCP config file."""
+    resolved = cfg_path.expanduser().resolve()
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = resolved.parent / f".{resolved.name}.sessfork.lock"
+    if lock_path.is_symlink():
+        raise OSError(f"Refusing to use symlinked MCP config lock file: {lock_path}")
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(str(lock_path), flags, 0o600)
     try:
-        os.fchmod(fd, file_mode)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(payload)
-        os.replace(tmp_name, cfg_path)
-    except BaseException:
-        if os.path.exists(tmp_name):
-            os.unlink(tmp_name)
-        raise
-    return True
+        os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def _upsert_mcp_json(cfg_path: Path, server_name: str, entry: Dict[str, Any]) -> bool:
+    with _exclusive_mcp_cfg_lock(cfg_path):
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        doc: Dict[str, Any] = {}
+        file_mode = 0o600
+        if cfg_path.is_file():
+            file_mode = stat.S_IMODE(cfg_path.stat().st_mode)
+            raw = cfg_path.read_text(encoding="utf-8").strip()
+            if raw:
+                doc = json.loads(raw)
+
+        servers = doc.get("mcpServers")
+        if not isinstance(servers, dict):
+            servers = {}
+            doc["mcpServers"] = servers
+
+        if servers.get(server_name) == entry:
+            return False
+
+        servers[server_name] = entry
+        payload = json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
+        fd, tmp_name = tempfile.mkstemp(prefix=".mcp_", suffix=".tmp", dir=str(cfg_path.parent))
+        try:
+            os.fchmod(fd, file_mode)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+            os.replace(tmp_name, cfg_path)
+        except BaseException:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+            raise
+        return True
 
 
 def bundled_skill_markdown() -> str:

@@ -6,6 +6,7 @@ import contextlib
 import hashlib
 import io
 import json
+import multiprocessing
 import os
 import sqlite3
 import stat
@@ -59,6 +60,36 @@ def _encrypt_cookie_blob(value: str, host_key: str, aes_key: bytes, v24_hash: bo
     prefix = hashlib.sha256(host_key.encode("utf-8")).digest() if v24_hash else b""
     plaintext = prefix + value.encode("utf-8")
     return b"v10" + aes_128_cbc_encrypt_pkcs7(plaintext, aes_key)
+
+
+def _concurrent_state_upsert_worker(args: tuple[int, str, int]) -> None:
+    worker_id, state_path_str, rounds = args
+    state_path = Path(state_path_str)
+    exp = time.time() + 3600
+    for r in range(rounds):
+        dom = f"w{worker_id:02d}-r{r:02d}.concurrent.test"
+        upsert_session_state(
+            new_cookies=[
+                {
+                    "name": "sid",
+                    "value": f"v_{worker_id}_{r}",
+                    "domain": "." + dom,
+                    "path": "/",
+                    "expires": exp,
+                    "httpOnly": True,
+                    "secure": True,
+                    "sameSite": "Lax",
+                }
+            ],
+            new_origins=[
+                {
+                    "origin": f"https://{dom}",
+                    "localStorage": [{"name": "token", "value": f"jwt_{worker_id}_{r}"}],
+                }
+            ],
+            refreshed_domains=[dom],
+            state_path=state_path,
+        )
 
 
 class SessforkTestSuite(unittest.TestCase):
@@ -1085,6 +1116,40 @@ class SessforkTestSuite(unittest.TestCase):
                     self.assertEqual(status_payload["pinned_mcp_configs"], [str(cfg_path)])
                     self.assertEqual(status_payload["unpinned_mcp_configs"], [])
                     self.assertIsNone(status_payload["warning"])
+
+    def test_concurrent_multiprocess_upsert_preserves_all_domains_and_mirror_consistency(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "store" / "state.json"
+            n_workers = 8
+            rounds = 4
+            expected = n_workers * rounds
+
+            ctx = multiprocessing.get_context("spawn")
+            with ctx.Pool(processes=n_workers) as pool:
+                pool.map(
+                    _concurrent_state_upsert_worker,
+                    [(i, str(state_file), rounds) for i in range(n_workers)],
+                )
+
+            main_data = load_storage_state(state_file)
+            mirror = hot_reload_state_path(state_file)
+            mirror_data = load_storage_state(mirror)
+            self.assertEqual(len(main_data["cookies"]), expected)
+            self.assertEqual(len(main_data["origins"]), expected)
+            self.assertEqual(main_data, mirror_data)
+
+            lock_file = state_file.parent / f".{state_file.name}.lock"
+            self.assertTrue(lock_file.is_file())
+            self.assertEqual(stat.S_IMODE(os.stat(lock_file).st_mode), 0o600)
+
+            # Symlinked lock file must be refused
+            sym_state = Path(tmp) / "symstore" / "state.json"
+            sym_state.parent.mkdir(parents=True)
+            victim = Path(tmp) / "victim.txt"
+            victim.write_text("do-not-touch", encoding="utf-8")
+            os.symlink(victim, sym_state.parent / ".state.json.lock")
+            with self.assertRaises(BrowserProfileError):
+                upsert_session_state([], state_path=sym_state)
 
 
 if __name__ == "__main__":
