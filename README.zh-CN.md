@@ -142,7 +142,7 @@ sessfork console.cloud.google.com --profile "Profile 1"
 
 ```bash
 # 可选：编译安装 605 KB 纯 Rust 原生 CDP MCP（装完后 --engine moli / dual 自动启用）
-cd rust/sessfork-mcp && cargo build --release && cp target/release/sessfork-mcp ~/.local/bin/
+cd rust/sessfork-mcp && cargo build --release && install -m 755 target/release/sessfork-mcp ~/.local/bin/sessfork-mcp
 
 # 一键复现三方 12 路重型 DOM 同场压测（约 18 秒）
 python3 scripts/stress_test.py --heavy-compare

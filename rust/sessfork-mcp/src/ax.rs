@@ -4,8 +4,35 @@ use std::collections::HashMap;
 pub struct AxSnapshot {
     pub yaml: String,
     pub ref_map: HashMap<String, i64>,
+    pub content_lines: usize,
+    pub looks_like_loading_shell: bool,
     #[cfg(test)]
     pub truncated: bool,
+}
+
+fn is_focusable_or_clickable(node: &Value) -> bool {
+    let Some(props) = node.get("properties").and_then(|v| v.as_array()) else {
+        return false;
+    };
+    props.iter().any(|p| {
+        let pname = p.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        matches!(pname, "focusable" | "clickable")
+            && p.pointer("/value/value").and_then(|v| v.as_bool()) == Some(true)
+    })
+}
+
+fn is_loading_placeholder_text(s: &str) -> bool {
+    let low = s.trim().to_ascii_lowercase();
+    if low.is_empty() {
+        return false;
+    }
+    low == "loading"
+        || low == "loading..."
+        || low == "loading…"
+        || low.starts_with("loading…")
+        || low.starts_with("loading...")
+        || s.contains("加载中")
+        || s.contains("正在加载")
 }
 
 fn is_interactive_role(role: &str) -> bool {
@@ -69,6 +96,8 @@ pub fn format_ax_tree(nodes: &[Value], max_chars: usize) -> AxSnapshot {
         return AxSnapshot {
             yaml: String::new(),
             ref_map: HashMap::new(),
+            content_lines: 0,
+            looks_like_loading_shell: true,
             #[cfg(test)]
             truncated: false,
         };
@@ -84,6 +113,8 @@ pub fn format_ax_tree(nodes: &[Value], max_chars: usize) -> AxSnapshot {
     let mut yaml = String::with_capacity(4096);
     let mut ref_map: HashMap<String, i64> = HashMap::new();
     let mut next_ref: usize = 1;
+    let mut content_lines: usize = 0;
+    let mut saw_loading_placeholder = false;
     let mut truncated = false;
     let mut visited = vec![false; nodes.len()];
 
@@ -93,6 +124,8 @@ pub fn format_ax_tree(nodes: &[Value], max_chars: usize) -> AxSnapshot {
         yaml: &'a mut String,
         ref_map: &'a mut HashMap<String, i64>,
         next_ref: &'a mut usize,
+        content_lines: &'a mut usize,
+        saw_loading_placeholder: &'a mut bool,
         max_chars: usize,
         truncated: &'a mut bool,
         visited: &'a mut [bool],
@@ -124,12 +157,20 @@ pub fn format_ax_tree(nodes: &[Value], max_chars: usize) -> AxSnapshot {
             .map(clean_inline_text)
             .unwrap_or_default();
         let backend_id = node.get("backendDOMNodeId").and_then(|v| v.as_i64());
+        let focusable_clickable = is_focusable_or_clickable(node)
+            && !matches!(role, "RootWebArea" | "document" | "WebArea" | "StaticText");
 
         let emit = !ignored
             && role != "InlineTextBox"
-            && (!is_structural_noise(role) || !name.is_empty());
+            && (!is_structural_noise(role) || !name.is_empty() || focusable_clickable);
 
         let child_depth = if emit {
+            if !matches!(role, "RootWebArea" | "document" | "WebArea") {
+                *ctx.content_lines += 1;
+                if is_loading_placeholder_text(&name) {
+                    *ctx.saw_loading_placeholder = true;
+                }
+            }
             let mut line = String::with_capacity(96);
             for _ in 0..depth {
                 line.push_str("  ");
@@ -152,7 +193,7 @@ pub fn format_ax_tree(nodes: &[Value], max_chars: usize) -> AxSnapshot {
                     line.push('"');
                 }
                 if let Some(bid) = backend_id {
-                    if is_interactive_role(role) {
+                    if is_interactive_role(role) || (focusable_clickable && !name.is_empty()) {
                         let ref_id = format!("e{}", *ctx.next_ref);
                         *ctx.next_ref += 1;
                         ctx.ref_map.insert(ref_id.clone(), bid);
@@ -194,6 +235,8 @@ pub fn format_ax_tree(nodes: &[Value], max_chars: usize) -> AxSnapshot {
         yaml: &mut yaml,
         ref_map: &mut ref_map,
         next_ref: &mut next_ref,
+        content_lines: &mut content_lines,
+        saw_loading_placeholder: &mut saw_loading_placeholder,
         max_chars,
         truncated: &mut truncated,
         visited: &mut visited,
@@ -205,9 +248,14 @@ pub fn format_ax_tree(nodes: &[Value], max_chars: usize) -> AxSnapshot {
         yaml.push_str("... (snapshot truncated)\n");
     }
 
+    let looks_like_loading_shell =
+        content_lines == 0 || (content_lines <= 2 && saw_loading_placeholder);
+
     AxSnapshot {
         yaml,
         ref_map,
+        content_lines,
+        looks_like_loading_shell,
         #[cfg(test)]
         truncated,
     }
@@ -256,6 +304,52 @@ mod tests {
         assert_eq!(snap.ref_map.get("e2"), Some(&1003));
         assert!(snap.yaml.contains("button \"Submit\" [ref=e1]"));
         assert!(snap.yaml.contains("textbox \"Email\" [ref=e2]"));
+        assert!(!snap.looks_like_loading_shell);
         assert!(!snap.truncated);
+    }
+
+    #[test]
+    fn detects_spa_loading_shell_and_assigns_focusable_div_ref() {
+        let loading_nodes = vec![
+            json!({
+                "nodeId": "AX-0",
+                "ignored": false,
+                "role": {"value": "RootWebArea"},
+                "name": {"value": "https://x.com/test"},
+                "childIds": ["AX-1"]
+            }),
+            json!({
+                "nodeId": "AX-1",
+                "ignored": false,
+                "role": {"value": "generic"},
+                "name": {"value": "Loading…"},
+                "childIds": []
+            }),
+        ];
+        let snap_loading = format_ax_tree(&loading_nodes, 10_000);
+        assert!(snap_loading.looks_like_loading_shell);
+
+        let div_btn_nodes = vec![
+            json!({
+                "nodeId": "AX-0",
+                "ignored": false,
+                "role": {"value": "RootWebArea"},
+                "name": {"value": "Dashboard"},
+                "childIds": ["AX-1"]
+            }),
+            json!({
+                "nodeId": "AX-1",
+                "backendDOMNodeId": 2001,
+                "ignored": false,
+                "role": {"value": "generic"},
+                "name": {"value": "笔记管理"},
+                "properties": [{"name": "focusable", "value": {"value": true}}],
+                "childIds": []
+            }),
+        ];
+        let snap_div = format_ax_tree(&div_btn_nodes, 10_000);
+        assert_eq!(snap_div.ref_map.get("e1"), Some(&2001));
+        assert!(snap_div.yaml.contains("generic \"笔记管理\" [ref=e1]"));
+        assert!(!snap_div.looks_like_loading_shell);
     }
 }

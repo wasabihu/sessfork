@@ -146,7 +146,7 @@ Measured locally on Apple Silicon (`macOS 26.6.2 arm64`, Python 3.14.7, `@playwr
 
 ```bash
 # Optional: build & install the 605 KB native Rust CDP MCP server (auto-used by --engine moli / dual)
-cd rust/sessfork-mcp && cargo build --release && cp target/release/sessfork-mcp ~/.local/bin/
+cd rust/sessfork-mcp && cargo build --release && install -m 755 target/release/sessfork-mcp ~/.local/bin/sessfork-mcp
 
 # Reproduce the 3-way 12x heavy-DOM comparison locally (~18s)
 python3 scripts/stress_test.py --heavy-compare

@@ -70,6 +70,23 @@ localStorage.setItem("app_written", "keep_in_same_rev");
 <script>
 document.title = 'Result:' + {json.dumps(user)} + '|' + {json.dumps(bio)} + '|app=' + (localStorage.getItem('app_written') || '');
 </script></body></html>"""
+        elif parsed.path == "/spa":
+            html = """<!doctype html><html><head><title></title></head><body>
+<div id="app" aria-label="Loading…"></div>
+<script>
+setTimeout(() => {
+  document.title = 'HydratedSPA';
+  document.getElementById('app').removeAttribute('aria-label');
+  document.getElementById('app').innerHTML =
+    '<h1>Dashboard Ready</h1>' +
+    '<div id="div-btn" tabindex="0" aria-label="笔记管理" onclick="document.title=\\'DIV_CLICKED_OK\\'">笔记管理</div>' +
+    '<a id="slow-link" href="/slow-dest">SlowNext</a>';
+}, 320);
+</script></body></html>"""
+        elif parsed.path == "/slow-dest":
+            time.sleep(0.45)
+            html = """<!doctype html><html><head><title>SlowDestLoaded</title></head><body>
+<h1>Slow Destination Content</h1><button id="done">Done</button></body></html>"""
         else:
             html = "<!doctype html><html><head><title>Home</title></head><body><p>Hello</p></body></html>"
 
@@ -557,6 +574,38 @@ class RustMcpE2ETestSuite(unittest.TestCase):
                 while time.time() < deadline and _pid_alive(second_moli_pid):
                     time.sleep(0.05)
                 self.assertFalse(_pid_alive(second_moli_pid), f"Orphan moli PID {second_moli_pid} survived SIGKILL!")
+            finally:
+                client.close()
+
+    def test_07_spa_hydration_wait_focusable_div_and_slow_click_nav(self) -> None:
+        assert RUST_MCP_BIN is not None and MOLI_BIN is not None
+        with tempfile.TemporaryDirectory(prefix="sf_e2e_spa_") as tmp:
+            out_dir = Path(tmp) / "out"
+            out_dir.mkdir(mode=0o700)
+            client = _MCPClient(RUST_MCP_BIN, [f"--moli={MOLI_BIN}", f"--output-dir={out_dir}"])
+            try:
+                client.initialize()
+
+                # 1. Delayed SPA hydration (320ms after loadEventFired) resolves on the VERY FIRST browser_navigate!
+                is_err, spa_txt = client.call_tool("browser_navigate", {"url": f"{self.origin}/spa"})
+                self.assertFalse(is_err, spa_txt)
+                self.assertIn("HydratedSPA", spa_txt)
+                self.assertIn("Dashboard Ready", spa_txt)
+
+                # 2. Focusable non-semantic <div tabindex="0" aria-label="笔记管理"> receives a [ref=eN] and clicks cleanly
+                m_div = re.search(r'"笔记管理" \[ref=(e\d+)\]', spa_txt)
+                self.assertIsNotNone(m_div, f"Expected focusable div ref in:\n{spa_txt}")
+                is_err, click_div = client.call_tool("browser_click", {"ref": m_div.group(1)})  # type: ignore[union-attr]
+                self.assertFalse(is_err, click_div)
+                self.assertIn("DIV_CLICKED_OK", click_div)
+
+                # 3. Clicking a link to a slower 450ms server page waits for full load & returns populated snapshot!
+                m_link = re.search(r'link "SlowNext" \[ref=(e\d+)\]', click_div)
+                self.assertIsNotNone(m_link, f"Expected SlowNext link ref in:\n{click_div}")
+                is_err, dest_txt = client.call_tool("browser_click", {"ref": m_link.group(1)})  # type: ignore[union-attr]
+                self.assertFalse(is_err, dest_txt)
+                self.assertIn("SlowDestLoaded", dest_txt)
+                self.assertIn("Slow Destination Content", dest_txt)
             finally:
                 client.close()
 

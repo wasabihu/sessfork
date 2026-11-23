@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_CDP_TIMEOUT: Duration = Duration::from_secs(20);
 const DEFAULT_LOAD_TIMEOUT: Duration = Duration::from_secs(15);
+const SPA_HYDRATION_SETTLE_TIMEOUT: Duration = Duration::from_millis(2500);
 const DEFAULT_MAX_SNAPSHOT_CHARS: usize = 32_000;
 
 struct ContextState {
@@ -278,12 +279,12 @@ impl BrowserManager {
         out
     }
 
-    fn sync_current_page_meta(&mut self) -> Result<(String, String), String> {
+    fn sync_current_page_meta(&mut self) -> Result<(String, String, String), String> {
         let sid = self.current_session_id()?;
         let ev = self.cdp()?.call(
             "Runtime.evaluate",
             json!({
-                "expression": "JSON.stringify({url: String(location.href || ''), title: String(document.title || '')})",
+                "expression": "JSON.stringify({url: String(location.href || ''), title: String(document.title || ''), readyState: String(document.readyState || '')})",
                 "returnByValue": true,
             }),
             Some(&sid),
@@ -304,16 +305,21 @@ impl BrowserManager {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
+        let ready_state = parsed
+            .get("readyState")
+            .and_then(|v| v.as_str())
+            .unwrap_or("complete")
+            .to_string();
         if let Some(tab) = self.tabs.get_mut(self.current_tab) {
             if !url.is_empty() {
                 tab.url = url.clone();
             }
             tab.title = title.clone();
         }
-        Ok((url, title))
+        Ok((url, title, ready_state))
     }
 
-    fn capture_snapshot_text(&mut self, max_chars: usize) -> Result<String, String> {
+    fn capture_snapshot(&mut self, max_chars: usize) -> Result<crate::ax::AxSnapshot, String> {
         let sid = self.current_session_id()?;
         let ax = self.cdp()?.call(
             "Accessibility.getFullAXTree",
@@ -328,20 +334,50 @@ impl BrowserManager {
             .unwrap_or_default();
         let snap = format_ax_tree(&nodes, max_chars);
         if let Some(tab) = self.tabs.get_mut(self.current_tab) {
-            tab.ref_map = snap.ref_map;
+            tab.ref_map = snap.ref_map.clone();
         }
-        Ok(snap.yaml)
+        Ok(snap)
     }
 
-    fn format_page_response(&mut self, include_snapshot: bool, max_chars: usize) -> Result<String, String> {
-        let (url, title) = self.sync_current_page_meta()?;
-        let mut out = format!("### Page\n- Page URL: {}\n- Page Title: {}\n", url, title);
-        if include_snapshot {
-            let yaml = self.capture_snapshot_text(max_chars)?;
-            out.push_str("\n### Snapshot\n```yaml\n");
-            out.push_str(&yaml);
-            out.push_str("```\n");
+    fn format_page_response(
+        &mut self,
+        include_snapshot: bool,
+        max_chars: usize,
+        settle_spa: bool,
+    ) -> Result<String, String> {
+        let (mut url, mut title, mut ready_state) = self.sync_current_page_meta()?;
+        if !include_snapshot {
+            return Ok(format!("### Page\n- Page URL: {}\n- Page Title: {}\n", url, title));
         }
+
+        let mut snap = self.capture_snapshot(max_chars)?;
+        let is_http = url.starts_with("http://") || url.starts_with("https://");
+        if settle_spa && is_http && (snap.looks_like_loading_shell || ready_state != "complete") {
+            let deadline = Instant::now() + SPA_HYDRATION_SETTLE_TIMEOUT;
+            while Instant::now() < deadline
+                && (snap.looks_like_loading_shell || ready_state != "complete")
+            {
+                thread::sleep(Duration::from_millis(150));
+                if let Ok((u, t, rs)) = self.sync_current_page_meta() {
+                    url = u;
+                    title = t;
+                    ready_state = rs;
+                }
+                if let Ok(next_snap) = self.capture_snapshot(max_chars) {
+                    let improved = next_snap.content_lines > snap.content_lines
+                        || !next_snap.looks_like_loading_shell;
+                    snap = next_snap;
+                    if improved && !snap.looks_like_loading_shell && ready_state == "complete" {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let mut out = format!("### Page\n- Page URL: {}\n- Page Title: {}\n", url, title);
+        out.push_str("\n### Snapshot\n```yaml\n");
+        out.push_str(&snap.yaml);
+        out.push_str("```\n");
         Ok(out)
     }
 
@@ -505,12 +541,12 @@ impl BrowserManager {
             .cdp()?
             .wait_for_load_advance(&sid, prev_seq, DEFAULT_LOAD_TIMEOUT);
 
-        self.format_page_response(include_snapshot, max_chars)
+        self.format_page_response(include_snapshot, max_chars, true)
     }
 
     pub fn tool_snapshot(&mut self, max_chars: usize) -> Result<String, String> {
         self.ensure_started()?;
-        self.format_page_response(true, max_chars)
+        self.format_page_response(true, max_chars, false)
     }
 
     pub fn tool_click(
@@ -520,6 +556,11 @@ impl BrowserManager {
     ) -> Result<String, String> {
         self.ensure_started()?;
         let sid = self.current_session_id()?;
+        let before_url = self
+            .tabs
+            .get(self.current_tab)
+            .map(|t| t.url.clone())
+            .unwrap_or_default();
         let obj_id = self.resolve_target_object_id(&sid, ref_id, selector)?;
         let prev_seq = self.cdp()?.current_load_seq(&sid);
 
@@ -533,11 +574,23 @@ impl BrowserManager {
             Some(&sid),
             DEFAULT_CDP_TIMEOUT,
         )?;
-        // Brief window for synchronous/navigation click effects to settle.
-        let _ = self
+        // Short window to detect click-triggered navigations; if URL changes or readyState drops
+        // from complete (e.g. GitHub Turbo / SPA route transition), wait for full load + settle.
+        let loaded = self
             .cdp()?
-            .wait_for_load_advance(&sid, prev_seq, Duration::from_millis(250));
-        self.format_page_response(true, DEFAULT_MAX_SNAPSHOT_CHARS)
+            .wait_for_load_advance(&sid, prev_seq, Duration::from_millis(300));
+        let mut should_settle = loaded;
+        if let Ok((after_url, _, ready_state)) = self.sync_current_page_meta() {
+            if after_url != before_url || ready_state != "complete" {
+                should_settle = true;
+                if !loaded && ready_state != "complete" {
+                    let _ = self
+                        .cdp()?
+                        .wait_for_load_advance(&sid, prev_seq, Duration::from_secs(8));
+                }
+            }
+        }
+        self.format_page_response(true, DEFAULT_MAX_SNAPSHOT_CHARS, should_settle)
     }
 
     pub fn tool_type(
@@ -595,7 +648,7 @@ impl BrowserManager {
             Some(&sid),
             DEFAULT_CDP_TIMEOUT,
         )?;
-        self.format_page_response(true, DEFAULT_MAX_SNAPSHOT_CHARS)
+        self.format_page_response(true, DEFAULT_MAX_SNAPSHOT_CHARS, false)
     }
 
     pub fn tool_press_key(&mut self, key: &str) -> Result<String, String> {
@@ -609,7 +662,7 @@ impl BrowserManager {
                 DEFAULT_CDP_TIMEOUT,
             );
         }
-        self.format_page_response(false, DEFAULT_MAX_SNAPSHOT_CHARS)
+        self.format_page_response(false, DEFAULT_MAX_SNAPSHOT_CHARS, false)
     }
 
     pub fn tool_evaluate(&mut self, script: &str) -> Result<String, String> {
@@ -670,7 +723,7 @@ impl BrowserManager {
                     .wait_for_load_advance(&sid, prev_seq, DEFAULT_LOAD_TIMEOUT);
             }
         }
-        self.format_page_response(true, DEFAULT_MAX_SNAPSHOT_CHARS)
+        self.format_page_response(true, DEFAULT_MAX_SNAPSHOT_CHARS, true)
     }
 
     pub fn tool_wait_for(&mut self, text: Option<&str>, seconds: Option<f64>) -> Result<String, String> {
