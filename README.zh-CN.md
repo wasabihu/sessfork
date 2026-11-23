@@ -159,6 +159,15 @@ sessfork console.cloud.google.com --profile "Profile 1"
 </details>
 
 <details>
+<summary><strong>如果目标网站使用一次性轮换的 Refresh Token（single-use refresh token rotation）会怎样？</strong></summary>
+
+`sessfork` 生成的是某个时间点的登录态快照（`storageState`），最适合常规滑动会话 Cookie、偏只读的后台看板/调研页面以及短时 Agent 任务。
+
+如果目标站点在每次刷新令牌时都会**强制吊销旧的 single-use refresh token**（常见于部分 OAuth SPA 或金融类应用），前台 Chrome 标签页与后台分叉的无头上下文只要有一方先触发刷新，就可能导致另一方会话失效。这类站点更适合交给 Agent 独占一个独立的 Chrome Profile 登录使用；而对绝大多数普通站点，用 `sessfork` 既免维护第二套浏览器配置，也不会打断你的主浏览器窗口。
+
+</details>
+
+<details>
 <summary><strong>为什么提取 Cookie 时 macOS 会弹钥匙串授权窗口？</strong></summary>
 
 Chromium 会在系统钥匙串的 `"Chrome Safe Storage"` 条目下保存主加密口令。读取时点击 **允许** 即可授权当前用户读取自己的加密密钥。如果目标站点仅靠 `localStorage` 存 JWT，只需加 `--no-cookies` 即可完全免弹窗。

@@ -163,6 +163,15 @@ Choose a dedicated AI browser if you want a visual cursor watching the agent cli
 </details>
 
 <details>
+<summary><strong>What about sites that rotate single-use refresh tokens?</strong></summary>
+
+`sessfork` creates a point-in-time snapshot (`storageState`), which works best for standard sliding-session cookies, read-mostly dashboards/research, and short-lived agent runs.
+
+If a target site rotates **single-use refresh tokens** on every refresh (common on some OAuth SPAs and financial apps), your live Chrome tab and the forked headless context can invalidate each other's session whenever either side refreshes first. For those sites, signing into a dedicated isolated Chrome profile owned by the agent is the safer pattern; for everything else, `sessfork` avoids maintaining a second browser profile while keeping your active window untouched.
+
+</details>
+
+<details>
 <summary><strong>Why does macOS ask for Keychain access when forking cookies?</strong></summary>
 
 Chromium encrypts cookie values using a master passphrase stored under `"Chrome Safe Storage"` in your macOS Keychain. Click **Allow** so macOS authorizes `security` to read that entry. If a site uses `localStorage` tokens (many modern SPAs), pass `--no-cookies` to bypass Keychain completely.
