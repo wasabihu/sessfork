@@ -124,6 +124,28 @@ sessfork console.cloud.google.com --profile "Profile 1"
   - **SQLite Cookies**: Handles [Chromium Cookie DB `meta.version >= 24`](https://gist.github.com/creachadair/937179894a24571ce9860e2475a2d2ec) (`SHA-256(host_key)` 32-byte plaintext prefix stripping), live `-wal`/`-shm` sidecars, and `SameSite` / `HttpOnly` fidelity.
   - **LevelDB LocalStorage (`origins`)**: Parses Chromium's `_<origin>\x00` encoding-prefixed (`0x00` UTF-16LE / `0x01` Latin-1) records across `.ldb` SSTables and `.log` WALs, honoring `kTypeDeletion` tombstones (`localStorage.removeItem`) so logged-out JWTs are never resurrected.
 - **One-Command Auto-Wiring**: `sessfork <domain>` and `sessfork --setup` auto-detect Antigravity, Claude Code, and Cursor (`--target auto`), resolve absolute `npx` paths (avoiding [macOS GUI `$PATH` launch failures](https://discuss.ai.google.dev/t/bug-mcp-servers-crash-with-executable-file-not-found-in-path-when-antigravity-is-launched-via-macos-gui/138495)), and install `SKILL.md`.
+- **Optional Rust Moli Engine (`--engine dual` / `--engine moli`) & Local Studio (`--ui`)**: Keep `chrome-headless-shell` as default for 99.9% web compatibility, or switch to an auto-managed [`lexmount/moli`](https://github.com/lexmount/moli) Rust CDP bridge (`68 ms` cold start, `12.7 MB` idle, zero manual `moli serve`, zero orphan processes on exit). In `dual` mode, `sessfork-moli` handles fast DOM-first workloads while Chrome stays unloaded at `0 MB` until fallback is actually needed.
+
+---
+
+## Stress Benchmarks (`chrome-headless-shell` vs. `lexmount/moli`)
+
+Measured locally on Apple Silicon (`macOS 26.6.2 arm64`, Python 3.14.7, `@playwright/mcp@0.0.85`) via [`scripts/stress_test.py`](scripts/stress_test.py) (zero external requests). Full methodology & 6-scenario breakdown in **[docs/benchmarks.md](docs/benchmarks.md)**.
+
+| Workload | `chrome-headless-shell` (default) | `moli 1.1.27` (Rust `--engine moli` / `dual`) | Notes |
+| :--- | :---: | :---: | :--- |
+| **100-domain extraction** (2,000 cookies + 2,000 LS keys) | `26.6 ms` p50 (`211k cookies/s`) | same CLI core | Pure Python stdlib + CommonCrypto |
+| **16-process concurrent fork storm** (64 domains) | **`0.0%` lost updates** (`223.7 ms`) | same CLI core | Fixed `57.5% -> 0.0%` via `fcntl.flock` |
+| **Live SQLite WAL contention** (5,795 commits + 8 readers) | **`200 / 200` OK** (`0.0%` errors) | same CLI core | p50 `32.7 ms` / p99 `52.1 ms` |
+| **50-origin hot-reload** (`browser_set_storage_state`) | `20 / 20` OK (`263.8 ms` p50) | **`52.3 ms`** (10-origin) / `672.5 ms` (50-origin) | Zero stale tokens, zero crashes |
+| **6× `isolatedContext` interleaved isolation** | `6 / 6` OK (`0` leaks) | **`6 / 6` OK (`0` leaks)** | Zero cross-context leakage |
+| **6× `isolatedContext` total time** | `3,413.1 ms` | **`778.6 ms` (4.4× faster)** | Same local `127.0.0.1` auth echo server |
+| **6× `isolatedContext` total RSS** (browser + Node MCP) | `1,218.9 MB` | **`382.5 MB` (-68.6% RAM)** | Moli browser `125.9 MB` + Node `256.6 MB` |
+
+```bash
+# Reproduce locally (adds Moli Scenario 6 automatically when `moli` is installed)
+python3 scripts/stress_test.py --include-moli
+```
 
 ---
 

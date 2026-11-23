@@ -120,6 +120,28 @@ sessfork console.cloud.google.com --profile "Profile 1"
   - **SQLite Cookies**：完整兼容 [Chrome 130+ (`meta.version >= 24`)](https://gist.github.com/creachadair/937179894a24571ce9860e2475a2d2ec) 密文前 32 字节 `SHA-256(host_key)` 剥离、实时 `-wal`/`-shm` 侧车快照，以及 `SameSite` / `HttpOnly` 属性还原。
   - **LevelDB LocalStorage (`origins`)**：跨 `.ldb` 与 `.log` 解析 Chromium `_<origin>\x00` 编码前缀（`0x00` UTF-16LE / `0x01` Latin-1），按 MVCC 序列号合并并严格遵循 `kTypeDeletion` 删除墓碑，防止已退出的旧 JWT 死灰复燃。
 - **一次调用闭环**：自动检测 Antigravity / Claude Code / Cursor（`--target auto`），自动解析 `npx` 绝对路径（规避 [macOS GUI 启动 Agent 找不到 PATH](https://discuss.ai.google.dev/t/bug-mcp-servers-crash-with-executable-file-not-found-in-path-when-antigravity-is-launched-via-macos-gui/138495) 的常见故障），并在单次命令中同时完成 MCP 与 `SKILL.md` 装配。
+- **可选 Rust Moli 轻量引擎（`--engine dual` / `--engine moli`）与本地可视化台（`--ui`）**：默认保持 `chrome-headless-shell` 保证 99.9% 兼容；可选接入自动托管的 [`lexmount/moli`](https://github.com/lexmount/moli) Rust 内核（`68 ms` 秒启、空载 `12.7 MB`、退出自动清理零孤儿进程、免手启 `moli serve`）。`dual` 双通道模式下平时只走轻量的 `sessfork-moli`，Chrome 在未触发兜底前保持 `0 MB` 惰性未启动。
+
+---
+
+## 实测压测数据（`chrome-headless-shell` vs `lexmount/moli`）
+
+在 Apple Silicon 本机（`macOS 26.6.2 arm64` / Python 3.14.7 / `@playwright/mcp@0.0.85`）通过 [`scripts/stress_test.py`](scripts/stress_test.py) 全本地实测（零外部网络请求），完整方法论与分场景数据见 **[docs/benchmarks.md](docs/benchmarks.md)**：
+
+| 压测维度 | `chrome-headless-shell`（默认） | `moli 1.1.27`（Rust `--engine moli` / `dual`） | 说明 |
+| :--- | :---: | :---: | :--- |
+| **100 域名全量提取**（2,000 Cookie + 2,000 LS 键） | `26.6 ms` p50（`211k cookies/s`） | 共用 CLI 内核 | 纯 Python 标准库 + CommonCrypto |
+| **16 进程并发写入风暴**（64 域名） | **`0.0%` 丢更新**（`223.7 ms`） | 共用 CLI 内核 | `fcntl.flock` 将丢更新率从 `57.5%` 压至 `0.0%` |
+| **SQLite WAL 活写争用**（5,795 提交 + 8 并发读） | **`200 / 200` 成功**（`0.0%` 错误） | 共用 CLI 内核 | p50 `32.7 ms` / p99 `52.1 ms` |
+| **50-Origin 热重载**（`browser_set_storage_state`） | `20 / 20` 通过（`263.8 ms` p50） | **`52.3 ms`**（10-Origin）/ `672.5 ms`（50-Origin） | 0 陈旧凭证、0 崩溃 |
+| **6 路 `isolatedContext` 交叉隔离核验** | `6 / 6` 通过（`0` 串号） | **`6 / 6` 通过（`0` 串号）** | 零跨上下文泄漏 |
+| **6 路 `isolatedContext` 全流程总耗时** | `3,413.1 ms` | **`778.6 ms`（快 4.4×）** | 同机 `127.0.0.1` 鉴权回显服务 |
+| **6 路 `isolatedContext` 总 RSS**（浏览器 + Node MCP） | `1,218.9 MB` | **`382.5 MB`（省 68.6% 内存）** | Moli 仅 `125.9 MB` + Node `256.6 MB` |
+
+```bash
+# 本地一键复现全部压测（本机装有 moli 时自动对比第 6 项）
+python3 scripts/stress_test.py --include-moli
+```
 
 ---
 

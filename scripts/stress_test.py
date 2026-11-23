@@ -53,7 +53,13 @@ from sessfork.localstorage import (
     LOG_FULL,
     extract_local_storage,
 )
-from sessfork.mcp_setup import build_playwright_mcp_entry, find_playwright_headless_shell
+from sessfork.mcp_setup import (
+    DEFAULT_PLAYWRIGHT_MCP_PKG,
+    build_playwright_mcp_entry,
+    find_playwright_headless_shell,
+    resolve_npx_command,
+)
+from sessfork.moli_bridge import find_moli_binary, get_moli_version
 from sessfork.state import (
     hot_reload_state_path,
     load_storage_state,
@@ -869,9 +875,150 @@ def run_scenarios_4_and_5() -> Tuple[Dict[str, Any], Dict[str, Any]]:
     return s4, s5
 
 
+def run_scenario_6_moli() -> Dict[str, Any]:
+    """Benchmark lexmount/moli via managed CDP on the exact same 6x isolatedContext workload."""
+    import socket as _sock
+    import urllib.request as _urlreq
+
+    moli_bin = find_moli_binary()
+    if moli_bin is None:
+        return {"scenario": "6_moli_isolated_contexts", "skipped": True, "reason": "moli binary not installed"}
+
+    server = socketserver.TCPServer(("127.0.0.1", 0), LocalAuthHandler)
+    http_port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    origin = f"http://127.0.0.1:{http_port}"
+    url = f"{origin}/whoami"
+
+    with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        cdp_port = int(s.getsockname()[1])
+    cdp_url = f"http://127.0.0.1:{cdp_port}"
+
+    with tempfile.TemporaryDirectory(prefix="sf_s6_moli_") as tmp:
+        out_dir = Path(tmp) / "playwright-output"
+        out_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        t_m0 = time.perf_counter()
+        moli_proc = subprocess.Popen(
+            [str(moli_bin), "serve", "--host", "127.0.0.1", "--port", str(cdp_port)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        client: Optional[MCPStdioClient] = None
+        try:
+            for _ in range(200):
+                try:
+                    _urlreq.urlopen(f"{cdp_url}/json/version", timeout=0.5).read()
+                    break
+                except Exception:
+                    time.sleep(0.025)
+            cdp_ready_ms = round((time.perf_counter() - t_m0) * 1000, 1)
+            idle_rss_mb = get_process_tree_rss_mb(moli_proc.pid)
+
+            npx = resolve_npx_command()
+            client = MCPStdioClient(
+                npx,
+                [
+                    "-y",
+                    DEFAULT_PLAYWRIGHT_MCP_PKG,
+                    f"--cdp-endpoint={cdp_url}",
+                    "--caps=storage",
+                    f"--output-dir={out_dir}",
+                ],
+                {},
+            )
+            client.initialize()
+
+            n_ctx = 6
+            future_exp = time.time() + 7200
+            t_s6 = time.perf_counter()
+            setup_ok = 0
+            for idx in range(n_ctx):
+                st = out_dir / f".moli-ctx-{idx}.json"
+                st.write_text(
+                    json.dumps(
+                        {
+                            "cookies": [
+                                {
+                                    "name": "sid",
+                                    "value": f"user_{idx}_cookie",
+                                    "domain": "127.0.0.1",
+                                    "path": "/",
+                                    "expires": future_exp,
+                                    "httpOnly": False,
+                                    "secure": False,
+                                    "sameSite": "Lax",
+                                }
+                            ],
+                            "origins": [
+                                {
+                                    "origin": origin,
+                                    "localStorage": [
+                                        {"name": "session_token", "value": f"user_{idx}_jwt"},
+                                        {"name": "agent_id", "value": f"agent_{idx}"},
+                                    ],
+                                }
+                            ],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                os.chmod(st, 0o600)
+                client.call_tool("browser_tabs", {"action": "new", "isolatedContext": f"moli-ctx-{idx}"})
+                client.call_tool("browser_set_storage_state", {"filename": str(st)})
+                nav_t = _extract_mcp_text(client.call_tool("browser_navigate", {"url": f"{url}?init={idx}"}))
+                if f"sid=user_{idx}_cookie" in nav_t and f"user_{idx}_jwt" in nav_t:
+                    setup_ok += 1
+
+            verify_passed = 0
+            leaks = 0
+            for idx in [5, 0, 3, 1, 4, 2]:
+                client.call_tool("browser_tabs", {"action": "select", "index": idx + 1})
+                chk_txt = _extract_mcp_text(client.call_tool("browser_navigate", {"url": f"{url}?verify={idx}"}))
+                tl = next((ln.strip() for ln in chk_txt.splitlines() if ln.strip().startswith("- Page Title:")), "")
+                has_other = any(
+                    (f"user_{j}_cookie" in tl or f"user_{j}_jwt" in tl)
+                    for j in range(n_ctx)
+                    if j != idx
+                )
+                if f"sid=user_{idx}_cookie" in tl and f"user_{idx}_jwt" in tl and not has_other:
+                    verify_passed += 1
+                else:
+                    leaks += 1
+
+            moli_rss = get_process_tree_rss_mb(moli_proc.pid)
+            node_rss = get_process_tree_rss_mb(client.proc.pid)
+            return {
+                "scenario": "6_moli_isolated_contexts",
+                "moli_version": get_moli_version(moli_bin),
+                "cdp_ready_ms": cdp_ready_ms,
+                "idle_rss_mb": idle_rss_mb,
+                "isolated_contexts": n_ctx,
+                "setup_verified": setup_ok,
+                "interleaved_passed": verify_passed,
+                "cross_context_leaks": leaks,
+                "moli_rss_mb": moli_rss,
+                "node_mcp_rss_mb": node_rss,
+                "total_rss_mb": round(moli_rss + node_rss, 1),
+                "total_s6_ms": round((time.perf_counter() - t_s6) * 1000, 1),
+            }
+        finally:
+            if client is not None:
+                client.close()
+            if moli_proc.poll() is None:
+                moli_proc.terminate()
+                try:
+                    moli_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    moli_proc.kill()
+            server.shutdown()
+            server.server_close()
+
+
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Run local 5-scenario stress benchmarks for sessfork.")
-    parser.add_argument("--skip-mcp", action="store_true", help="Skip Scenarios 4-5 (@playwright/mcp E2E).")
+    parser = argparse.ArgumentParser(description="Run local 5-scenario (+ optional Moli) stress benchmarks for sessfork.")
+    parser.add_argument("--skip-mcp", action="store_true", help="Skip Scenarios 4-6 (@playwright/mcp E2E).")
+    parser.add_argument("--include-moli", action="store_true", help="Also run Scenario 6 against local `moli` binary.")
     parser.add_argument("--output", type=Path, default=None, help="Optional JSON report output path.")
     args = parser.parse_args(argv)
 
@@ -899,6 +1046,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         s4, s5 = run_scenarios_4_and_5()
         report["scenarios"].append(s4)
         report["scenarios"].append(s5)
+        if args.include_moli:
+            print("[6/6] Running Scenario 6: Real @playwright/mcp + lexmount/moli 6x isolatedContext...", file=sys.stderr, flush=True)
+            report["scenarios"].append(run_scenario_6_moli())
 
     payload = json.dumps(report, indent=2, ensure_ascii=False) + "\n"
     if args.output is not None:
