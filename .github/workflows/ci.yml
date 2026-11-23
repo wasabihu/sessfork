@@ -44,3 +44,20 @@ jobs:
         run: |
           PYTHONPATH=src python -m sessfork --version
           bash -n install.sh
+
+  rust-mcp:
+    name: Rust sessfork-mcp (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run cargo test, clippy, and release build
+        working-directory: rust/sessfork-mcp
+        run: |
+          cargo test
+          cargo clippy --all-targets -- -D warnings
+          cargo build --release
+          ./target/release/sessfork-mcp --version

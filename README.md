@@ -124,31 +124,32 @@ sessfork console.cloud.google.com --profile "Profile 1"
   - **SQLite Cookies**: Handles [Chromium Cookie DB `meta.version >= 24`](https://gist.github.com/creachadair/937179894a24571ce9860e2475a2d2ec) (`SHA-256(host_key)` 32-byte plaintext prefix stripping), live `-wal`/`-shm` sidecars, and `SameSite` / `HttpOnly` fidelity.
   - **LevelDB LocalStorage (`origins`)**: Parses Chromium's `_<origin>\x00` encoding-prefixed (`0x00` UTF-16LE / `0x01` Latin-1) records across `.ldb` SSTables and `.log` WALs, honoring `kTypeDeletion` tombstones (`localStorage.removeItem`) so logged-out JWTs are never resurrected.
 - **One-Command Auto-Wiring**: `sessfork <domain>` and `sessfork --setup` auto-detect Antigravity, Claude Code, and Cursor (`--target auto`), resolve absolute `npx` paths (avoiding [macOS GUI `$PATH` launch failures](https://discuss.ai.google.dev/t/bug-mcp-servers-crash-with-executable-file-not-found-in-path-when-antigravity-is-launched-via-macos-gui/138495)), and install `SKILL.md`.
-- **Optional Rust Moli Engine (`--engine dual` / `--engine moli`) & Local Studio (`--ui`)**: Keep `chrome-headless-shell` as default for 99.9% web compatibility, or switch to an auto-managed [`lexmount/moli`](https://github.com/lexmount/moli) Rust CDP bridge (`68 ms` cold start, `12.7 MB` idle, zero manual `moli serve`, zero orphan processes on exit). In `dual` mode, `sessfork-moli` handles fast DOM-first workloads while Chrome stays unloaded at `0 MB` until fallback is actually needed.
+- **Optional Rust Stack (`moli` + native `sessfork-mcp`, `--engine dual` / `moli`) & Local Studio (`--ui`)**: Keep `chrome-headless-shell` as default for 99.9% web compatibility, or pair [`lexmount/moli`](https://github.com/lexmount/moli) with the bundled **605 KB native Rust CDP MCP server** ([`rust/sessfork-mcp`](rust/sessfork-mcp)): talks straight over `moli serve --remote-debugging-pipe` with **zero Node.js, zero TCP ports, `4.6 ms` MCP cold start, `1.7 MB` idle RSS**, and kernel-level EOF cleanup on exit.
 
 ---
 
-## Stress Benchmarks (`chrome-headless-shell` vs. `lexmount/moli`)
+## Stress Benchmarks (`chrome-headless-shell` vs. `moli` + Node vs. `moli` + Rust `sessfork-mcp`)
 
-Measured locally on Apple Silicon (`macOS 26.6.2 arm64`, Python 3.14.7, `@playwright/mcp@0.0.85`) via [`scripts/stress_test.py`](scripts/stress_test.py) (zero external requests). Full methodology & breakdown in **[docs/benchmarks.md](docs/benchmarks.md)**.
+Measured locally on Apple Silicon (`macOS 26.6.2 arm64`, Python 3.14.7, `@playwright/mcp@0.0.85`, `moli 1.1.27`, `sessfork-mcp 0.1.4`) via [`scripts/stress_test.py`](scripts/stress_test.py) (zero external requests). Full methodology & 3-way breakdown in **[docs/benchmarks.md](docs/benchmarks.md)**.
 
-| Workload | `chrome-headless-shell` (default) | `moli 1.1.27` (Rust `--engine moli` / `dual`) | Notes |
-| :--- | :---: | :---: | :--- |
-| **100-domain extraction** (2,000 cookies + 2,000 LS keys) | `26.6 ms` p50 (`211k cookies/s`) | same CLI core | Pure Python stdlib + CommonCrypto |
-| **16-process concurrent fork storm** (64 domains) | **`0.0%` lost updates** (`223.7 ms`) | same CLI core | Fixed `57.5% -> 0.0%` via `fcntl.flock` |
-| **Live SQLite WAL contention** (5,795 commits + 8 readers) | **`200 / 200` OK** (`0.0%` errors) | same CLI core | p50 `32.7 ms` / p99 `52.1 ms` |
-| **12× heavy-DOM pure browser RSS** *(1,775 DOM nodes/tab)* | `2,051.1 MB` | **`375.4 MB` (`5.46×` smaller / `-81.7%`)** | Excludes fixed `~260 MB` Node MCP (`2,311 vs 640 MB` total) |
-| **12× heavy-DOM browser OS processes** | `15` processes | **`1` process (`15×` fewer)** | `12 / 12` verified, `0` cross-context leaks |
-| **6× lightweight auth contexts elapsed time** | `3,413.1 ms` | **`778.6 ms` (`4.4×` faster)** | Moli wins light pages; Chrome V8 wins heavy 1,775-node AX walks (`3.33s vs 5.73s`) |
+| Workload | `chrome-headless-shell` + Node MCP | `moli 1.1.27` + Node MCP | **`moli 1.1.27` + Rust `sessfork-mcp`** | Delta vs. Chrome |
+| :--- | :---: | :---: | :---: | :--- |
+| **100-domain CLI extraction** *(2k cookies + 2k LS)* | `26.6 ms` p50 (`211k/s`) | same CLI core | same CLI core | Pure Python stdlib + CommonCrypto |
+| **16-process concurrent fork storm** *(64 domains)* | **`0.0%` lost updates** (`223.7 ms`) | same CLI core | same CLI core | Fixed `57.5% -> 0.0%` via `fcntl.flock` |
+| **MCP cold `initialize`** | `1,787.5 ms` | `1,229.5 ms` | **`4.6 ms`** *(1.7 MB idle)* | **`388×` faster** (zero Node.js / `npx`) |
+| **50-origin hot-reload p50** *(20 cycles)* | `263.8 ms` | `672.5 ms` | **`5.9 ms`** (`20/20` OK) | **`44.7×` faster** (`114×` vs Node+Moli) |
+| **6× lightweight auth time / total RSS** | `3,413 ms` / `1,219 MB` | `779 ms` / `383 MB` | **`230 ms` / `85 MB`** | **`14.8×` faster · `14.4×` less RAM (-93%)** |
+| **12× heavy-DOM total RSS** *(1,775 nodes/tab)* | `2,531.4 MB` (`15` procs) | `656.8 MB` (`1` proc) | **`260.4 MB` (`1` proc)** | **`9.72×` smaller (`-89.7%`, saves `2.27 GB`)** |
+| **12× heavy-DOM total time** *(full AX tree)* | `2,915.4 ms` | `5,543.9 ms` | **`1,501.0 ms`** (`12/12`, 0 leaks) | **`1.94×` faster** (`3.69×` vs Node+Moli) |
 
-> **Why `--engine dual` is the sweet spot:** Moli saves **1.68 GB** (`-81.7%` pure browser RAM, `1` vs `15` OS procs) and flies on lightweight pages (`4.4×` faster), while Chrome's V8 JIT stays unloaded (`0 MB`) until a heavy SPA, WebGL canvas, or anti-bot portal triggers fallback.
+> **Why `--engine dual` is the sweet spot:** Pure Rust `sessfork-moli` delivers **`9.72×` smaller RAM**, **`1.94×–14.8×` faster execution**, and **`1.7 MB` idle** with zero Node.js, while Chrome stays completely unloaded (`0 MB`) until a WebGL or strict anti-bot portal triggers fallback.
 
 ```bash
-# Reproduce the 12x heavy-DOM Chrome vs. Moli comparison locally (~15s)
-python3 scripts/stress_test.py --heavy-compare
+# Optional: build & install the 605 KB native Rust CDP MCP server (auto-used by --engine moli / dual)
+cd rust/sessfork-mcp && cargo build --release && cp target/release/sessfork-mcp ~/.local/bin/
 
-# Or run the full 6-scenario suite
-python3 scripts/stress_test.py --include-moli
+# Reproduce the 3-way 12x heavy-DOM comparison locally (~18s)
+python3 scripts/stress_test.py --heavy-compare
 ```
 
 ---

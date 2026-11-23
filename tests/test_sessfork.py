@@ -1437,6 +1437,80 @@ class SessforkTestSuite(unittest.TestCase):
                     server.shutdown()
                     server.server_close()
 
+    def test_rust_native_sessfork_mcp_wiring_and_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox_home = Path(tmp)
+            state_file = sandbox_home / ".sessfork" / "state.json"
+            cfg_path = sandbox_home / ".gemini" / "config" / "mcp_config.json"
+            bin_dir = sandbox_home / ".local" / "bin"
+            bin_dir.mkdir(parents=True)
+
+            fake_moli = bin_dir / "moli"
+            fake_moli.write_text("#!/bin/sh\necho 'moli 1.1.27'\n", encoding="utf-8")
+            os.chmod(fake_moli, 0o755)
+
+            fake_rust_mcp = bin_dir / "sessfork-mcp"
+            fake_rust_mcp.write_text("#!/bin/sh\necho 'sessfork-mcp 0.1.4'\n", encoding="utf-8")
+            os.chmod(fake_rust_mcp, 0o755)
+
+            clean_env = {
+                k: v
+                for k, v in os.environ.items()
+                if k
+                not in (
+                    "SESSFORK_CDP_ENDPOINT",
+                    "SESSFORK_MOLI_PATH",
+                    "SESSFORK_RUST_MCP_PATH",
+                    "SESSFORK_MOLI_RUNTIME",
+                    "SESSFORK_BROWSER_EXECUTABLE_PATH",
+                )
+            }
+            clean_env["HOME"] = str(sandbox_home)
+            clean_env["SESSFORK_HOME"] = str(sandbox_home)
+            clean_env["SESSFORK_MOLI_PATH"] = str(fake_moli)
+
+            with mock.patch.dict(os.environ, clean_env, clear=True), \
+                mock.patch("sessfork.mcp_setup.resolve_npx_command", return_value="/opt/homebrew/bin/npx"), \
+                mock.patch("sessfork.mcp_setup.resolve_sessfork_command", return_value="/usr/local/bin/sessfork"):
+                # 1. Fresh --setup with both sessfork-mcp + moli defaults to dual with native Rust pipe
+                out_setup = io.StringIO()
+                with contextlib.redirect_stdout(out_setup):
+                    rc = main(["--setup", "--target", "antigravity", "--state-file", str(state_file), "--json"])
+                self.assertEqual(rc, 0)
+                doc = json.loads(out_setup.getvalue())
+                self.assertEqual(doc["engine_modes"], {str(cfg_path): "dual"})
+                self.assertEqual(doc["rust_mcp_version"], "sessfork-mcp 0.1.4")
+                servers = json.loads(cfg_path.read_text(encoding="utf-8"))["mcpServers"]
+                self.assertEqual(Path(servers[MCP_MOLI_SERVER_NAME]["command"]).name, "sessfork-mcp")
+                self.assertTrue(any(a.startswith("--moli=") for a in servers[MCP_MOLI_SERVER_NAME]["args"]))
+                self.assertNotIn("--mcp-bridge", servers[MCP_MOLI_SERVER_NAME]["args"])
+
+                # 2. Single --engine moli wires sessfork-browser directly to native Rust sessfork-mcp
+                out_moli = io.StringIO()
+                with contextlib.redirect_stdout(out_moli):
+                    rc = main(["--engine", "moli", "--target", "antigravity", "--state-file", str(state_file), "--json"])
+                self.assertEqual(rc, 0)
+                moli_doc = json.loads(out_moli.getvalue())
+                self.assertEqual(moli_doc["engine_modes"], {str(cfg_path): "moli"})
+                servers_moli = json.loads(cfg_path.read_text(encoding="utf-8"))["mcpServers"]
+                self.assertNotIn(MCP_MOLI_SERVER_NAME, servers_moli)
+                self.assertEqual(Path(servers_moli[MCP_SERVER_NAME]["command"]).name, "sessfork-mcp")
+
+                # 3. Preservation: subsequent ensure_mcp_configured keeps native Rust moli mode
+                self.assertEqual(
+                    ensure_mcp_configured(["antigravity"], state_path=state_file, home=sandbox_home),
+                    [],
+                )
+
+                # 4. SESSFORK_MOLI_RUNTIME=playwright falls back cleanly to --mcp-bridge moli
+                with mock.patch.dict(os.environ, {"SESSFORK_MOLI_RUNTIME": "playwright"}):
+                    out_fb = io.StringIO()
+                    with contextlib.redirect_stdout(out_fb):
+                        rc = main(["--engine", "moli", "--target", "antigravity", "--state-file", str(state_file), "--json"])
+                    self.assertEqual(rc, 0)
+                    servers_fb = json.loads(cfg_path.read_text(encoding="utf-8"))["mcpServers"]
+                    self.assertIn("--mcp-bridge", servers_fb[MCP_SERVER_NAME]["args"])
+
 
 if __name__ == "__main__":
     unittest.main()

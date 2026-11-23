@@ -17,7 +17,13 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from sessfork.chrome import BrowserProfileError, real_user_home
-from sessfork.moli_bridge import MOLI_INSTALL_CMD, find_moli_binary, get_moli_version
+from sessfork.moli_bridge import (
+    MOLI_INSTALL_CMD,
+    find_moli_binary,
+    find_rust_mcp_binary,
+    get_moli_version,
+    get_rust_mcp_version,
+)
 from sessfork.state import (
     DEFAULT_STATE_PATH,
     PLAYWRIGHT_OUTPUT_DIRNAME,
@@ -232,12 +238,16 @@ def build_managed_moli_mcp_entry(
     sessfork_cmd: Optional[str] = None,
     npx_cmd: Optional[str] = None,
     moli_bin: Optional[Path] = None,
+    rust_mcp_bin: Optional[Path] = None,
+    home: Optional[Path] = None,
     platform: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Build a zero-daemon managed Moli MCP entry (`sessfork --mcp-bridge moli`).
+    """Build a zero-daemon managed Moli MCP entry.
 
-    Spawns a private ephemeral `moli serve` on a free loopback port and attaches
-    `@playwright/mcp` over stdio, cleaning up Moli automatically on exit.
+    When the optional native Rust `sessfork-mcp` binary is installed, wires it directly
+    (zero Node.js, zero TCP ports via `moli serve --remote-debugging-pipe`, ~3 ms init,
+    ~1.7 MB idle RSS). Otherwise falls back cleanly to `sessfork --mcp-bridge moli`
+    (ephemeral `moli serve` + `@playwright/mcp`).
     """
     resolved_moli = find_moli_binary(moli_bin)
     if resolved_moli is None:
@@ -247,9 +257,26 @@ def build_managed_moli_mcp_entry(
             "Then re-run `sessfork --engine moli` or `sessfork --engine dual`."
         )
     resolved_state = state_path.expanduser().resolve()
+    output_dir = resolved_state.parent / PLAYWRIGHT_OUTPUT_DIRNAME
+    plat = (platform or sys.platform).lower()
+
+    resolved_rust_mcp = find_rust_mcp_binary(rust_mcp_bin, home=home)
+    if resolved_rust_mcp is not None:
+        args = [
+            f"--moli={resolved_moli}",
+            f"--storage-state={resolved_state}",
+            f"--output-dir={output_dir}",
+        ]
+        env_map = _build_mcp_env(str(resolved_rust_mcp), platform=plat, extra_bins=(str(resolved_moli),))
+        env_map["SESSFORK_MOLI_PATH"] = str(resolved_moli)
+        return {
+            "command": str(resolved_rust_mcp),
+            "args": args,
+            "env": env_map,
+        }
+
     cmd = sessfork_cmd or resolve_sessfork_command()
     npx = npx_cmd or resolve_npx_command()
-    plat = (platform or sys.platform).lower()
     args = [
         "--mcp-bridge",
         "moli",
@@ -363,6 +390,13 @@ def _extract_mcp_bridge_arg(args: Any) -> Optional[str]:
     return _extract_cli_arg(args, "--mcp-bridge")
 
 
+def _is_native_rust_mcp_entry(entry: Dict[str, Any]) -> bool:
+    cmd = str(entry.get("command", "")).strip()
+    if not cmd:
+        return False
+    return Path(cmd).name in ("sessfork-mcp", "sessfork-mcp.exe")
+
+
 def _detect_existing_config_mode(cfg_path: Path) -> Tuple[Optional[str], Optional[str]]:
     """Return `(engine_mode, custom_cdp_endpoint)` from an existing MCP config file."""
     if not cfg_path.is_file():
@@ -382,6 +416,8 @@ def _detect_existing_config_mode(cfg_path: Path) -> Tuple[Optional[str], Optiona
     if isinstance(primary, dict) and isinstance(moli_companion, dict):
         return "dual", None
     if isinstance(primary, dict):
+        if _is_native_rust_mcp_entry(primary):
+            return "moli", None
         bridge = _extract_mcp_bridge_arg(primary.get("args"))
         if bridge == "moli":
             return "moli", None
@@ -412,6 +448,8 @@ def inspect_mcp_headless_shell(
     )
     moli_path = find_moli_binary()
     moli_ver = get_moli_version(moli_path) if moli_path is not None else None
+    rust_mcp_path = find_rust_mcp_binary(home=home)
+    rust_mcp_ver = get_rust_mcp_version(rust_mcp_path) if rust_mcp_path is not None else None
     paths = list(config_paths) if config_paths is not None else target_mcp_config_paths(target, home=home)
 
     pinned_configs: List[str] = []
@@ -441,7 +479,7 @@ def inspect_mcp_headless_shell(
 
         has_moli_companion = isinstance(servers.get(MCP_MOLI_SERVER_NAME), dict)
         bridge = _extract_mcp_bridge_arg(entry.get("args"))
-        if bridge == "moli":
+        if bridge == "moli" or _is_native_rust_mcp_entry(entry):
             engine_modes[str(cfg_path)] = "moli"
             continue
 
@@ -518,6 +556,8 @@ def inspect_mcp_headless_shell(
         "engine_modes": engine_modes,
         "moli_binary": str(moli_path) if moli_path is not None else None,
         "moli_version": moli_ver,
+        "rust_mcp_binary": str(rust_mcp_path) if rust_mcp_path is not None else None,
+        "rust_mcp_version": rust_mcp_ver,
         "warning": warning,
     }
 
@@ -622,6 +662,7 @@ def ensure_mcp_configured(
                 sessfork_cmd=sessfork_cmd,
                 npx_cmd=npx_cmd,
                 moli_bin=moli_bin,
+                home=home,
             )
             return {MCP_SERVER_NAME: moli_entry, MCP_MOLI_SERVER_NAME: None}
         if mode == "dual":
@@ -635,6 +676,7 @@ def ensure_mcp_configured(
                 sessfork_cmd=sessfork_cmd,
                 npx_cmd=npx_cmd,
                 moli_bin=moli_bin,
+                home=home,
             )
             return {MCP_SERVER_NAME: chrome_entry, MCP_MOLI_SERVER_NAME: moli_entry}
         if mode == "cdp" and custom_cdp:
@@ -679,6 +721,14 @@ def ensure_mcp_configured(
                     updates = _build_updates_for_mode(existing_mode)
                 elif existing_mode == "cdp" and existing_cdp:
                     updates = _build_updates_for_mode("cdp", existing_cdp)
+                elif (
+                    existing_mode is None
+                    and find_rust_mcp_binary(home=home) is not None
+                    and find_moli_binary(moli_bin) is not None
+                ):
+                    # When native Rust `sessfork-mcp` + `moli` are both installed on a fresh
+                    # client, default directly to Dual (Rust Moli primary + lazy 0 MB Chrome fallback).
+                    updates = _build_updates_for_mode("dual")
                 else:
                     updates = _build_updates_for_mode("chrome")
             else:

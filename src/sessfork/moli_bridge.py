@@ -26,10 +26,85 @@ from sessfork.state import DEFAULT_STATE_PATH, PLAYWRIGHT_OUTPUT_DIRNAME
 
 MOLI_PATH_ENV = "SESSFORK_MOLI_PATH"
 MOLI_LAYOUT_ENV = "SESSFORK_MOLI_LAYOUT"
+RUST_MCP_PATH_ENV = "SESSFORK_RUST_MCP_PATH"
+MOLI_RUNTIME_ENV = "SESSFORK_MOLI_RUNTIME"
 MOLI_INSTALL_CMD = (
     "curl --proto '=https' --tlsv1.2 -fsSL "
     "https://github.com/lexmount/moli/releases/latest/download/moli-installer.sh | sh"
 )
+
+
+def find_rust_mcp_binary(
+    override_path: Optional[Path] = None,
+    home: Optional[Path] = None,
+) -> Optional[Path]:
+    """Locate the optional native Rust `sessfork-mcp` binary (zero-Node CDP pipe MCP)."""
+    if os.environ.get(MOLI_RUNTIME_ENV, "").strip().lower() in ("playwright", "node"):
+        return None
+    if override_path is not None:
+        cand = override_path.expanduser()
+        return cand.resolve() if (cand.is_file() and os.access(cand, os.X_OK)) else None
+
+    env_override = os.environ.get(RUST_MCP_PATH_ENV, "").strip()
+    if env_override:
+        if env_override.lower() in ("none", "off", "disabled"):
+            return None
+        cand = Path(env_override).expanduser()
+        return cand.resolve() if (cand.is_file() and os.access(cand, os.X_OK)) else None
+
+    # Honor explicit home or isolated SESSFORK_HOME sandboxes without leaking host ~/.local/bin.
+    if home is not None:
+        cand = home.expanduser() / ".local" / "bin" / "sessfork-mcp"
+        return cand.resolve() if (cand.is_file() and os.access(cand, os.X_OK)) else None
+
+    sessfork_home = os.environ.get("SESSFORK_HOME", "").strip()
+    if sessfork_home:
+        cand = Path(sessfork_home).expanduser() / ".local" / "bin" / "sessfork-mcp"
+        return cand.resolve() if (cand.is_file() and os.access(cand, os.X_OK)) else None
+
+    which_hit = shutil.which("sessfork-mcp")
+    if which_hit:
+        cand = Path(which_hit)
+        if cand.is_file() and os.access(cand, os.X_OK):
+            return cand.resolve()
+
+    real_home = real_user_home()
+    repo_release = Path(__file__).resolve().parents[2] / "rust" / "sessfork-mcp" / "target" / "release" / "sessfork-mcp"
+    candidates = [
+        real_home / ".local" / "bin" / "sessfork-mcp",
+        Path.home().expanduser() / ".local" / "bin" / "sessfork-mcp",
+        Path("/opt/homebrew/bin/sessfork-mcp"),
+        Path("/usr/local/bin/sessfork-mcp"),
+        repo_release,
+    ]
+    seen: set[Path] = set()
+    for cand in candidates:
+        if cand in seen:
+            continue
+        seen.add(cand)
+        if cand.is_file() and os.access(cand, os.X_OK):
+            return cand.resolve()
+    return None
+
+
+def get_rust_mcp_version(rust_mcp_bin: Optional[Path] = None) -> Optional[str]:
+    """Return `sessfork-mcp --version` output string if installed, else None."""
+    binary = rust_mcp_bin or find_rust_mcp_binary()
+    if binary is None:
+        return None
+    try:
+        proc = subprocess.run(
+            [str(binary), "--version"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        if proc.returncode == 0:
+            return proc.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return None
 
 
 def find_moli_binary(override_path: Optional[Path] = None) -> Optional[Path]:

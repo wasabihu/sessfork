@@ -60,7 +60,12 @@ from sessfork.mcp_setup import (
     find_playwright_headless_shell,
     resolve_npx_command,
 )
-from sessfork.moli_bridge import find_moli_binary, get_moli_version
+from sessfork.moli_bridge import (
+    find_moli_binary,
+    find_rust_mcp_binary,
+    get_moli_version,
+    get_rust_mcp_version,
+)
 from sessfork.state import (
     hot_reload_state_path,
     load_storage_state,
@@ -1407,6 +1412,75 @@ def run_heavy_compare(n_contexts: int = 12) -> Dict[str, Any]:
                         moli_proc.wait(timeout=5)
                     except subprocess.TimeoutExpired:
                         moli_proc.kill()
+
+        # 3) Optional native Rust `sessfork-mcp` + `moli serve --remote-debugging-pipe` (zero Node.js!)
+        rust_mcp_bin = find_rust_mcp_binary()
+        rust_res: Optional[Dict[str, Any]] = None
+        if rust_mcp_bin is not None:
+            with tempfile.TemporaryDirectory(prefix="sf_heavy_rust_") as tmp:
+                out_dir = Path(tmp) / "playwright-output"
+                out_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+                t_init_r = time.perf_counter()
+                client_r = MCPStdioClient(
+                    str(rust_mcp_bin),
+                    [f"--moli={moli_bin}", f"--output-dir={out_dir}"],
+                    {},
+                )
+                try:
+                    client_r.initialize()
+                    init_r_ms = round((time.perf_counter() - t_init_r) * 1000, 1)
+                    idle_wrapper_rss = get_process_tree_rss_mb(client_r.proc.pid)
+
+                    def _rust_rss() -> Dict[str, Any]:
+                        try:
+                            ps_out = subprocess.check_output(["ps", "-eo", "pid,ppid,rss,comm"], text=True, timeout=5)
+                        except Exception:
+                            return {"browser_rss_mb": 0.0, "browser_procs": 0, "node_mcp_rss_mb": 0.0, "total_rss_mb": 0.0}
+                        pm: Dict[int, Tuple[int, str]] = {}
+                        ch: Dict[int, List[int]] = {}
+                        for ln in ps_out.splitlines()[1:]:
+                            parts = ln.strip().split(None, 3)
+                            if len(parts) < 4:
+                                continue
+                            try:
+                                p, pp, r = int(parts[0]), int(parts[1]), int(parts[2])
+                            except ValueError:
+                                continue
+                            pm[p] = (r, parts[3].strip())
+                            ch.setdefault(pp, []).append(p)
+                        w_kb = b_kb = b_cnt = 0
+                        stk = [client_r.proc.pid]
+                        seen = set()
+                        while stk:
+                            cur = stk.pop()
+                            if cur in seen:
+                                continue
+                            seen.add(cur)
+                            if cur in pm:
+                                r_kb, cm = pm[cur]
+                                if "sessfork-mcp" in cm:
+                                    w_kb += r_kb
+                                else:
+                                    b_kb += r_kb
+                                    b_cnt += 1
+                            stk.extend(ch.get(cur, []))
+                        return {
+                            "browser_rss_mb": round(b_kb / 1024.0, 1),
+                            "browser_procs": b_cnt,
+                            "node_mcp_rss_mb": round(w_kb / 1024.0, 1),
+                            "total_rss_mb": round((b_kb + w_kb) / 1024.0, 1),
+                        }
+
+                    rust_res = _run_heavy_workload_on_client(
+                        client_r, out_dir, origin, n_contexts, "rustmoli", _rust_rss
+                    )
+                    rver = (get_rust_mcp_version(rust_mcp_bin) or "sessfork-mcp").strip()
+                    rust_res["engine"] = f"{rver} + {moli_res['engine']}"
+                    rust_res["mcp_init_ms"] = init_r_ms
+                    rust_res["idle_wrapper_rss_mb"] = idle_wrapper_rss
+                    rust_res["rust_wrapper_rss_mb"] = rust_res.pop("node_mcp_rss_mb", 0.0)
+                finally:
+                    client_r.close()
     finally:
         server.shutdown()
         server.server_close()
@@ -1418,21 +1492,33 @@ def run_heavy_compare(n_contexts: int = 12) -> Dict[str, Any]:
     c_ms = max(0.1, float(chrome_res.get("total_ms", 0.0)))
     m_ms = max(0.1, float(moli_res.get("total_ms", 0.0)))
 
-    return {
+    comparison: Dict[str, Any] = {
+        "browser_rss_ratio_x": round(c_br / m_br, 2),
+        "browser_rss_saved_pct": round((1.0 - m_br / c_br) * 100, 1),
+        "total_rss_saved_pct": round((1.0 - m_tot / c_tot) * 100, 1),
+        "speedup_x": round(c_ms / m_ms, 2),
+        "elapsed_saved_pct": round((1.0 - m_ms / c_ms) * 100, 1),
+        "browser_procs_chrome": chrome_res.get("browser_procs", 0),
+        "browser_procs_moli": moli_res.get("browser_procs", 0),
+    }
+    if rust_res is not None:
+        r_tot = max(0.1, float(rust_res.get("total_rss_mb", 0.0)))
+        r_ms = max(0.1, float(rust_res.get("total_ms", 0.0)))
+        comparison["rust_mcp_vs_chrome_total_rss_ratio_x"] = round(c_tot / r_tot, 2)
+        comparison["rust_mcp_vs_chrome_total_rss_saved_pct"] = round((1.0 - r_tot / c_tot) * 100, 1)
+        comparison["rust_mcp_vs_chrome_speedup_x"] = round(c_ms / r_ms, 2)
+        comparison["rust_mcp_vs_node_moli_speedup_x"] = round(m_ms / r_ms, 2)
+
+    out_report: Dict[str, Any] = {
         "scenario": "heavy_dom_compare",
         "isolated_contexts": n_contexts,
         "chrome": chrome_res,
         "moli": moli_res,
-        "comparison": {
-            "browser_rss_ratio_x": round(c_br / m_br, 2),
-            "browser_rss_saved_pct": round((1.0 - m_br / c_br) * 100, 1),
-            "total_rss_saved_pct": round((1.0 - m_tot / c_tot) * 100, 1),
-            "speedup_x": round(c_ms / m_ms, 2),
-            "elapsed_saved_pct": round((1.0 - m_ms / c_ms) * 100, 1),
-            "browser_procs_chrome": chrome_res.get("browser_procs", 0),
-            "browser_procs_moli": moli_res.get("browser_procs", 0),
-        },
+        "comparison": comparison,
     }
+    if rust_res is not None:
+        out_report["moli_rust_mcp"] = rust_res
+    return out_report
 
 
 def main(argv: Optional[List[str]] = None) -> int:

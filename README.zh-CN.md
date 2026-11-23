@@ -120,31 +120,32 @@ sessfork console.cloud.google.com --profile "Profile 1"
   - **SQLite Cookies**：完整兼容 [Chrome 130+ (`meta.version >= 24`)](https://gist.github.com/creachadair/937179894a24571ce9860e2475a2d2ec) 密文前 32 字节 `SHA-256(host_key)` 剥离、实时 `-wal`/`-shm` 侧车快照，以及 `SameSite` / `HttpOnly` 属性还原。
   - **LevelDB LocalStorage (`origins`)**：跨 `.ldb` 与 `.log` 解析 Chromium `_<origin>\x00` 编码前缀（`0x00` UTF-16LE / `0x01` Latin-1），按 MVCC 序列号合并并严格遵循 `kTypeDeletion` 删除墓碑，防止已退出的旧 JWT 死灰复燃。
 - **一次调用闭环**：自动检测 Antigravity / Claude Code / Cursor（`--target auto`），自动解析 `npx` 绝对路径（规避 [macOS GUI 启动 Agent 找不到 PATH](https://discuss.ai.google.dev/t/bug-mcp-servers-crash-with-executable-file-not-found-in-path-when-antigravity-is-launched-via-macos-gui/138495) 的常见故障），并在单次命令中同时完成 MCP 与 `SKILL.md` 装配。
-- **可选 Rust Moli 轻量引擎（`--engine dual` / `--engine moli`）与本地可视化台（`--ui`）**：默认保持 `chrome-headless-shell` 保证 99.9% 兼容；可选接入自动托管的 [`lexmount/moli`](https://github.com/lexmount/moli) Rust 内核（`68 ms` 秒启、空载 `12.7 MB`、退出自动清理零孤儿进程、免手启 `moli serve`）。`dual` 双通道模式下平时只走轻量的 `sessfork-moli`，Chrome 在未触发兜底前保持 `0 MB` 惰性未启动。
+- **可选全 Rust 极速栈（`moli` + 原生 `sessfork-mcp`，`--engine dual` / `moli`）与本地可视化台（`--ui`）**：默认保持 `chrome-headless-shell` 保证 99.9% 兼容；可选接入 [`lexmount/moli`](https://github.com/lexmount/moli) 与内置的 **605 KB 纯 Rust 原生 CDP MCP 服务**（[`rust/sessfork-mcp`](rust/sessfork-mcp)），通过 `moli serve --remote-debugging-pipe` 零端口直连，**彻底告别 Node.js / `npx`**（`4.6 ms` 初始化、空载 `1.7 MB`、退出由内核 EOF 自动回收零孤儿进程）。
 
 ---
 
-## 实测压测数据（`chrome-headless-shell` vs `lexmount/moli`）
+## 实测压测数据（Chrome vs Node+Moli vs 全 Rust `sessfork-mcp`+Moli）
 
-在 Apple Silicon 本机（`macOS 26.6.2 arm64` / Python 3.14.7 / `@playwright/mcp@0.0.85`）通过 [`scripts/stress_test.py`](scripts/stress_test.py) 全本地实测（零外部网络请求），完整方法论与分场景数据见 **[docs/benchmarks.md](docs/benchmarks.md)**：
+在 Apple Silicon 本机（`macOS 26.6.2 arm64` / Python 3.14.7 / `@playwright/mcp@0.0.85` / `moli 1.1.27` / `sessfork-mcp 0.1.4`）通过 [`scripts/stress_test.py`](scripts/stress_test.py) 全本地同场实测（零外部网络请求），完整方法论见 **[docs/benchmarks.md](docs/benchmarks.md)**：
 
-| 压测维度 | `chrome-headless-shell`（默认） | `moli 1.1.27`（Rust `--engine moli` / `dual`） | 说明 |
-| :--- | :---: | :---: | :--- |
-| **100 域名全量提取**（2,000 Cookie + 2,000 LS 键） | `26.6 ms` p50（`211k cookies/s`） | 共用 CLI 内核 | 纯 Python 标准库 + CommonCrypto |
-| **16 进程并发写入风暴**（64 域名） | **`0.0%` 丢更新**（`223.7 ms`） | 共用 CLI 内核 | `fcntl.flock` 将丢更新率从 `57.5%` 压至 `0.0%` |
-| **SQLite WAL 活写争用**（5,795 提交 + 8 并发读） | **`200 / 200` 成功**（`0.0%` 错误） | 共用 CLI 内核 | p50 `32.7 ms` / p99 `52.1 ms` |
-| **12 路重型 DOM 纯浏览器内存**（1,775 节点/页） | `2,051.1 MB` | **`375.4 MB`（省 81.7% / 少 5.46×）** | 已剥离双方固定 `~260 MB` Node MCP（含 Node 为 `2,311 vs 640 MB`） |
-| **12 路重型 DOM 浏览器进程数** | `15` 个进程 | **`1` 个进程（少 15×）** | `12 / 12` 交叉核验通过、`0` 跨上下文串号 |
-| **6 路轻量鉴权页全流程耗时** | `3,413.1 ms` | **`778.6 ms`（快 4.4×）** | 轻量页 Moli 完胜；超重 DOM 全量无障碍树遍历 Chrome V8 更快（`3.33s vs 5.73s`） |
+| 压测维度 | `chrome-headless-shell` + Node MCP | `moli 1.1.27` + Node MCP | **`moli 1.1.27` + Rust `sessfork-mcp`** | 对比 Chrome 收益 |
+| :--- | :---: | :---: | :---: | :--- |
+| **100 域名 CLI 提取**（2k Cookie + 2k LS） | `26.6 ms` p50（`211k/s`） | 共用 CLI 内核 | 共用 CLI 内核 | 纯 Python 标准库 + CommonCrypto |
+| **16 进程并发写入风暴**（64 域名） | **`0.0%` 丢更新**（`223.7 ms`） | 共用 CLI 内核 | 共用 CLI 内核 | `fcntl.flock` 从 `57.5%` 压至 `0.0%` |
+| **MCP 冷启动 `initialize`** | `1,787.5 ms` | `1,229.5 ms` | **`4.6 ms`**（空载 `1.7 MB`） | **快 388×**（彻底去 Node.js / `npx`） |
+| **50-Origin 热重载 p50**（20 轮） | `263.8 ms` | `672.5 ms` | **`5.9 ms`**（`20/20` 零陈旧） | **快 44.7×**（比 Node+Moli 快 114×） |
+| **6 路轻量鉴权耗时 / 总内存** | `3,413 ms` / `1,219 MB` | `779 ms` / `383 MB` | **`230 ms` / `85 MB`** | **快 14.8× · 内存小 14.4×（-93%）** |
+| **12 路重型 DOM 总内存**（1,775 节点/页） | `2,531.4 MB`（15 进程） | `656.8 MB`（1 进程） | **`260.4 MB`（1 进程）** | **小 9.72×（省 89.7% / 2.27 GB）** |
+| **12 路重型 DOM 总耗时**（含完整无障碍树） | `2,915.4 ms` | `5,543.9 ms` | **`1,501.0 ms`**（12/12 零串号） | **反超 Chrome 快 1.94×**（比 Node+Moli 快 3.69×） |
 
-> **为什么推荐 `--engine dual` 双通道？** 12 路重型并发下 Moli 单引擎直省 **1.68 GB** 内存（`-81.7%`、`1` 进程 vs `15` 进程）且轻量页快 **4.4×**；遇到重型 DOM 无障碍树/WebGL/强反爬站点时再惰性唤醒 Chrome（未调用前常驻 `0 MB`），兼得低内存与 99.9% 兼容。
+> **为什么推荐 `--engine dual` 双通道？** 装上纯 Rust `sessfork-mcp` 后，日常 `sessfork-moli` 直接做到 **总内存小 9.72×、耗时快 1.94×–14.8×、空载仅 1.7 MB、零 Node.js**；只有遇到 WebGL 或强风控反爬站点时再惰性唤醒 Chrome（未调用前常驻 `0 MB`），性能与 99.9% 兼容兼得。
 
 ```bash
-# 一键复现 12 路重型 DOM 对比压测（拆清纯浏览器引擎 vs Node MCP，约 15 秒）
-python3 scripts/stress_test.py --heavy-compare
+# 可选：编译安装 605 KB 纯 Rust 原生 CDP MCP（装完后 --engine moli / dual 自动启用）
+cd rust/sessfork-mcp && cargo build --release && cp target/release/sessfork-mcp ~/.local/bin/
 
-# 或运行完整 6 场景压测套件
-python3 scripts/stress_test.py --include-moli
+# 一键复现三方 12 路重型 DOM 同场压测（约 18 秒）
+python3 scripts/stress_test.py --heavy-compare
 ```
 
 ---

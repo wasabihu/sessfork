@@ -288,6 +288,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         info["engine_modes"] = shell_info["engine_modes"]
         info["moli_binary"] = shell_info["moli_binary"]
         info["moli_version"] = shell_info["moli_version"]
+        info["rust_mcp_binary"] = shell_info["rust_mcp_binary"]
+        info["rust_mcp_version"] = shell_info["rust_mcp_version"]
         info["warning"] = shell_info["warning"]
         _emit_status(info, args.as_json)
         return 0
@@ -405,6 +407,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             result["cdp_mcp_configs"] = shell_info["cdp_mcp_configs"]
             result["engine_modes"] = shell_info["engine_modes"]
             result["moli_binary"] = shell_info["moli_binary"]
+            result["rust_mcp_binary"] = shell_info["rust_mcp_binary"]
+            result["rust_mcp_version"] = shell_info["rust_mcp_version"]
             result["warning"] = shell_info["warning"]
         if args.as_json:
             print(json.dumps(result, indent=2, ensure_ascii=False))
@@ -441,6 +445,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "cdp_mcp_configs": shell_info["cdp_mcp_configs"],
             "engine_modes": shell_info["engine_modes"],
             "moli_binary": shell_info["moli_binary"],
+            "rust_mcp_binary": shell_info["rust_mcp_binary"],
+            "rust_mcp_version": shell_info["rust_mcp_version"],
             "warning": shell_info["warning"],
         }
         if args.as_json:
@@ -462,6 +468,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if shell_info["moli_binary"]:
                 ver = f" ({shell_info['moli_version']})" if shell_info.get("moli_version") else ""
                 print(f"  + Moli binary: {shell_info['moli_binary']}{ver}")
+            if shell_info.get("rust_mcp_binary"):
+                rver = f" ({shell_info['rust_mcp_version']})" if shell_info.get("rust_mcp_version") else ""
+                print(f"  + Native Rust MCP: {shell_info['rust_mcp_binary']}{rver}")
             if not updated_mcp and not installed_skills:
                 print("  = MCP config and SKILL.md were already up to date.")
             if shell_info["warning"]:
@@ -497,6 +506,9 @@ def _emit_mcp_shell_status(info: dict) -> None:
     if info.get("moli_binary"):
         ver = f" ({info['moli_version']})" if info.get("moli_version") else ""
         print(f"Moli binary: {info['moli_binary']}{ver}")
+    if info.get("rust_mcp_binary"):
+        rver = f" ({info['rust_mcp_version']})" if info.get("rust_mcp_version") else ""
+        print(f"Native Rust MCP: {info['rust_mcp_binary']}{rver}")
     cdp_configs = info.get("cdp_mcp_configs") or {}
     if cdp_configs:
         unique_eps = sorted(set(cdp_configs.values()))

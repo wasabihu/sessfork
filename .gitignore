@@ -19,6 +19,9 @@ venv/
 .sessfork/
 .playwright-mcp/
 
+# Rust build artifacts
+rust/*/target/
+
 # OS & editor
 .DS_Store
 .idea/

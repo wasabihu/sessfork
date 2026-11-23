@@ -103,6 +103,9 @@ def collect_ui_status(state_path: Path = DEFAULT_STATE_PATH, target: str = "auto
         "moli_detected": bool(shell_info.get("moli_binary")),
         "moli_binary": shell_info.get("moli_binary"),
         "moli_version": shell_info.get("moli_version"),
+        "rust_mcp_detected": bool(shell_info.get("rust_mcp_binary")),
+        "rust_mcp_binary": shell_info.get("rust_mcp_binary"),
+        "rust_mcp_version": shell_info.get("rust_mcp_version"),
         "moli_install_cmd": MOLI_INSTALL_CMD,
         "warning": shell_info.get("warning"),
         "clients": clients,
@@ -746,7 +749,7 @@ _UI_HTML_TEMPLATE = """<!doctype html>
           <p class="engine-desc" data-i18n="chromeDesc">仅注册 sessfork-browser。最高网站兼容性，适合强反爬、复杂 SPA 与支付/后台管理页面。</p>
           <div class="metrics">
             <div class="metric"><span class="metric-label" data-i18n="mCompat">任务兼容率</span><span class="metric-val">99.9%</span></div>
-            <div class="metric"><span class="metric-label" data-i18n="mRam">12 路重型引擎内存</span><span class="metric-val">2,051 MB (15 proc)</span></div>
+            <div class="metric"><span class="metric-label" data-i18n="mRam">12 路重型总内存</span><span class="metric-val">2,531 MB (15 proc)</span></div>
           </div>
         </button>
 
@@ -754,14 +757,14 @@ _UI_HTML_TEMPLATE = """<!doctype html>
           <div class="engine-top">
             <span class="engine-title">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#C084FC" stroke-width="2" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-              <span>Moli Rust (托管)</span>
+              <span>Moli + Rust MCP</span>
             </span>
-            <span class="tag tag-fast" data-i18n="tagFast">极轻单通道</span>
+            <span class="tag tag-fast" data-i18n="tagFast">零 Node 极速</span>
           </div>
-          <p class="engine-desc" data-i18n="moliDesc">仅注册 sessfork-browser 指向自动托管 Moli。44ms 秒启、单进程省 81.7% 引擎内存，退出自动回收。</p>
+          <p class="engine-desc" data-i18n="moliDesc">纯 Rust sessfork-mcp 直连 Moli 管道：4.6ms 初始化、1.7 MB 空载、零 Node/TCP 端口，12 路省 2.27 GB。</p>
           <div class="metrics">
-            <div class="metric"><span class="metric-label" data-i18n="mRam">12 路重型引擎内存</span><span class="metric-val">375 MB (-81.7%)</span></div>
-            <div class="metric"><span class="metric-label" data-i18n="mSpeed">进程 / 轻量提速</span><span class="metric-val">1 proc · 4.4x</span></div>
+            <div class="metric"><span class="metric-label" data-i18n="mRam">12 路重型总内存</span><span class="metric-val">260 MB (-89.7%)</span></div>
+            <div class="metric"><span class="metric-label" data-i18n="mSpeed">重型 / 轻量提速</span><span class="metric-val">1.94x / 14.8x</span></div>
           </div>
         </button>
 
@@ -773,9 +776,9 @@ _UI_HTML_TEMPLATE = """<!doctype html>
             </span>
             <span class="tag tag-rec" data-i18n="tagRec">推荐</span>
           </div>
-          <p class="engine-desc" data-i18n="dualDesc">同时挂接 sessfork-moli（空载 12.6 MB）与 sessfork-browser（Chrome 未调用前 0 MB 惰性兜底），重型 SPA/反爬无感回退。</p>
+          <p class="engine-desc" data-i18n="dualDesc">平时走纯 Rust sessfork-moli（空载 1.7 MB / 零 Node），遇强反爬/WebGL 再惰性唤醒 Chrome（未调用前 0 MB）。</p>
           <div class="metrics">
-            <div class="metric"><span class="metric-label" data-i18n="mIdle">平时常驻开销</span><span class="metric-val">Moli 12.6 MB</span></div>
+            <div class="metric"><span class="metric-label" data-i18n="mIdle">平时常驻开销</span><span class="metric-val">Rust 1.7 MB</span></div>
             <div class="metric"><span class="metric-label" data-i18n="mFallback">兜底兼容率</span><span class="metric-val">99.9% (0 MB 惰性)</span></div>
           </div>
         </button>
@@ -840,14 +843,14 @@ _UI_HTML_TEMPLATE = """<!doctype html>
         engineTitle: "无头浏览器引擎模式",
         engineSub: "选择单引擎或双通道按需兜底。Moli 模式下由 sessfork 自动托管启停，无需手动运行 moli serve。",
         tagDefault: "默认单通道",
-        tagFast: "极轻单通道",
+        tagFast: "零 Node 极速",
         tagRec: "推荐",
-        chromeDesc: "仅注册 sessfork-browser。最高网站兼容性，V8 多核适合重型 DOM/SPA 与强反爬站点。",
-        moliDesc: "仅注册 sessfork-browser 指向自动托管 Moli。44ms 秒启、单进程省 81.7% 引擎内存，退出自动回收。",
-        dualDesc: "同时挂接 sessfork-moli（空载 12.6 MB）与 sessfork-browser（Chrome 未调用前 0 MB 惰性兜底），重型 SPA/反爬无感回退。",
+        chromeDesc: "仅注册 sessfork-browser。最高网站兼容性，适合强反爬、WebGL 与复杂支付/后台站点。",
+        moliDesc: "纯 Rust sessfork-mcp 直连 Moli 管道：4.6ms 初始化、1.7 MB 空载、零 Node/TCP 端口，12 路省 2.27 GB。",
+        dualDesc: "平时走纯 Rust sessfork-moli（空载 1.7 MB / 零 Node），遇强反爬/WebGL 再惰性唤醒 Chrome（未调用前 0 MB）。",
         mCompat: "任务兼容率",
-        mRam: "12 路重型引擎内存",
-        mSpeed: "进程 / 轻量提速",
+        mRam: "12 路重型总内存",
+        mSpeed: "重型 / 轻量提速",
         mIdle: "平时常驻开销",
         mFallback: "兜底兼容率",
         applyBtn: "应用到所有已检测 AI 客户端",
@@ -868,14 +871,14 @@ _UI_HTML_TEMPLATE = """<!doctype html>
         engineTitle: "Headless Browser Engine Mode",
         engineSub: "Choose a single backend or lazy dual-engine fallback. Managed Moli auto-spawns and cleans up on exit — never run `moli serve` manually.",
         tagDefault: "Default Single",
-        tagFast: "Ultra-Light Single",
+        tagFast: "Zero-Node Rust",
         tagRec: "Recommended",
-        chromeDesc: "Wires only `sessfork-browser` (chrome-headless-shell). Maximum compatibility & fast V8 JIT for heavy SPAs and anti-bot portals.",
-        moliDesc: "Wires only `sessfork-browser` to auto-managed Rust Moli. 44 ms ready, 1 process (-81.7% engine RAM), automatic cleanup.",
-        dualDesc: "Wires `sessfork-moli` (12.6 MB idle) + `sessfork-browser` (Chrome stays unloaded at 0 MB until heavy/anti-bot fallback).",
+        chromeDesc: "Wires only `sessfork-browser` (chrome-headless-shell). Maximum compatibility for WebGL & anti-bot portals.",
+        moliDesc: "Pure Rust `sessfork-mcp` over Moli CDP pipe: 4.6 ms init, 1.7 MB idle, zero Node/TCP ports, saves 2.27 GB at 12x load.",
+        dualDesc: "Default to pure Rust `sessfork-moli` (1.7 MB idle, zero Node) with lazy 0 MB Chrome fallback for anti-bot/WebGL.",
         mCompat: "Compatibility",
-        mRam: "12x Heavy Engine RAM",
-        mSpeed: "Procs / Light Speed",
+        mRam: "12x Heavy Total RAM",
+        mSpeed: "Heavy / Light Speed",
         mIdle: "Idle Footprint",
         mFallback: "Fallback Rate",
         applyBtn: "Apply to Detected AI Clients",
@@ -948,8 +951,23 @@ _UI_HTML_TEMPLATE = """<!doctype html>
 
       const mPill = document.createElement("span");
       mPill.className = "pill " + (data.moli_detected ? "pill-purple" : "pill-warn");
-      mPill.innerHTML = '<span class="dot" aria-hidden="true"></span>' + (data.moli_detected ? (data.moli_version || "moli detected") : "moli not installed");
+      const mDot = document.createElement("span");
+      mDot.className = "dot";
+      mDot.setAttribute("aria-hidden", "true");
+      mPill.appendChild(mDot);
+      mPill.appendChild(document.createTextNode(data.moli_detected ? (data.moli_version || "moli detected") : "moli not installed"));
       pills.appendChild(mPill);
+
+      if (data.rust_mcp_detected) {
+        const rPill = document.createElement("span");
+        rPill.className = "pill pill-ok";
+        const rDot = document.createElement("span");
+        rDot.className = "dot";
+        rDot.setAttribute("aria-hidden", "true");
+        rPill.appendChild(rDot);
+        rPill.appendChild(document.createTextNode((data.rust_mcp_version || "sessfork-mcp") + " · Rust Pipe"));
+        pills.appendChild(rPill);
+      }
 
       document.getElementById("card-moli").disabled = !data.moli_detected;
       document.getElementById("card-dual").disabled = !data.moli_detected;

@@ -924,6 +924,7 @@
       transition: width 300ms ease;
     }
     .fill-chrome { background: linear-gradient(90deg, #38BDF8, #6366F1); }
+    .fill-moli-node { background: linear-gradient(90deg, #A855F7, #6366F1); }
     .fill-moli { background: linear-gradient(90deg, #22C55E, #10B981); }
     .bench-val-mono {
       font-family: var(--font-mono);
@@ -1123,7 +1124,7 @@
             <div class="chips" id="engine-chips">
               <button type="button" class="chip" data-engine="chrome" aria-pressed="true" data-i18n="engChrome">Chrome 默认</button>
               <button type="button" class="chip" data-engine="dual" aria-pressed="false" data-i18n="engDual">Dual 双通道 (推荐)</button>
-              <button type="button" class="chip" data-engine="moli" aria-pressed="false" data-i18n="engMoli">Moli Rust (-82% 纯内存 / 单进程)</button>
+              <button type="button" class="chip" data-engine="moli" aria-pressed="false" data-i18n="engMoli">Moli + Rust MCP (-90% 内存)</button>
             </div>
           </div>
 
@@ -1183,17 +1184,17 @@
 
       <div class="bench-kpis">
         <div class="bench-kpi">
-          <span class="bench-kpi-val">26.6 ms</span>
+          <span class="bench-kpi-val">9.72x</span>
           <span class="bench-kpi-title" data-i18n="kpi1Title"></span>
           <span class="bench-kpi-sub" data-i18n="kpi1Sub"></span>
         </div>
         <div class="bench-kpi">
-          <span class="bench-kpi-val">0.0%</span>
+          <span class="bench-kpi-val">4.6 ms</span>
           <span class="bench-kpi-title" data-i18n="kpi2Title"></span>
           <span class="bench-kpi-sub" data-i18n="kpi2Sub"></span>
         </div>
         <div class="bench-kpi">
-          <span class="bench-kpi-val">5.46x</span>
+          <span class="bench-kpi-val">5.9 ms</span>
           <span class="bench-kpi-title" data-i18n="kpi3Title"></span>
           <span class="bench-kpi-sub" data-i18n="kpi3Sub"></span>
         </div>
@@ -1216,49 +1217,85 @@
           <div class="bench-row">
             <div class="bench-row-label">
               <span data-i18n="barRamLabel"></span>
-              <span style="color: var(--accent);">5.46x less RAM (-81.7%)</span>
+              <span style="color: var(--accent);">9.72x less RAM (-89.7%)</span>
             </div>
             <div class="bench-bar-line">
-              <span style="color: var(--fg-muted);">chrome-headless-shell</span>
+              <span style="color: var(--fg-muted);">Chrome + Node MCP</span>
               <div class="bench-bar-track"><div class="bench-bar-fill fill-chrome" style="width: 100%;"></div></div>
-              <span class="bench-val-mono">2,051 MB</span>
+              <span class="bench-val-mono">2,531 MB</span>
             </div>
             <div class="bench-bar-line">
-              <span style="color: #86EFAC;">Moli 1.1.27 (Rust)</span>
-              <div class="bench-bar-track"><div class="bench-bar-fill fill-moli" style="width: 18.3%;"></div></div>
-              <span class="bench-val-mono">375 MB</span>
+              <span style="color: #D8B4FE;">Moli + Node MCP</span>
+              <div class="bench-bar-track"><div class="bench-bar-fill fill-moli-node" style="width: 25.9%;"></div></div>
+              <span class="bench-val-mono">657 MB</span>
+            </div>
+            <div class="bench-bar-line">
+              <span style="color: #86EFAC; font-weight: 600;">Moli + Rust Pipe</span>
+              <div class="bench-bar-track"><div class="bench-bar-fill fill-moli" style="width: 10.3%;"></div></div>
+              <span class="bench-val-mono" style="color: #86EFAC;">260 MB</span>
             </div>
           </div>
           <div class="bench-row">
             <div class="bench-row-label">
-              <span data-i18n="barProcLabel"></span>
-              <span style="color: var(--accent);">15x fewer OS procs</span>
+              <span data-i18n="barHeavyTimeLabel"></span>
+              <span style="color: var(--accent);">1.94x vs Chrome · 3.69x vs Node</span>
             </div>
             <div class="bench-bar-line">
-              <span style="color: var(--fg-muted);">chrome-headless-shell</span>
+              <span style="color: #D8B4FE;">Moli + Node MCP</span>
+              <div class="bench-bar-track"><div class="bench-bar-fill fill-moli-node" style="width: 100%;"></div></div>
+              <span class="bench-val-mono">5,544 ms</span>
+            </div>
+            <div class="bench-bar-line">
+              <span style="color: var(--fg-muted);">Chrome + Node MCP</span>
+              <div class="bench-bar-track"><div class="bench-bar-fill fill-chrome" style="width: 52.6%;"></div></div>
+              <span class="bench-val-mono">2,915 ms</span>
+            </div>
+            <div class="bench-bar-line">
+              <span style="color: #86EFAC; font-weight: 600;">Moli + Rust Pipe</span>
+              <div class="bench-bar-track"><div class="bench-bar-fill fill-moli" style="width: 27.1%;"></div></div>
+              <span class="bench-val-mono" style="color: #86EFAC;">1,501 ms</span>
+            </div>
+          </div>
+          <div class="bench-row">
+            <div class="bench-row-label">
+              <span data-i18n="barInitLabel"></span>
+              <span style="color: var(--accent);">388x faster cold init</span>
+            </div>
+            <div class="bench-bar-line">
+              <span style="color: var(--fg-muted);">Chrome + Node MCP</span>
               <div class="bench-bar-track"><div class="bench-bar-fill fill-chrome" style="width: 100%;"></div></div>
-              <span class="bench-val-mono">15 procs</span>
+              <span class="bench-val-mono">1,788 ms</span>
             </div>
             <div class="bench-bar-line">
-              <span style="color: #86EFAC;">Moli 1.1.27 (Rust)</span>
-              <div class="bench-bar-track"><div class="bench-bar-fill fill-moli" style="width: 6.7%;"></div></div>
-              <span class="bench-val-mono">1 proc</span>
+              <span style="color: #D8B4FE;">Moli + Node MCP</span>
+              <div class="bench-bar-track"><div class="bench-bar-fill fill-moli-node" style="width: 68.8%;"></div></div>
+              <span class="bench-val-mono">1,230 ms</span>
+            </div>
+            <div class="bench-bar-line">
+              <span style="color: #86EFAC; font-weight: 600;">Moli + Rust Pipe</span>
+              <div class="bench-bar-track"><div class="bench-bar-fill fill-moli" style="width: 2%;"></div></div>
+              <span class="bench-val-mono" style="color: #86EFAC;">4.6 ms</span>
             </div>
           </div>
           <div class="bench-row">
             <div class="bench-row-label">
               <span data-i18n="barTimeLabel"></span>
-              <span style="color: var(--accent);">4.4x faster</span>
+              <span style="color: var(--accent);">14.8x faster · -93% RAM</span>
             </div>
             <div class="bench-bar-line">
-              <span style="color: var(--fg-muted);">chrome-headless-shell</span>
+              <span style="color: var(--fg-muted);">Chrome + Node MCP</span>
               <div class="bench-bar-track"><div class="bench-bar-fill fill-chrome" style="width: 100%;"></div></div>
               <span class="bench-val-mono">3,413 ms</span>
             </div>
             <div class="bench-bar-line">
-              <span style="color: #86EFAC;">Moli 1.1.27 (Rust)</span>
-              <div class="bench-bar-track"><div class="bench-bar-fill fill-moli" style="width: 22.8%;"></div></div>
+              <span style="color: #D8B4FE;">Moli + Node MCP</span>
+              <div class="bench-bar-track"><div class="bench-bar-fill fill-moli-node" style="width: 22.8%;"></div></div>
               <span class="bench-val-mono">779 ms</span>
+            </div>
+            <div class="bench-bar-line">
+              <span style="color: #86EFAC; font-weight: 600;">Moli + Rust Pipe</span>
+              <div class="bench-bar-track"><div class="bench-bar-fill fill-moli" style="width: 6.8%;"></div></div>
+              <span class="bench-val-mono" style="color: #86EFAC;">230 ms</span>
             </div>
           </div>
         </div>
@@ -1347,26 +1384,27 @@
           labelBrowser: "2. 选择你的日常浏览器",
           labelEngine: "3. 无头引擎模式（或运行 sessfork --ui 可视化配置）",
           engChrome: "Chrome 默认 (99.9% 兼容)",
-          engDual: "Dual 双通道 (推荐 · 惰性兜底)",
-          engMoli: "Moli Rust (-82% 纯内存 / 单进程)",
-          benchEyebrow: "实测压测与双引擎对比 · Apple Silicon",
-          benchTitle: "硬核压测数据：剥离 Node 底噪，看真实引擎差距",
-          benchSub: "全本地一键复现。12 路重型 SaaS 仪表盘（1,775 节点/页）下，纯浏览器内存差距达 5.46×（2,051 MB / 15 进程 vs 375 MB / 1 进程），且 16 进程写入 0 丢更新。",
+          engDual: "Dual 双通道 (推荐 · Rust 优先)",
+          engMoli: "Moli + Rust MCP (-90% 内存)",
+          benchEyebrow: "三方同场压测 · Apple Silicon 实测",
+          benchTitle: "干掉 Node.js 壳层：全 Rust 管道把内存压低 9.72×、速度反超 Chrome",
+          benchSub: "全本地一键复现。内置 605 KB 纯 Rust 原生 CDP MCP（sessfork-mcp）直连 Moli 管道，彻底告别 ~272 MB Node 壳与 1.8s npx 冷启动。",
           benchReportBtn: "查看完整压测报告",
-          kpi1Title: "100 域名全量提取",
-          kpi1Sub: "2,000 Cookie + 2,000 LS 键（211k/s）",
-          kpi2Title: "16 进程并发丢更新率",
-          kpi2Sub: "fcntl.flock 修复前 57.5% -> 0.0%",
-          kpi3Title: "12 路重型纯引擎省内存",
-          kpi3Sub: "2,051 MB vs 375 MB（-81.7% / 省 1.68 GB）",
-          kpi4Title: "12 路并发上下文隔离",
-          kpi4Sub: "12/12 交叉核验全绿、0 跨账号串号",
-          cmpTitle: "重型 12 路 & 轻量 6 路实测：chrome-headless-shell vs lexmount/moli",
-          cmpSub: "已按进程树剥离双方固定的 ~260 MB Node @playwright/mcp 包装层，还原纯浏览器引擎开销。",
-          barRamLabel: "12 路重型 SaaS 仪表盘纯浏览器内存（1,775 节点/页）",
-          barProcLabel: "12 路并发隔离上下文的浏览器 OS 进程数",
-          barTimeLabel: "6 路轻量鉴权页全流程耗时（建上下文 + 乱序核验）",
-          benchNote: "透明说明：上方内存条仅计纯浏览器进程（不含双方共同的 ~260–265 MB Node @playwright/mcp 壳进程；含 Node 总计 2,311 MB vs 640 MB，省 72.3%）。诚实取舍：在 1,775 节点重型页面的完整无障碍树遍历耗时上，Chrome 的 V8 JIT + 多核渲染更快（3.33s vs 5.73s）且具备 99.9% 兼容率——因此推荐使用 --engine dual：日常走 Moli（空载 12.6 MB，5.46× 省内存），遇重型 SPA/反爬再惰性唤醒 Chrome（未调用前 0 MB）。",
+          kpi1Title: "12 路重型总内存压缩",
+          kpi1Sub: "2,531 MB -> 260 MB（-89.7% / 省 2.27 GB）",
+          kpi2Title: "Rust MCP 冷启动",
+          kpi2Sub: "vs Node npx 1,788 ms（快 388× · 空载 1.7 MB）",
+          kpi3Title: "50-Origin 热重载 p50",
+          kpi3Sub: "vs Chrome 264 ms / Node+Moli 673 ms（快 45–114×）",
+          kpi4Title: "12 路重型上下文隔离",
+          kpi4Sub: "12/12 交叉核验全绿 · 0 串号 · SIGKILL 零孤儿",
+          cmpTitle: "三方同场对比：Chrome + Node vs Moli + Node vs Moli + Rust Pipe",
+          cmpSub: "全程开启完整无障碍树快照，12 路重型仪表盘（1,775 节点/页 = 21,300 节点）与 6 路轻量鉴权页同口径实测。",
+          barRamLabel: "12 路重型 SaaS 仪表盘总 RSS 内存（含浏览器 + MCP 壳）",
+          barHeavyTimeLabel: "12 路重型 SaaS 仪表盘总耗时（1,775 节点/页 · 完整无障碍树）",
+          barInitLabel: "MCP 服务冷启动 initialize 耗时（去 Node.js / npx）",
+          barTimeLabel: "6 路轻量鉴权页总耗时（Rust 组总内存仅 85 MB vs Chrome 1,219 MB）",
+          benchNote: "实测原理解析：为什么去掉 Node @playwright/mcp 后 Moli 自己还快了 3.69×、内存再降 38%？因为 sessfork-mcp（605 KB 纯 Rust）直走 moli serve --remote-debugging-pipe（OS FD 3/4 零 TCP 端口），直接调用原生 CDP Accessibility.getFullAXTree 与 Storage.setCookies，不再向 12 个上下文注入 Playwright 的重型 JS 堆脚本。诚实取舍：强反爬 / WebGL 站点仍推荐 --engine dual，日常零 Node 1.7 MB 空载，遇风控自动惰性唤醒 Chrome（未调用前 0 MB）。",
           jwtTitle: "仅同步 LocalStorage JWT（--no-cookies）",
           jwtDesc: "适用于 Supabase / SPA / localhost，跳过系统钥匙串授权弹窗。",
           outPromptTag: "直接复制发给 AI 助手（最省事）",
@@ -1415,26 +1453,27 @@
           labelBrowser: "2. Source Chromium browser",
           labelEngine: "3. Headless engine mode (or run `sessfork --ui`)",
           engChrome: "Chrome Default (99.9% compat)",
-          engDual: "Dual Auto-Fallback (Recommended)",
-          engMoli: "Moli Rust (-82% Engine RAM / 1 proc)",
-          benchEyebrow: "Reproducible Stress Benchmarks · Apple Silicon",
-          benchTitle: "Stress-tested under 12-agent heavy DOM load",
-          benchSub: "100% local & reproducible. Separating the fixed ~260 MB Node MCP wrapper reveals a 5.46x pure browser RAM gap (2,051 MB / 15 procs vs 375 MB / 1 proc) across 12 heavy SaaS tabs.",
+          engDual: "Dual Auto-Fallback (Rust Primary)",
+          engMoli: "Moli + Rust MCP (-90% RAM)",
+          benchEyebrow: "3-Way Live Benchmarks · Apple Silicon",
+          benchTitle: "Zero-Node Rust Pipe: 9.72x less RAM & 1.94x faster than Chrome",
+          benchSub: "100% local & reproducible. Optional 605 KB native Rust CDP MCP (`sessfork-mcp`) talks directly over `moli --remote-debugging-pipe`, eliminating the 272 MB Node.js wrapper and 1.8s npx startup.",
           benchReportBtn: "Full Benchmark Report",
-          kpi1Title: "100-Domain Extraction",
-          kpi1Sub: "2,000 cookies + 2,000 LS keys (211k/s)",
-          kpi2Title: "16-Proc Lost Updates",
-          kpi2Sub: "Fixed 57.5% -> 0.0% via fcntl.flock",
-          kpi3Title: "12x Heavy Engine RAM",
-          kpi3Sub: "2,051 MB vs 375 MB (-81.7%, saves 1.68 GB)",
+          kpi1Title: "12x Heavy Total RAM",
+          kpi1Sub: "2,531 MB -> 260 MB (-89.7%, saves 2.27 GB)",
+          kpi2Title: "Rust MCP Cold Init",
+          kpi2Sub: "vs 1,788 ms Node npx (388x faster · 1.7 MB idle)",
+          kpi3Title: "50-Origin Hot-Reload",
+          kpi3Sub: "vs 264 ms Chrome / 673 ms Node+Moli (45–114x)",
           kpi4Title: "12x Isolated Contexts",
-          kpi4Sub: "12/12 interleaved checks, zero cross-leaks",
-          cmpTitle: "12x Heavy-DOM & 6x Light Auth: chrome-headless-shell vs. lexmount/moli",
-          cmpSub: "Process-tree split removes the shared ~260 MB Node @playwright/mcp wrapper to isolate true browser engine cost.",
-          barRamLabel: "12x heavy SaaS dashboard pure browser RSS (1,775 DOM nodes/tab)",
-          barProcLabel: "Browser OS process count across 12 isolated contexts",
-          barTimeLabel: "6x lightweight auth contexts total elapsed time",
-          benchNote: "Transparency note: Memory bars above count pure browser engine processes only (shared Node @playwright/mcp adds ~260–265 MB to both sides; total 12x RSS is 2,311 MB vs 640 MB, -72.3%). Honest trade-off: Chrome's V8 JIT is faster on heavy 1,775-node full AX-tree walks (3.33s vs 5.73s) and covers 99.9% of complex WebGL/anti-bot sites — which is why --engine dual gives you Moli's 12.6 MB idle & 5.46x RAM density while keeping Chrome at 0 MB until fallback is needed.",
+          kpi4Sub: "12/12 verified · 0 leaks · 0 orphans on SIGKILL",
+          cmpTitle: "3-Way Head-to-Head: Chrome + Node vs. Moli + Node vs. Moli + Rust Pipe",
+          cmpSub: "Apples-to-apples with full accessibility snapshots enabled on every navigation (1,775 DOM nodes/tab = 21,300 live DOM nodes).",
+          barRamLabel: "12x heavy SaaS dashboard total active RSS (browser + MCP)",
+          barHeavyTimeLabel: "12x heavy SaaS dashboard total time (1,775 nodes/tab · full AX tree)",
+          barInitLabel: "MCP server cold start (`initialize`, zero Node.js / npx)",
+          barTimeLabel: "6x lightweight auth total time (Rust total RSS: 85 MB vs Chrome 1,219 MB)",
+          benchNote: "Why did dropping Node @playwright/mcp make Moli 3.69x faster AND cut Moli's own RAM by 38%? `sessfork-mcp` (605 KB pure Rust) speaks native CDP over OS FD 3/4 pipes (zero TCP ports) using `Accessibility.getFullAXTree` + `Storage.setCookies` directly instead of injecting Playwright's JS runtime into all 12 V8 contexts. Honest trade-off: for WebGL or strict anti-bot portals, `--engine dual` stays recommended (1.7 MB idle Rust primary + 0 MB lazy Chrome fallback).",
           jwtTitle: "LocalStorage JWT only (--no-cookies)",
           jwtDesc: "Skip macOS Keychain prompts completely for SPA & localhost apps.",
           outPromptTag: "Paste straight to your AI Agent (Easiest)",
