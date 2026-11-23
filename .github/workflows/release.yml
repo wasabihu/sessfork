@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing git tag to build and attach prebuilt sessfork-mcp binaries (e.g. v0.1.4)"
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-rust-mcp:
+    name: Build sessfork-mcp (${{ matrix.asset }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset: sessfork-mcp-darwin-arm64.tar.gz
+            run_tests: true
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            asset: sessfork-mcp-darwin-x64.tar.gz
+            run_tests: false
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: sessfork-mcp-linux-x64.tar.gz
+            run_tests: true
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
+      - name: Run unit tests & clippy (native targets)
+        if: ${{ matrix.run_tests }}
+        working-directory: rust/sessfork-mcp
+        run: |
+          cargo test
+          cargo clippy --all-targets -- -D warnings
+      - name: Build stripped release binary
+        working-directory: rust/sessfork-mcp
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+          mkdir -p dist
+          tar -czf "dist/${{ matrix.asset }}" -C "target/${{ matrix.target }}/release" sessfork-mcp
+          ls -lh "target/${{ matrix.target }}/release/sessfork-mcp" "dist/${{ matrix.asset }}"
+      - name: Upload release tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: rust/sessfork-mcp/dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release & SHA256SUMS
+    needs: [build-rust-mcp]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - name: Download all binary tarballs
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Generate SHA256SUMS.txt
+        working-directory: dist
+        run: |
+          sha256sum sessfork-mcp-*.tar.gz | sort -k2 > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" dist/sessfork-mcp-*.tar.gz dist/SHA256SUMS.txt --clobber
+          else
+            gh release create "${RELEASE_TAG}" \
+              dist/sessfork-mcp-*.tar.gz \
+              dist/SHA256SUMS.txt \
+              --title "sessfork ${RELEASE_TAG}" \
+              --generate-notes
+          fi

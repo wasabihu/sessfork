@@ -141,12 +141,17 @@ sessfork console.cloud.google.com --profile "Profile 1"
 > **为什么推荐 `--engine dual` 双通道？** 装上纯 Rust `sessfork-mcp` 后，日常 `sessfork-moli` 直接做到 **总内存小 9.72×、耗时快 1.94×–14.8×、空载仅 1.7 MB、零 Node.js**；只有遇到 WebGL 或强风控反爬站点时再惰性唤醒 Chrome（未调用前常驻 `0 MB`），性能与 99.9% 兼容兼得。
 
 ```bash
-# 可选：编译安装 605 KB 纯 Rust 原生 CDP MCP（装完后 --engine moli / dual 自动启用）
-cd rust/sessfork-mcp && cargo build --release && install -m 755 target/release/sessfork-mcp ~/.local/bin/sessfork-mcp
+# 可选：一键下载 605 KB 预编译纯 Rust 原生 CDP MCP（带 SHA-256 校验、免装 Cargo）
+curl -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/main/install.sh | bash -s -- --rust-mcp-only
+
+# 或从源码安装（Rust >=1.75；装完后 --engine moli / dual 自动直连）
+cargo install --git https://github.com/wasabihu/sessfork sessfork-mcp
 
 # 一键复现三方 12 路重型 DOM 同场压测（约 18 秒）
 python3 scripts/stress_test.py --heavy-compare
 ```
+
+*（仅想配合 `moli` 单独使用 `sessfork-mcp`、不装 Python？见独立文档 [rust/sessfork-mcp/README.md](rust/sessfork-mcp/README.md)。）*
 
 ---
 

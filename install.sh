@@ -8,9 +8,113 @@ TARBALL_URL="${REPO_URL}/archive/${SESSFORK_REF}.tar.gz"
 RUNTIME_DIR="${HOME}/.sessfork/runtime"
 BIN_DIR="${HOME}/.local/bin"
 
+INSTALL_RUST_MCP=0
+RUST_MCP_ONLY=0
+SETUP_ARGS=()
+_SESSFORK_CLEANUP_PATHS=()
+
+_cleanup() {
+  local p
+  if [ "${_SESSFORK_CLEANUP_PATHS+x}" = "x" ]; then
+    for p in "${_SESSFORK_CLEANUP_PATHS[@]}"; do
+      rm -rf "${p}"
+    done
+  fi
+}
+trap _cleanup EXIT
+
+for arg in "$@"; do
+  case "${arg}" in
+    --with-rust-mcp)
+      INSTALL_RUST_MCP=1
+      ;;
+    --rust-mcp-only)
+      INSTALL_RUST_MCP=1
+      RUST_MCP_ONLY=1
+      ;;
+    *)
+      SETUP_ARGS+=("${arg}")
+      ;;
+  esac
+done
+
+install_rust_mcp_binary() {
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "Error: curl is required to download prebuilt sessfork-mcp." >&2
+    exit 1
+  fi
+  local os_name arch_name asset base_url tmp_dir sha_tool expected actual
+  os_name="$(uname -s)"
+  arch_name="$(uname -m)"
+  case "${os_name}:${arch_name}" in
+    Darwin:arm64|Darwin:aarch64) asset="sessfork-mcp-darwin-arm64.tar.gz" ;;
+    Darwin:x86_64|Darwin:amd64)  asset="sessfork-mcp-darwin-x64.tar.gz" ;;
+    Linux:x86_64|Linux:amd64)    asset="sessfork-mcp-linux-x64.tar.gz" ;;
+    *)
+      echo "Error: No prebuilt sessfork-mcp binary for ${os_name}/${arch_name}." >&2
+      echo "Build from source instead: cargo install --git ${REPO_URL} sessfork-mcp" >&2
+      exit 1
+      ;;
+  esac
+
+  if [ -n "${SESSFORK_RELEASE_BASE_URL:-}" ]; then
+    base_url="${SESSFORK_RELEASE_BASE_URL%/}"
+  elif [ -n "${SESSFORK_RUST_MCP_TAG:-}" ]; then
+    base_url="${REPO_URL}/releases/download/${SESSFORK_RUST_MCP_TAG}"
+  else
+    base_url="${REPO_URL}/releases/latest/download"
+  fi
+
+  mkdir -p "${BIN_DIR}"
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/sessfork_mcp_dl.XXXXXX")"
+  _SESSFORK_CLEANUP_PATHS+=("${tmp_dir}")
+
+  echo "-> Downloading prebuilt ${asset} + SHA256SUMS.txt..."
+  curl -fsSL "${base_url}/${asset}" -o "${tmp_dir}/${asset}"
+  curl -fsSL "${base_url}/SHA256SUMS.txt" -o "${tmp_dir}/SHA256SUMS.txt"
+
+  expected="$(awk -v f="${asset}" '$2 == f || $2 == ("*" f) { print $1; exit }' "${tmp_dir}/SHA256SUMS.txt")"
+  if [ -z "${expected}" ]; then
+    echo "Error: Checksum entry for ${asset} not found in SHA256SUMS.txt." >&2
+    exit 1
+  fi
+
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha_tool="sha256sum"
+    actual="$(sha256sum "${tmp_dir}/${asset}" | awk '{print $1}')"
+  elif command -v shasum >/dev/null 2>&1; then
+    sha_tool="shasum -a 256"
+    actual="$(shasum -a 256 "${tmp_dir}/${asset}" | awk '{print $1}')"
+  else
+    echo "Error: Neither sha256sum nor shasum found to verify download integrity." >&2
+    exit 1
+  fi
+
+  if [ "${expected}" != "${actual}" ]; then
+    echo "Error: SHA-256 mismatch for ${asset} (verified via ${sha_tool})!" >&2
+    echo "  expected: ${expected}" >&2
+    echo "  actual:   ${actual}" >&2
+    exit 1
+  fi
+
+  tar -xzf "${tmp_dir}/${asset}" -C "${tmp_dir}"
+  # Atomic install onto a fresh inode (prevents Apple Silicon code-sign invalidation if running)
+  install -m 755 "${tmp_dir}/sessfork-mcp" "${BIN_DIR}/sessfork-mcp"
+  echo "-> Installed verified sessfork-mcp -> ${BIN_DIR}/sessfork-mcp"
+}
+
 echo ""
 echo "sessfork — Zero-Focus-Theft Browser Session Forking"
 echo "--------------------------------------------------"
+
+if [ "${RUST_MCP_ONLY}" -eq 1 ]; then
+  install_rust_mcp_binary
+  echo ""
+  echo "Done! Standalone Rust MCP installed at ${BIN_DIR}/sessfork-mcp"
+  echo "See ${REPO_URL}/blob/main/rust/sessfork-mcp/README.md for standalone Moli MCP usage."
+  echo ""
+  exit 0
+fi
 
 if ! command -v python3 >/dev/null 2>&1; then
   echo "Error: python3 (>=3.9) is required. Install Python 3 first." >&2
@@ -44,7 +148,7 @@ if [ -z "${SESSFORK_BIN}" ]; then
   mkdir -p "${HOME}/.sessfork" "${RUNTIME_DIR}" "${BIN_DIR}"
   chmod 700 "${HOME}/.sessfork"
   TMP_TAR="$(mktemp "${TMPDIR:-/tmp}/sessfork_src.XXXXXX")"
-  trap 'rm -f "${TMP_TAR}"' EXIT
+  _SESSFORK_CLEANUP_PATHS+=("${TMP_TAR}")
   curl -fsSL "${TARBALL_URL}" -o "${TMP_TAR}"
   rm -rf "${RUNTIME_DIR:?}"/*
   tar -xzf "${TMP_TAR}" -C "${RUNTIME_DIR}" --strip-components=1
@@ -57,8 +161,16 @@ EOF
   SESSFORK_BIN="${BIN_DIR}/sessfork"
 fi
 
+if [ "${INSTALL_RUST_MCP}" -eq 1 ]; then
+  install_rust_mcp_binary
+fi
+
 echo "-> Auto-wiring MCP config (sessfork-browser) and Agent SKILL.md..."
-"${SESSFORK_BIN}" --setup "$@"
+if [ "${SETUP_ARGS+x}" = "x" ]; then
+  "${SESSFORK_BIN}" --setup "${SETUP_ARGS[@]}"
+else
+  "${SESSFORK_BIN}" --setup
+fi
 
 echo ""
 echo "Done! / 安装完成！"

@@ -145,12 +145,17 @@ Measured locally on Apple Silicon (`macOS 26.6.2 arm64`, Python 3.14.7, `@playwr
 > **Why `--engine dual` is the sweet spot:** Pure Rust `sessfork-moli` delivers **`9.72×` smaller RAM**, **`1.94×–14.8×` faster execution**, and **`1.7 MB` idle** with zero Node.js, while Chrome stays completely unloaded (`0 MB`) until a WebGL or strict anti-bot portal triggers fallback.
 
 ```bash
-# Optional: build & install the 605 KB native Rust CDP MCP server (auto-used by --engine moli / dual)
-cd rust/sessfork-mcp && cargo build --release && install -m 755 target/release/sessfork-mcp ~/.local/bin/sessfork-mcp
+# Optional: install the 605 KB prebuilt native Rust CDP MCP binary (SHA-256 verified, no Cargo needed)
+curl -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/main/install.sh | bash -s -- --rust-mcp-only
+
+# Or build from source (Rust >=1.75; auto-used by --engine moli / dual)
+cargo install --git https://github.com/wasabihu/sessfork sessfork-mcp
 
 # Reproduce the 3-way 12x heavy-DOM comparison locally (~18s)
 python3 scripts/stress_test.py --heavy-compare
 ```
+
+*(Want to use `sessfork-mcp` standalone with `moli` without Python? See [rust/sessfork-mcp/README.md](rust/sessfork-mcp/README.md).)*
 
 ---
 
