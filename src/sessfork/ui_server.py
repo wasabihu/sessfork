@@ -746,7 +746,7 @@ _UI_HTML_TEMPLATE = """<!doctype html>
           <p class="engine-desc" data-i18n="chromeDesc">仅注册 sessfork-browser。最高网站兼容性，适合强反爬、复杂 SPA 与支付/后台管理页面。</p>
           <div class="metrics">
             <div class="metric"><span class="metric-label" data-i18n="mCompat">任务兼容率</span><span class="metric-val">99.9%</span></div>
-            <div class="metric"><span class="metric-label" data-i18n="mRam">6 路并发内存</span><span class="metric-val">1,219 MB</span></div>
+            <div class="metric"><span class="metric-label" data-i18n="mRam">12 路重型引擎内存</span><span class="metric-val">2,051 MB (15 proc)</span></div>
           </div>
         </button>
 
@@ -758,10 +758,10 @@ _UI_HTML_TEMPLATE = """<!doctype html>
             </span>
             <span class="tag tag-fast" data-i18n="tagFast">极轻单通道</span>
           </div>
-          <p class="engine-desc" data-i18n="moliDesc">仅注册 sessfork-browser 指向自动托管 Moli。68ms 秒启、自动回收子进程，零手动配置。</p>
+          <p class="engine-desc" data-i18n="moliDesc">仅注册 sessfork-browser 指向自动托管 Moli。44ms 秒启、单进程省 81.7% 引擎内存，退出自动回收。</p>
           <div class="metrics">
-            <div class="metric"><span class="metric-label" data-i18n="mSpeed">6 路提速</span><span class="metric-val">4.4x (779 ms)</span></div>
-            <div class="metric"><span class="metric-label" data-i18n="mRam">6 路并发内存</span><span class="metric-val">383 MB (-69%)</span></div>
+            <div class="metric"><span class="metric-label" data-i18n="mRam">12 路重型引擎内存</span><span class="metric-val">375 MB (-81.7%)</span></div>
+            <div class="metric"><span class="metric-label" data-i18n="mSpeed">进程 / 轻量提速</span><span class="metric-val">1 proc · 4.4x</span></div>
           </div>
         </button>
 
@@ -773,10 +773,10 @@ _UI_HTML_TEMPLATE = """<!doctype html>
             </span>
             <span class="tag tag-rec" data-i18n="tagRec">推荐</span>
           </div>
-          <p class="engine-desc" data-i18n="dualDesc">同时挂接 sessfork-moli（空载 12.7 MB）与 sessfork-browser（Chrome 未调用前 0 MB 惰性兜底），遇反爬无感回退。</p>
+          <p class="engine-desc" data-i18n="dualDesc">同时挂接 sessfork-moli（空载 12.6 MB）与 sessfork-browser（Chrome 未调用前 0 MB 惰性兜底），重型 SPA/反爬无感回退。</p>
           <div class="metrics">
-            <div class="metric"><span class="metric-label" data-i18n="mIdle">平时常驻开销</span><span class="metric-val">Moli 12.7 MB</span></div>
-            <div class="metric"><span class="metric-label" data-i18n="mFallback">兜底兼容率</span><span class="metric-val">99.9% 自动回退</span></div>
+            <div class="metric"><span class="metric-label" data-i18n="mIdle">平时常驻开销</span><span class="metric-val">Moli 12.6 MB</span></div>
+            <div class="metric"><span class="metric-label" data-i18n="mFallback">兜底兼容率</span><span class="metric-val">99.9% (0 MB 惰性)</span></div>
           </div>
         </button>
       </div>
@@ -842,12 +842,12 @@ _UI_HTML_TEMPLATE = """<!doctype html>
         tagDefault: "默认单通道",
         tagFast: "极轻单通道",
         tagRec: "推荐",
-        chromeDesc: "仅注册 sessfork-browser。最高网站兼容性，适合强反爬、复杂 SPA 与后台管理页面。",
-        moliDesc: "仅注册 sessfork-browser 指向自动托管 Moli。68ms 秒启、退出自动回收子进程，零手动配置。",
-        dualDesc: "同时挂接 sessfork-moli（空载 12.7 MB）与 sessfork-browser（Chrome 未调用前 0 MB 惰性兜底），遇反爬无感回退。",
+        chromeDesc: "仅注册 sessfork-browser。最高网站兼容性，V8 多核适合重型 DOM/SPA 与强反爬站点。",
+        moliDesc: "仅注册 sessfork-browser 指向自动托管 Moli。44ms 秒启、单进程省 81.7% 引擎内存，退出自动回收。",
+        dualDesc: "同时挂接 sessfork-moli（空载 12.6 MB）与 sessfork-browser（Chrome 未调用前 0 MB 惰性兜底），重型 SPA/反爬无感回退。",
         mCompat: "任务兼容率",
-        mRam: "6 路并发内存",
-        mSpeed: "6 路并发提速",
+        mRam: "12 路重型引擎内存",
+        mSpeed: "进程 / 轻量提速",
         mIdle: "平时常驻开销",
         mFallback: "兜底兼容率",
         applyBtn: "应用到所有已检测 AI 客户端",
@@ -870,12 +870,12 @@ _UI_HTML_TEMPLATE = """<!doctype html>
         tagDefault: "Default Single",
         tagFast: "Ultra-Light Single",
         tagRec: "Recommended",
-        chromeDesc: "Wires only `sessfork-browser` (chrome-headless-shell). Maximum compatibility for heavy SPAs and anti-bot portals.",
-        moliDesc: "Wires only `sessfork-browser` to auto-managed Rust Moli. 68 ms cold start, automatic cleanup, zero manual daemon.",
-        dualDesc: "Wires `sessfork-moli` (12.7 MB idle) + `sessfork-browser` (Chrome stays unloaded at 0 MB until fallback is needed).",
+        chromeDesc: "Wires only `sessfork-browser` (chrome-headless-shell). Maximum compatibility & fast V8 JIT for heavy SPAs and anti-bot portals.",
+        moliDesc: "Wires only `sessfork-browser` to auto-managed Rust Moli. 44 ms ready, 1 process (-81.7% engine RAM), automatic cleanup.",
+        dualDesc: "Wires `sessfork-moli` (12.6 MB idle) + `sessfork-browser` (Chrome stays unloaded at 0 MB until heavy/anti-bot fallback).",
         mCompat: "Compatibility",
-        mRam: "6x Context RAM",
-        mSpeed: "6x Context Speed",
+        mRam: "12x Heavy Engine RAM",
+        mSpeed: "Procs / Light Speed",
         mIdle: "Idle Footprint",
         mFallback: "Fallback Rate",
         applyBtn: "Apply to Detected AI Clients",

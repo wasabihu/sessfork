@@ -8,6 +8,13 @@
 # Full 5-scenario suite (includes live @playwright/mcp + chrome-headless-shell E2E)
 python3 scripts/stress_test.py
 
+# Include Scenario 6 (6x lightweight isolatedContext on local Moli binary)
+python3 scripts/stress_test.py --include-moli
+
+# Head-to-head 12x heavy-DOM (~1,775 nodes/tab) Chrome vs. Moli benchmark
+# (separates pure browser engine RSS & process count from shared Node MCP RSS)
+python3 scripts/stress_test.py --heavy-compare
+
 # Fast CLI/storage/concurrency subset (Scenarios 1-3 only, ~2s)
 python3 scripts/stress_test.py --skip-mcp
 ```
@@ -72,20 +79,39 @@ Inside a single running `sessfork-browser` MCP server, 6 separate `isolatedConte
 
 ### 6. Optional Lightweight CDP Backend: `chrome-headless-shell` vs. `lexmount/moli` (`v1.1.27`)
 
-`sessfork` defaults to local `chrome-headless-shell` for maximum web compatibility (99.9% task pass rate on Lexbench), and also supports attaching to an external Rust headless browser such as [`lexmount/moli`](https://github.com/lexmount/moli) via `sessfork --setup --cdp-endpoint http://127.0.0.1:9222`.
+`sessfork` defaults to local `chrome-headless-shell` for maximum web compatibility (99.9% task pass rate on Lexbench), and also supports an auto-managed Rust headless browser via [`lexmount/moli`](https://github.com/lexmount/moli) (`sessfork --engine dual` or `--engine moli`, zero manual `moli serve`).
+
+#### 6a. 6× Lightweight Auth Contexts (`--include-moli`, 500-byte local echo page)
 
 Measured on the same Apple Silicon macOS host against the same local `127.0.0.1` auth echo server and `@playwright/mcp@0.0.85`:
 
-| Metric | `chrome-headless-shell` (default) | `moli 1.1.27` (`--cdp-endpoint`) | Delta |
+| Metric | `chrome-headless-shell` (default) | `moli 1.1.27` (Rust) | Delta |
 | :--- | :---: | :---: | :---: |
-| CDP ready / idle browser RSS | ~400+ ms | **68.5 ms / 12.7 MB** | Fast cold start |
+| CDP ready / idle browser RSS | multi-process launch | **44–68 ms / 12.6 MB** | Fast cold start |
 | `browser_navigate` + `browser_snapshot` | Pass | **Pass** (full AX tree) | Compatible |
 | `browser_set_storage_state` hot-reload (Cookie + LS) | 50-origin: 263.8 ms | **10-origin: 52.3 ms** / 50-origin: 672.5 ms | 0 stale reads |
 | 6× `isolatedContext` interleaved verification | 6 / 6 (0 leaks) | **6 / 6 (0 leaks)** | Identical isolation |
 | 6× `isolatedContext` total elapsed time | 3,413.1 ms | **778.6 ms** | **4.4× faster** |
-| 6× `isolatedContext` total RSS (browser + Node MCP) | 1,218.9 MB | **382.5 MB** (`moli`: 125.9 MB + Node: 256.6 MB) | **-68.6% memory** |
+| 6× `isolatedContext` total RSS *(incl. ~260 MB Node MCP)* | 1,218.9 MB | **382.5 MB** (`moli`: 125.9 MB + Node: 256.6 MB) | **-68.6% total** (~7.6× pure browser) |
 
-> **Trade-off**: Per Moli's Lexbench, Moli achieves an 80.7% task pass rate vs. Chrome's 99.9%. Use `moli serve` when memory/concurrency matters most on DOM-first workloads, and switch back anytime with `sessfork --setup --cdp-endpoint local`.
+#### 6b. 12× Heavy-DOM SaaS Dashboard Head-to-Head (`--heavy-compare`, 1,775 DOM nodes/tab)
+
+Why separate **pure browser engine RSS** from the Node MCP wrapper? `@playwright/mcp` (Node.js) carries a fixed `~260–265 MB` baseline regardless of which browser engine sits behind it. Under a realistic 12-agent authenticated SaaS dashboard (**120 table rows, CSS grid/gradients/badges, 1,775 DOM nodes/tab = 21,300 live DOM nodes**, 12 unique Cookie + LocalStorage JWTs, setup + interleaved out-of-order verification):
+
+| Metric (12× Heavy-DOM `isolatedContext`) | `chrome-headless-shell` | `moli 1.1.27` (Rust) | Delta / Takeaway |
+| :--- | :---: | :---: | :--- |
+| **Pure Browser Engine RSS** *(excluding Node MCP)* | `2,051.1 MB` | **`375.4 MB`** | **`5.46×` smaller (`-81.7%`, saves `1.68 GB`)** |
+| **Browser OS Process Count** | `15` processes | **`1` process** | **`15×` fewer OS processes** |
+| **Per-Context Browser RSS** | `~170.9 MB / tab` | **`~31.3 MB / tab`** | Scales ~5.5× denser per host / VPS |
+| **Shared Node `@playwright/mcp` Wrapper RSS** | `260.3 MB` | `265.0 MB` | Identical fixed MCP overhead |
+| **Total RSS** *(browser + Node MCP)* | `2,311.4 MB` | **`640.4 MB`** | **`-72.3%` total RAM** |
+| **12× Setup + Interleaved Verify** | `12 / 12` (`0` leaks) | **`12 / 12` (`0` leaks)** | Zero cross-context leakage |
+| **Heavy Full AX-Tree Elapsed Time** *(24 × 1,775-node walks)* | **`3,326.3 ms`** | `5,730.0 ms` (`0.58×`) | **Chrome V8 JIT wins heavy AX walks** |
+
+> **Honest Engineering Takeaway (Why `--engine dual` is recommended):**
+> - **Moli wins on memory density & light auth speed**: `5.46×` less pure browser RAM (`375 MB` / `1` process vs `2,051 MB` / `15` processes at 12 heavy contexts), `12.6 MB` idle, and `4.4×` faster on lightweight auth pages — letting you run 5× more concurrent agents on laptops or small VPS boxes without OOM.
+> - **Chrome wins on heavy JS/DOM snapshot walks & compatibility**: Chrome's V8 JIT + multi-process renderers finish heavy 1,775-node full accessibility tree walks faster (`3.33s` vs `5.73s`) and achieve 99.9% compatibility (vs Moli's 80.7% on Lexbench) for WebGL/Canvas/anti-bot portals.
+> - **`sessfork --engine dual`** combines both with zero extra idle cost: `sessfork-moli` stays ultra-light (`12.6 MB`), while `sessfork-browser` (Chrome) stays completely unloaded (`0 MB`) until a heavy/anti-bot page actually triggers fallback.
 
 ## Caveats & Scope
 

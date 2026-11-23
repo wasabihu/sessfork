@@ -133,13 +133,17 @@ sessfork console.cloud.google.com --profile "Profile 1"
 | **100 域名全量提取**（2,000 Cookie + 2,000 LS 键） | `26.6 ms` p50（`211k cookies/s`） | 共用 CLI 内核 | 纯 Python 标准库 + CommonCrypto |
 | **16 进程并发写入风暴**（64 域名） | **`0.0%` 丢更新**（`223.7 ms`） | 共用 CLI 内核 | `fcntl.flock` 将丢更新率从 `57.5%` 压至 `0.0%` |
 | **SQLite WAL 活写争用**（5,795 提交 + 8 并发读） | **`200 / 200` 成功**（`0.0%` 错误） | 共用 CLI 内核 | p50 `32.7 ms` / p99 `52.1 ms` |
-| **50-Origin 热重载**（`browser_set_storage_state`） | `20 / 20` 通过（`263.8 ms` p50） | **`52.3 ms`**（10-Origin）/ `672.5 ms`（50-Origin） | 0 陈旧凭证、0 崩溃 |
-| **6 路 `isolatedContext` 交叉隔离核验** | `6 / 6` 通过（`0` 串号） | **`6 / 6` 通过（`0` 串号）** | 零跨上下文泄漏 |
-| **6 路 `isolatedContext` 全流程总耗时** | `3,413.1 ms` | **`778.6 ms`（快 4.4×）** | 同机 `127.0.0.1` 鉴权回显服务 |
-| **6 路 `isolatedContext` 总 RSS**（浏览器 + Node MCP） | `1,218.9 MB` | **`382.5 MB`（省 68.6% 内存）** | Moli 仅 `125.9 MB` + Node `256.6 MB` |
+| **12 路重型 DOM 纯浏览器内存**（1,775 节点/页） | `2,051.1 MB` | **`375.4 MB`（省 81.7% / 少 5.46×）** | 已剥离双方固定 `~260 MB` Node MCP（含 Node 为 `2,311 vs 640 MB`） |
+| **12 路重型 DOM 浏览器进程数** | `15` 个进程 | **`1` 个进程（少 15×）** | `12 / 12` 交叉核验通过、`0` 跨上下文串号 |
+| **6 路轻量鉴权页全流程耗时** | `3,413.1 ms` | **`778.6 ms`（快 4.4×）** | 轻量页 Moli 完胜；超重 DOM 全量无障碍树遍历 Chrome V8 更快（`3.33s vs 5.73s`） |
+
+> **为什么推荐 `--engine dual` 双通道？** 12 路重型并发下 Moli 单引擎直省 **1.68 GB** 内存（`-81.7%`、`1` 进程 vs `15` 进程）且轻量页快 **4.4×**；遇到重型 DOM 无障碍树/WebGL/强反爬站点时再惰性唤醒 Chrome（未调用前常驻 `0 MB`），兼得低内存与 99.9% 兼容。
 
 ```bash
-# 本地一键复现全部压测（本机装有 moli 时自动对比第 6 项）
+# 一键复现 12 路重型 DOM 对比压测（拆清纯浏览器引擎 vs Node MCP，约 15 秒）
+python3 scripts/stress_test.py --heavy-compare
+
+# 或运行完整 6 场景压测套件
 python3 scripts/stress_test.py --include-moli
 ```
 

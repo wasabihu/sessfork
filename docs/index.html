@@ -930,6 +930,25 @@
       text-align: right;
       font-weight: 700;
       color: var(--fg);
+      white-space: nowrap;
+    }
+    .bench-note {
+      margin-top: 16px;
+      padding: 12px 14px;
+      border-radius: 10px;
+      background: rgba(15, 23, 42, 0.65);
+      border: 1px solid var(--border);
+      font-size: 0.8rem;
+      line-height: 1.55;
+      color: var(--fg-muted);
+    }
+    .bench-note strong {
+      color: var(--fg);
+    }
+    .bench-note code {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: #86EFAC;
     }
   </style>
 </head>
@@ -1104,7 +1123,7 @@
             <div class="chips" id="engine-chips">
               <button type="button" class="chip" data-engine="chrome" aria-pressed="true" data-i18n="engChrome">Chrome 默认</button>
               <button type="button" class="chip" data-engine="dual" aria-pressed="false" data-i18n="engDual">Dual 双通道 (推荐)</button>
-              <button type="button" class="chip" data-engine="moli" aria-pressed="false" data-i18n="engMoli">Moli Rust (-69% RAM)</button>
+              <button type="button" class="chip" data-engine="moli" aria-pressed="false" data-i18n="engMoli">Moli Rust (-82% 纯内存 / 单进程)</button>
             </div>
           </div>
 
@@ -1174,7 +1193,7 @@
           <span class="bench-kpi-sub" data-i18n="kpi2Sub"></span>
         </div>
         <div class="bench-kpi">
-          <span class="bench-kpi-val">200 / 200</span>
+          <span class="bench-kpi-val">5.46x</span>
           <span class="bench-kpi-title" data-i18n="kpi3Title"></span>
           <span class="bench-kpi-sub" data-i18n="kpi3Sub"></span>
         </div>
@@ -1191,9 +1210,41 @@
             <strong style="font-size: 1rem;" data-i18n="cmpTitle"></strong>
             <div style="font-size: 0.82rem; color: var(--fg-muted); margin-top: 2px;" data-i18n="cmpSub"></div>
           </div>
-          <code style="font-family: var(--font-mono); font-size: 0.8rem; padding: 6px 10px; border-radius: 8px; background: var(--bg-code); border: 1px solid var(--border); color: #86EFAC;">sessfork --engine dual &amp;&amp; sessfork --ui</code>
+          <code style="font-family: var(--font-mono); font-size: 0.8rem; padding: 6px 10px; border-radius: 8px; background: var(--bg-code); border: 1px solid var(--border); color: #86EFAC;">python3 scripts/stress_test.py --heavy-compare</code>
         </div>
         <div class="bench-bars">
+          <div class="bench-row">
+            <div class="bench-row-label">
+              <span data-i18n="barRamLabel"></span>
+              <span style="color: var(--accent);">5.46x less RAM (-81.7%)</span>
+            </div>
+            <div class="bench-bar-line">
+              <span style="color: var(--fg-muted);">chrome-headless-shell</span>
+              <div class="bench-bar-track"><div class="bench-bar-fill fill-chrome" style="width: 100%;"></div></div>
+              <span class="bench-val-mono">2,051 MB</span>
+            </div>
+            <div class="bench-bar-line">
+              <span style="color: #86EFAC;">Moli 1.1.27 (Rust)</span>
+              <div class="bench-bar-track"><div class="bench-bar-fill fill-moli" style="width: 18.3%;"></div></div>
+              <span class="bench-val-mono">375 MB</span>
+            </div>
+          </div>
+          <div class="bench-row">
+            <div class="bench-row-label">
+              <span data-i18n="barProcLabel"></span>
+              <span style="color: var(--accent);">15x fewer OS procs</span>
+            </div>
+            <div class="bench-bar-line">
+              <span style="color: var(--fg-muted);">chrome-headless-shell</span>
+              <div class="bench-bar-track"><div class="bench-bar-fill fill-chrome" style="width: 100%;"></div></div>
+              <span class="bench-val-mono">15 procs</span>
+            </div>
+            <div class="bench-bar-line">
+              <span style="color: #86EFAC;">Moli 1.1.27 (Rust)</span>
+              <div class="bench-bar-track"><div class="bench-bar-fill fill-moli" style="width: 6.7%;"></div></div>
+              <span class="bench-val-mono">1 proc</span>
+            </div>
+          </div>
           <div class="bench-row">
             <div class="bench-row-label">
               <span data-i18n="barTimeLabel"></span>
@@ -1210,23 +1261,8 @@
               <span class="bench-val-mono">779 ms</span>
             </div>
           </div>
-          <div class="bench-row">
-            <div class="bench-row-label">
-              <span data-i18n="barRamLabel"></span>
-              <span style="color: var(--accent);">-68.6% RAM</span>
-            </div>
-            <div class="bench-bar-line">
-              <span style="color: var(--fg-muted);">chrome-headless-shell</span>
-              <div class="bench-bar-track"><div class="bench-bar-fill fill-chrome" style="width: 100%;"></div></div>
-              <span class="bench-val-mono">1,219 MB</span>
-            </div>
-            <div class="bench-bar-line">
-              <span style="color: #86EFAC;">Moli 1.1.27 (Rust)</span>
-              <div class="bench-bar-track"><div class="bench-bar-fill fill-moli" style="width: 31.4%;"></div></div>
-              <span class="bench-val-mono">383 MB</span>
-            </div>
-          </div>
         </div>
+        <div class="bench-note" data-i18n="benchNote"></div>
       </div>
     </section>
 
@@ -1312,23 +1348,25 @@
           labelEngine: "3. 无头引擎模式（或运行 sessfork --ui 可视化配置）",
           engChrome: "Chrome 默认 (99.9% 兼容)",
           engDual: "Dual 双通道 (推荐 · 惰性兜底)",
-          engMoli: "Moli Rust (-69% 内存 / 4.4x)",
+          engMoli: "Moli Rust (-82% 纯内存 / 单进程)",
           benchEyebrow: "实测压测与双引擎对比 · Apple Silicon",
-          benchTitle: "硬核压测数据：自己先压到极限，再交给并发 Agent",
-          benchSub: "全本地可一键复现（python3 scripts/stress_test.py）。并发锁将 16 进程丢更新率从 57.5% 压到 0.0%，接入 Rust Moli 可再省 68.6% 内存。",
+          benchTitle: "硬核压测数据：剥离 Node 底噪，看真实引擎差距",
+          benchSub: "全本地一键复现。12 路重型 SaaS 仪表盘（1,775 节点/页）下，纯浏览器内存差距达 5.46×（2,051 MB / 15 进程 vs 375 MB / 1 进程），且 16 进程写入 0 丢更新。",
           benchReportBtn: "查看完整压测报告",
           kpi1Title: "100 域名全量提取",
           kpi1Sub: "2,000 Cookie + 2,000 LS 键（211k/s）",
           kpi2Title: "16 进程并发丢更新率",
           kpi2Sub: "fcntl.flock 修复前 57.5% -> 0.0%",
-          kpi3Title: "SQLite WAL 活写争用",
-          kpi3Sub: "后台 5,795 提交期间 0 损坏",
-          kpi4Title: "6 路上下文并发隔离",
-          kpi4Sub: "交叉核验 6/6 全绿、0 串号",
-          cmpTitle: "6 路 isolatedContext 并发实测：chrome-headless-shell vs lexmount/moli",
-          cmpSub: "Dual 模式下平时仅 Moli 空载 12.7 MB；Chrome 在未触发兜底前为 0 MB 惰性未启动。",
-          barTimeLabel: "6 路并发建立 + 乱序交叉核验总耗时",
-          barRamLabel: "6 路并发总 RSS 内存（浏览器 + Node MCP）",
+          kpi3Title: "12 路重型纯引擎省内存",
+          kpi3Sub: "2,051 MB vs 375 MB（-81.7% / 省 1.68 GB）",
+          kpi4Title: "12 路并发上下文隔离",
+          kpi4Sub: "12/12 交叉核验全绿、0 跨账号串号",
+          cmpTitle: "重型 12 路 & 轻量 6 路实测：chrome-headless-shell vs lexmount/moli",
+          cmpSub: "已按进程树剥离双方固定的 ~260 MB Node @playwright/mcp 包装层，还原纯浏览器引擎开销。",
+          barRamLabel: "12 路重型 SaaS 仪表盘纯浏览器内存（1,775 节点/页）",
+          barProcLabel: "12 路并发隔离上下文的浏览器 OS 进程数",
+          barTimeLabel: "6 路轻量鉴权页全流程耗时（建上下文 + 乱序核验）",
+          benchNote: "透明说明：上方内存条仅计纯浏览器进程（不含双方共同的 ~260–265 MB Node @playwright/mcp 壳进程；含 Node 总计 2,311 MB vs 640 MB，省 72.3%）。诚实取舍：在 1,775 节点重型页面的完整无障碍树遍历耗时上，Chrome 的 V8 JIT + 多核渲染更快（3.33s vs 5.73s）且具备 99.9% 兼容率——因此推荐使用 --engine dual：日常走 Moli（空载 12.6 MB，5.46× 省内存），遇重型 SPA/反爬再惰性唤醒 Chrome（未调用前 0 MB）。",
           jwtTitle: "仅同步 LocalStorage JWT（--no-cookies）",
           jwtDesc: "适用于 Supabase / SPA / localhost，跳过系统钥匙串授权弹窗。",
           outPromptTag: "直接复制发给 AI 助手（最省事）",
@@ -1378,23 +1416,25 @@
           labelEngine: "3. Headless engine mode (or run `sessfork --ui`)",
           engChrome: "Chrome Default (99.9% compat)",
           engDual: "Dual Auto-Fallback (Recommended)",
-          engMoli: "Moli Rust (-69% RAM / 4.4x)",
+          engMoli: "Moli Rust (-82% Engine RAM / 1 proc)",
           benchEyebrow: "Reproducible Stress Benchmarks · Apple Silicon",
-          benchTitle: "Stress-tested under real multi-agent load",
-          benchSub: "Reproduce locally with `python3 scripts/stress_test.py`. Cross-process flock eliminated a 57.5% lost-update race; optional managed Moli cuts 6-context RAM by 68.6%.",
+          benchTitle: "Stress-tested under 12-agent heavy DOM load",
+          benchSub: "100% local & reproducible. Separating the fixed ~260 MB Node MCP wrapper reveals a 5.46x pure browser RAM gap (2,051 MB / 15 procs vs 375 MB / 1 proc) across 12 heavy SaaS tabs.",
           benchReportBtn: "Full Benchmark Report",
           kpi1Title: "100-Domain Extraction",
           kpi1Sub: "2,000 cookies + 2,000 LS keys (211k/s)",
           kpi2Title: "16-Proc Lost Updates",
           kpi2Sub: "Fixed 57.5% -> 0.0% via fcntl.flock",
-          kpi3Title: "Live SQLite WAL Storm",
-          kpi3Sub: "0 errors across 5,795 live commits",
-          kpi4Title: "6x Isolated Contexts",
-          kpi4Sub: "6/6 interleaved checks, zero cross-leaks",
-          cmpTitle: "6x isolatedContext benchmark: chrome-headless-shell vs. lexmount/moli",
-          cmpSub: "In Dual mode, Moli idles at 12.7 MB while Chrome stays unloaded at 0 MB until fallback is needed.",
-          barTimeLabel: "6x isolatedContext setup + interleaved verify",
-          barRamLabel: "6x active total RSS (browser + Node MCP)",
+          kpi3Title: "12x Heavy Engine RAM",
+          kpi3Sub: "2,051 MB vs 375 MB (-81.7%, saves 1.68 GB)",
+          kpi4Title: "12x Isolated Contexts",
+          kpi4Sub: "12/12 interleaved checks, zero cross-leaks",
+          cmpTitle: "12x Heavy-DOM & 6x Light Auth: chrome-headless-shell vs. lexmount/moli",
+          cmpSub: "Process-tree split removes the shared ~260 MB Node @playwright/mcp wrapper to isolate true browser engine cost.",
+          barRamLabel: "12x heavy SaaS dashboard pure browser RSS (1,775 DOM nodes/tab)",
+          barProcLabel: "Browser OS process count across 12 isolated contexts",
+          barTimeLabel: "6x lightweight auth contexts total elapsed time",
+          benchNote: "Transparency note: Memory bars above count pure browser engine processes only (shared Node @playwright/mcp adds ~260–265 MB to both sides; total 12x RSS is 2,311 MB vs 640 MB, -72.3%). Honest trade-off: Chrome's V8 JIT is faster on heavy 1,775-node full AX-tree walks (3.33s vs 5.73s) and covers 99.9% of complex WebGL/anti-bot sites — which is why --engine dual gives you Moli's 12.6 MB idle & 5.46x RAM density while keeping Chrome at 0 MB until fallback is needed.",
           jwtTitle: "LocalStorage JWT only (--no-cookies)",
           jwtDesc: "Skip macOS Keychain prompts completely for SPA & localhost apps.",
           outPromptTag: "Paste straight to your AI Agent (Easiest)",

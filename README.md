@@ -130,20 +130,24 @@ sessfork console.cloud.google.com --profile "Profile 1"
 
 ## Stress Benchmarks (`chrome-headless-shell` vs. `lexmount/moli`)
 
-Measured locally on Apple Silicon (`macOS 26.6.2 arm64`, Python 3.14.7, `@playwright/mcp@0.0.85`) via [`scripts/stress_test.py`](scripts/stress_test.py) (zero external requests). Full methodology & 6-scenario breakdown in **[docs/benchmarks.md](docs/benchmarks.md)**.
+Measured locally on Apple Silicon (`macOS 26.6.2 arm64`, Python 3.14.7, `@playwright/mcp@0.0.85`) via [`scripts/stress_test.py`](scripts/stress_test.py) (zero external requests). Full methodology & breakdown in **[docs/benchmarks.md](docs/benchmarks.md)**.
 
 | Workload | `chrome-headless-shell` (default) | `moli 1.1.27` (Rust `--engine moli` / `dual`) | Notes |
 | :--- | :---: | :---: | :--- |
 | **100-domain extraction** (2,000 cookies + 2,000 LS keys) | `26.6 ms` p50 (`211k cookies/s`) | same CLI core | Pure Python stdlib + CommonCrypto |
 | **16-process concurrent fork storm** (64 domains) | **`0.0%` lost updates** (`223.7 ms`) | same CLI core | Fixed `57.5% -> 0.0%` via `fcntl.flock` |
 | **Live SQLite WAL contention** (5,795 commits + 8 readers) | **`200 / 200` OK** (`0.0%` errors) | same CLI core | p50 `32.7 ms` / p99 `52.1 ms` |
-| **50-origin hot-reload** (`browser_set_storage_state`) | `20 / 20` OK (`263.8 ms` p50) | **`52.3 ms`** (10-origin) / `672.5 ms` (50-origin) | Zero stale tokens, zero crashes |
-| **6× `isolatedContext` interleaved isolation** | `6 / 6` OK (`0` leaks) | **`6 / 6` OK (`0` leaks)** | Zero cross-context leakage |
-| **6× `isolatedContext` total time** | `3,413.1 ms` | **`778.6 ms` (4.4× faster)** | Same local `127.0.0.1` auth echo server |
-| **6× `isolatedContext` total RSS** (browser + Node MCP) | `1,218.9 MB` | **`382.5 MB` (-68.6% RAM)** | Moli browser `125.9 MB` + Node `256.6 MB` |
+| **12× heavy-DOM pure browser RSS** *(1,775 DOM nodes/tab)* | `2,051.1 MB` | **`375.4 MB` (`5.46×` smaller / `-81.7%`)** | Excludes fixed `~260 MB` Node MCP (`2,311 vs 640 MB` total) |
+| **12× heavy-DOM browser OS processes** | `15` processes | **`1` process (`15×` fewer)** | `12 / 12` verified, `0` cross-context leaks |
+| **6× lightweight auth contexts elapsed time** | `3,413.1 ms` | **`778.6 ms` (`4.4×` faster)** | Moli wins light pages; Chrome V8 wins heavy 1,775-node AX walks (`3.33s vs 5.73s`) |
+
+> **Why `--engine dual` is the sweet spot:** Moli saves **1.68 GB** (`-81.7%` pure browser RAM, `1` vs `15` OS procs) and flies on lightweight pages (`4.4×` faster), while Chrome's V8 JIT stays unloaded (`0 MB`) until a heavy SPA, WebGL canvas, or anti-bot portal triggers fallback.
 
 ```bash
-# Reproduce locally (adds Moli Scenario 6 automatically when `moli` is installed)
+# Reproduce the 12x heavy-DOM Chrome vs. Moli comparison locally (~15s)
+python3 scripts/stress_test.py --heavy-compare
+
+# Or run the full 6-scenario suite
 python3 scripts/stress_test.py --include-moli
 ```
 
