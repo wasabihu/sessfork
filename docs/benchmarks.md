@@ -109,6 +109,16 @@ All three stacks run the exact same realistic 12-agent authenticated SaaS dashbo
 | **12× Heavy-DOM Total Elapsed Time** | `2,915.4 ms` | `5,543.9 ms` | **`1,501.0 ms`** | **`1.94×` faster** (`3.69×` vs Node+Moli) |
 | **12× Setup + Interleaved Verify** | `12 / 12` (`0` leaks) | `12 / 12` (`0` leaks) | **`12 / 12` (`0` leaks)** | Zero cross-context leakage |
 
+#### Independent Verification by the `lexmount/moli` Team (Apple M4, 24 GB, 5-Run Medians)
+
+In [lexmount/moli Discussion #3465](https://github.com/lexmount/moli/discussions/3465#discussioncomment-19846839), the Moli team independently reran the exact same `python3 scripts/stress_test.py --heavy-compare` 12-context heavy-DOM benchmark on an **Apple M4 (24 GB RAM)** with **1 warm-up + 5 measured runs** (all 12/12 isolation checks passed on every run across all three stacks):
+
+| Stack (Apple M4 24 GB, 5-run median) | Total Elapsed Time | Total End RSS | Delta vs. Chrome |
+| :--- | :---: | :---: | :--- |
+| `chrome-headless-shell` + `@playwright/mcp` | `11.65 s` | `2,439.5 MiB` | baseline |
+| `moli` + `@playwright/mcp` (Node) | `25.41 s` | `575.6 MiB` | `-76.4%` RAM, `0.46×` speed |
+| **`moli` + `sessfork-mcp` (Rust Pipe)** | **`4.22 s`** | **`226.3 MiB`** | **`-90.7%` RAM (`10.78×` smaller), `2.76×` faster** (`6.02×` faster than Node+Moli) |
+
 > **Why did replacing Node `@playwright/mcp` with pure Rust `sessfork-mcp` make Moli `3.69×` faster AND `2.5×` leaner even on Moli itself?**
 > 1. Eliminates the fixed `~272 MB` Node.js runtime + `1.2–1.8 s` `npx` launch tax (`1,787 ms → 4.6 ms`).
 > 2. Talks straight to `moli serve --remote-debugging-pipe` (OS FD 3/4 NUL-framed JSON, zero TCP ports, automatic kernel-level EOF cleanup even on `SIGKILL`).
