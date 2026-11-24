@@ -6,7 +6,7 @@
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-22c55e.svg)](pyproject.toml)
 [![wasabihu/sessfork MCP server](https://glama.ai/mcp/servers/wasabihu/sessfork/badges/score.svg)](https://glama.ai/mcp/servers/wasabihu/sessfork)
 
-[English](README.md) · **简体中文** · [交互式可视化指南](https://wasabihu.github.io/sessfork/) · [压测与基准数据](docs/benchmarks.md)
+[English](README.md) · **简体中文** · [纯 Rust Moli MCP](rust/sessfork-mcp/README.md) · [交互式可视化指南](https://wasabihu.github.io/sessfork/) · [压测与基准数据](docs/benchmarks.md)
 
 **一键把本地 Chrome 登录态（Cookies + LocalStorage）无锁分叉到 AI 后台无头浏览器 —— 零窗口抢焦点、零运行时依赖。**
 
@@ -15,6 +15,12 @@
 当你让 AI 编程助手（[Google Antigravity](https://antigravity.google/docs/commands/browser/)、Claude Code、Cursor）直接连接你正在用的 Chrome 来复用登录态时，AI 会频繁把浏览器窗口抢到前台、乱切标签页，直接打断你写代码或看文档的节奏。
 
 `sessfork` 把**前台阅读视图**与**登录凭证状态**彻底解耦：只需一行命令，它就能无锁快照 Chromium 的 SQLite `Cookies` 与 LevelDB `Local Storage/leveldb`，通过系统原生 API 在内存中解密，完成 SPA/JWT `localStorage` 的 MVCC 墓碑消解，生成严格 `0600` 权限的 [Playwright `storageState`](https://playwright.dev/docs/api/class-browser) 文件，并自动为本机 AI 工具配置静默后台无头浏览器（`sessfork-browser`）。
+
+> [!TIP]
+> **冲着 `sessfork-mcp` × [`lexmount/moli`](https://github.com/lexmount/moli)（605 KB 零 Node.js 纯 Rust MCP）来的？**
+> 经 Moli 团队在 Apple M4（24 GB）5 轮中位数独立复现：**总内存 `-90.7%`（`226.3 MiB` vs `2,439.5 MiB`）、速度快 `2.76×`**（[Discussion #3465](https://github.com/lexmount/moli/discussions/3465#discussioncomment-19846839)）。
+> - **纯 Moli 独立使用（无需 Python / Node.js / Chrome）：** 直达 **[rust/sessfork-mcp/README.md](rust/sessfork-mcp/README.md)**（`install.sh --rust-mcp-only` + 一行 `claude mcp add`）。
+> - **Chrome 登录态分叉 + Moli/Chrome 双通道引擎：** 执行 `curl -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/main/install.sh | bash -s -- --with-rust-mcp` 与 `sessfork --engine dual`（完整基准见 [docs/benchmarks.md](docs/benchmarks.md)）。
 
 ---
 
@@ -127,7 +133,9 @@ sessfork console.cloud.google.com --profile "Profile 1"
 
 ## 实测压测数据（Chrome vs Node+Moli vs 全 Rust `sessfork-mcp`+Moli）
 
-在 Apple Silicon 本机（`macOS 26.6.2 arm64` / Python 3.14.7 / `@playwright/mcp@0.0.85` / `moli 1.1.27` / `sessfork-mcp 0.1.4`）通过 [`scripts/stress_test.py`](scripts/stress_test.py) 全本地同场实测（零外部网络请求），完整方法论见 **[docs/benchmarks.md](docs/benchmarks.md)**：
+![Chrome vs Node+Moli vs 全 Rust sessfork-mcp+Moli 压测对比图](docs/assets/benchmark-v014-zh.png)
+
+在 Apple Silicon 本机（`macOS 26.6.2 arm64` / M5 24 GB / Python 3.14.7 / `@playwright/mcp@0.0.85` / `moli 1.1.27` / `sessfork-mcp 0.1.4`）通过 [`scripts/stress_test.py`](scripts/stress_test.py) 全本地同场实测（零外部网络请求），完整方法论见 **[docs/benchmarks.md](docs/benchmarks.md)**：
 
 | 压测维度 | `chrome-headless-shell` + Node MCP | `moli 1.1.27` + Node MCP | **`moli 1.1.27` + Rust `sessfork-mcp`** | 对比 Chrome 收益 |
 | :--- | :---: | :---: | :---: | :--- |
@@ -139,7 +147,9 @@ sessfork console.cloud.google.com --profile "Profile 1"
 | **12 路重型 DOM 总内存**（1,775 节点/页） | `2,531.4 MB`（15 进程） | `656.8 MB`（1 进程） | **`260.4 MB`（1 进程）** | **小 9.72×（省 89.7% / 2.27 GB）** |
 | **12 路重型 DOM 总耗时**（含完整无障碍树） | `2,915.4 ms` | `5,543.9 ms` | **`1,501.0 ms`**（12/12 零串号） | **反超 Chrome 快 1.94×**（比 Node+Moli 快 3.69×） |
 
-> **为什么推荐 `--engine dual` 双通道？** 装上纯 Rust `sessfork-mcp` 后，日常 `sessfork-moli` 直接做到 **总内存小 9.72×、耗时快 1.94×–14.8×、空载仅 1.7 MB、零 Node.js**；只有遇到 WebGL 或强风控反爬站点时再惰性唤醒 Chrome（未调用前常驻 `0 MB`），性能与 99.9% 兼容兼得。
+> **`lexmount/moli` 团队独立复现（Apple M4 / 24 GB，5 轮中位数 — [Discussion #3465](https://github.com/lexmount/moli/discussions/3465#discussioncomment-19846839)）：** 同一套 12 路重型 DOM 压测（1 次预热 + 5 轮实测，全部 12/12 隔离检查通过），`moli` + `sessfork-mcp` 为 **`4.22 s` / `226.3 MiB`**，对比 `moli` + `@playwright/mcp`（`25.41 s` / `575.6 MiB`）与 `chrome-headless-shell` + `@playwright/mcp`（`11.65 s` / `2,439.5 MiB`）——**总内存直降 `90.7%`（小 `10.78×`）、速度快 `2.76×`**。
+
+> **为什么推荐 `--engine dual` 双通道？** 装上纯 Rust `sessfork-mcp` 后，日常 `sessfork-moli` 直接做到 **总内存小 `9.72×`–`10.78×`、耗时快 `1.94×`–`14.8×`、空载仅 `1.7 MB`、零 Node.js**；只有遇到 WebGL 或强风控反爬站点时再惰性唤醒 Chrome（未调用前常驻 `0 MB`），性能与 99.9% 兼容兼得。
 
 ```bash
 # 可选：一键下载 605 KB 预编译纯 Rust 原生 CDP MCP（带 SHA-256 校验、免装 Cargo）

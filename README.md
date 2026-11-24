@@ -6,7 +6,7 @@
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-22c55e.svg)](pyproject.toml)
 [![wasabihu/sessfork MCP server](https://glama.ai/mcp/servers/wasabihu/sessfork/badges/score.svg)](https://glama.ai/mcp/servers/wasabihu/sessfork)
 
-**English** · [简体中文](README.zh-CN.md) · [Interactive Visual Guide](https://wasabihu.github.io/sessfork/) · [Stress Benchmarks](docs/benchmarks.md)
+**English** · [简体中文](README.zh-CN.md) · [Native Rust Moli MCP](rust/sessfork-mcp/README.md) · [Interactive Visual Guide](https://wasabihu.github.io/sessfork/) · [Stress Benchmarks](docs/benchmarks.md)
 
 **Fork live Chrome auth sessions (Cookies + LocalStorage) into headless AI agent browsers — zero window focus theft, zero runtime dependencies.**
 
@@ -15,6 +15,12 @@
 When AI coding agents ([Google Antigravity](https://antigravity.google/docs/commands/browser/), Claude Code, or Cursor) connect directly to your main Chrome instance to reuse logged-in sessions, they hijack your active window, switch tabs, and break your flow.
 
 `sessfork` decouples **your UI viewport** from **browser auth state** in a single command: it takes lock-free snapshots of your live Chromium SQLite `Cookies` database and LevelDB `Local Storage/leveldb` store, decrypts cookies in memory via native OS APIs, reconciles MVCC sequence numbers for SPA/JWT `localStorage` tokens, writes a strict `0600` [Playwright `storageState`](https://playwright.dev/docs/api/class-browser) file, and wires a silent background [Playwright MCP](https://github.com/microsoft/playwright-mcp) server (`sessfork-browser`) across your installed AI agents.
+
+> [!TIP]
+> **Looking for `sessfork-mcp` × [`lexmount/moli`](https://github.com/lexmount/moli) (605 KB zero-Node.js Rust MCP)?**
+> Independently verified by the Moli team at **`-90.7%` RAM (`226.3 MiB` vs `2,439.5 MiB`) and `2.76×` faster** than Chrome + Playwright MCP (Apple M4, 5-run medians — [Discussion #3465](https://github.com/lexmount/moli/discussions/3465#discussioncomment-19846839)).
+> - **Standalone Moli MCP (no Python or Chrome required):** see **[rust/sessfork-mcp/README.md](rust/sessfork-mcp/README.md)** (`install.sh --rust-mcp-only` + 1-line `claude mcp add`).
+> - **Chrome session forking + Dual Moli/Chrome engine:** run `curl -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/main/install.sh | bash -s -- --with-rust-mcp` and `sessfork --engine dual` (full breakdown in [docs/benchmarks.md](docs/benchmarks.md)).
 
 ---
 
@@ -131,7 +137,9 @@ sessfork console.cloud.google.com --profile "Profile 1"
 
 ## Stress Benchmarks (`chrome-headless-shell` vs. `moli` + Node vs. `moli` + Rust `sessfork-mcp`)
 
-Measured locally on Apple Silicon (`macOS 26.6.2 arm64`, Python 3.14.7, `@playwright/mcp@0.0.85`, `moli 1.1.27`, `sessfork-mcp 0.1.4`) via [`scripts/stress_test.py`](scripts/stress_test.py) (zero external requests). Full methodology & 3-way breakdown in **[docs/benchmarks.md](docs/benchmarks.md)**.
+![Chrome Headless Shell vs Moli + Node MCP vs Moli + Rust sessfork-mcp Benchmark](docs/assets/benchmark-v014-en.png)
+
+Measured locally on Apple Silicon (`macOS 26.6.2 arm64`, M5 24 GB, Python 3.14.7, `@playwright/mcp@0.0.85`, `moli 1.1.27`, `sessfork-mcp 0.1.4`) via [`scripts/stress_test.py`](scripts/stress_test.py) (zero external requests). Full methodology & 3-way breakdown in **[docs/benchmarks.md](docs/benchmarks.md)**.
 
 | Workload | `chrome-headless-shell` + Node MCP | `moli 1.1.27` + Node MCP | **`moli 1.1.27` + Rust `sessfork-mcp`** | Delta vs. Chrome |
 | :--- | :---: | :---: | :---: | :--- |
@@ -143,7 +151,9 @@ Measured locally on Apple Silicon (`macOS 26.6.2 arm64`, Python 3.14.7, `@playwr
 | **12× heavy-DOM total RSS** *(1,775 nodes/tab)* | `2,531.4 MB` (`15` procs) | `656.8 MB` (`1` proc) | **`260.4 MB` (`1` proc)** | **`9.72×` smaller (`-89.7%`, saves `2.27 GB`)** |
 | **12× heavy-DOM total time** *(full AX tree)* | `2,915.4 ms` | `5,543.9 ms` | **`1,501.0 ms`** (`12/12`, 0 leaks) | **`1.94×` faster** (`3.69×` vs Node+Moli) |
 
-> **Why `--engine dual` is the sweet spot:** Pure Rust `sessfork-moli` delivers **`9.72×` smaller RAM**, **`1.94×–14.8×` faster execution**, and **`1.7 MB` idle** with zero Node.js, while Chrome stays completely unloaded (`0 MB`) until a WebGL or strict anti-bot portal triggers fallback.
+> **Independent verification by the `lexmount/moli` team (Apple M4, 24 GB, 5-run medians — [Discussion #3465](https://github.com/lexmount/moli/discussions/3465#discussioncomment-19846839)):** Re-running the exact same 12-context heavy-DOM benchmark (1 warm-up + 5 measured runs, all 12/12 checks passing) yielded **`4.22 s` / `226.3 MiB`** for `moli` + `sessfork-mcp` vs. **`25.41 s` / `575.6 MiB`** for `moli` + `@playwright/mcp` and **`11.65 s` / `2,439.5 MiB`** for `chrome-headless-shell` + `@playwright/mcp` — **`-90.7%` RAM (`10.78×` smaller) and `2.76×` faster than Chrome**.
+
+> **Why `--engine dual` is the sweet spot:** Pure Rust `sessfork-moli` delivers **`9.72×`–`10.78×` smaller RAM**, **`1.94×`–`14.8×` faster execution**, and **`1.7 MB` idle** with zero Node.js, while Chrome stays completely unloaded (`0 MB`) until a WebGL or strict anti-bot portal triggers fallback.
 
 ```bash
 # Optional: install the 605 KB prebuilt native Rust CDP MCP binary (SHA-256 verified, no Cargo needed)
