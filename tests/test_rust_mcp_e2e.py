@@ -87,6 +87,52 @@ setTimeout(() => {
             time.sleep(0.45)
             html = """<!doctype html><html><head><title>SlowDestLoaded</title></head><body>
 <h1>Slow Destination Content</h1><button id="done">Done</button></body></html>"""
+        elif parsed.path == "/webmcp":
+            html = """<!doctype html><html><head><title>WebMCPWorkspace</title></head><body>
+<header><h1>Workspace</h1></header>
+<main>
+  <h2>Summary</h2>
+  <p>Built with <strong>sessfork</strong> and <em>Moli</em>. See <a href="/docs">Docs</a>.</p>
+  <div hidden>HIDDEN_TEXT_MUST_NOT_LEAK</div>
+  <div aria-hidden="true">ARIA_HIDDEN_MUST_NOT_LEAK</div>
+  <div style="display:none">STYLE_HIDDEN_MUST_NOT_LEAK</div>
+  <blockquote>Structure first.</blockquote>
+  <ul><li>Zero Node</li><li hidden>HIDDEN_LI_SECRET</li><li>Rust Pipe</li></ul>
+  <table><thead><tr><th>Stack</th><th>RAM</th></tr></thead><tbody><tr><td>Moli</td><td>226 MiB</td></tr><tr hidden><td>HIDDEN_TR_SECRET</td><td>999</td></tr></tbody></table>
+  <p>Inline code: <code>`backtick`</code></p>
+  <pre><code class="language-rust">fn main() {}</code></pre>
+  <form id="qform" toolname="quick_note" tooldescription="Save note immediately" toolautosubmit="true">
+    <input name="text" value="" toolparamdescription="Note text" />
+    <button type="submit">Save</button>
+  </form>
+  <form id="mform" toolname="approve_transfer" tooldescription="Requires confirmation">
+    <input name="amount" value="" toolparamdescription="Amount" />
+    <button type="submit">Approve</button>
+  </form>
+</main>
+<script>
+document.getElementById('qform').addEventListener('submit', (e) => {
+  e.preventDefault();
+  if (e.respondWith) e.respondWith(Promise.resolve({ saved: e.target.text.value, auto: true }));
+});
+document.getElementById('mform').addEventListener('submit', (e) => {
+  e.preventDefault();
+  if (e.respondWith) e.respondWith(Promise.resolve({ approved: e.target.amount.value, confirmed: true }));
+});
+const mc = document.modelContext || navigator.modelContext;
+if (mc) {
+  mc.registerTool({
+    name: 'get_quota',
+    description: 'Return authenticated quota from forked session',
+    inputSchema: { type: 'object', properties: { project: { type: 'string' } }, required: ['project'] },
+    execute: ({ project }) => ({
+      project,
+      hasCookie: document.cookie.includes('sid=webmcp_ck'),
+      tier: localStorage.getItem('tier')
+    })
+  });
+}
+</script></body></html>"""
         else:
             html = "<!doctype html><html><head><title>Home</title></head><body><p>Hello</p></body></html>"
 
@@ -199,7 +245,8 @@ def _current_tab_index(text: str) -> int:
     raise AssertionError(f"Could not parse current tab index from:\n{text}")
 
 
-RUST_MCP_BIN = find_rust_mcp_binary()
+_LOCAL_RELEASE_BIN = Path(__file__).resolve().parents[1] / "rust" / "sessfork-mcp" / "target" / "release" / "sessfork-mcp"
+RUST_MCP_BIN = _LOCAL_RELEASE_BIN if _LOCAL_RELEASE_BIN.is_file() else find_rust_mcp_binary()
 MOLI_BIN = find_moli_binary()
 
 
@@ -606,6 +653,104 @@ class RustMcpE2ETestSuite(unittest.TestCase):
                 self.assertFalse(is_err, dest_txt)
                 self.assertIn("SlowDestLoaded", dest_txt)
                 self.assertIn("Slow Destination Content", dest_txt)
+            finally:
+                client.close()
+
+    def test_08_webmcp_authenticated_declarative_and_markdown_extraction(self) -> None:
+        assert RUST_MCP_BIN is not None and MOLI_BIN is not None
+        with tempfile.TemporaryDirectory(prefix="sf_e2e_webmcp_") as tmp:
+            tmp_dir = Path(tmp)
+            out_dir = tmp_dir / "out"
+            out_dir.mkdir(mode=0o700)
+            exp = time.time() + 7200
+            state_file = tmp_dir / "state.json"
+            state_file.write_text(
+                json.dumps(
+                    {
+                        "cookies": [
+                            {"name": "sid", "value": "webmcp_ck", "domain": "127.0.0.1", "path": "/", "expires": exp}
+                        ],
+                        "origins": [
+                            {"origin": self.origin, "localStorage": [{"name": "tier", "value": "pro"}]}
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            client = _MCPClient(
+                RUST_MCP_BIN,
+                [f"--moli={MOLI_BIN}", f"--storage-state={state_file}", f"--output-dir={out_dir}"],
+            )
+            try:
+                client.initialize()
+                is_err, nav = client.call_tool("browser_navigate", {"url": f"{self.origin}/webmcp", "snapshot": False})
+                self.assertFalse(is_err, nav)
+
+                # 1. Structure-first Markdown extraction (scoped selector + hidden-element filtering + fail-closed miss)
+                is_err, md = client.call_tool("browser_extract_markdown", {"selector": "main"})
+                self.assertFalse(is_err, md)
+                self.assertIn("## Summary", md)
+                self.assertIn("**sessfork**", md)
+                self.assertIn("*Moli*", md)
+                self.assertIn("[Docs](", md)
+                self.assertIn("> Structure first.", md)
+                self.assertIn("| Stack | RAM |", md)
+                self.assertIn("```rust", md)
+                self.assertNotIn("HIDDEN_TEXT_MUST_NOT_LEAK", md)
+                self.assertNotIn("ARIA_HIDDEN_MUST_NOT_LEAK", md)
+                self.assertNotIn("STYLE_HIDDEN_MUST_NOT_LEAK", md)
+                self.assertNotIn("HIDDEN_LI_SECRET", md)
+                self.assertNotIn("HIDDEN_TR_SECRET", md)
+                self.assertIn("`` `backtick` ``", md)
+
+                is_err, miss = client.call_tool("browser_extract_markdown", {"selector": "article.missing"})
+                self.assertTrue(is_err)
+                self.assertIn("article.missing", miss)
+
+                # 2. WebMCP tool discovery (imperative + autosubmit form + manual-confirm form)
+                is_err, cat = client.call_tool("browser_webmcp_list", {"waitMs": 1000})
+                self.assertFalse(is_err, cat)
+                self.assertIn("get_quota", cat)
+                self.assertIn("quick_note", cat)
+                self.assertIn("approve_transfer", cat)
+
+                # 3. Authenticated imperative WebMCP call sees forked cookie & localStorage
+                is_err, q_txt = client.call_tool(
+                    "browser_webmcp_call", {"name": "get_quota", "arguments": {"project": "moli-bridge"}}
+                )
+                self.assertFalse(is_err, q_txt)
+                q_obj = json.loads(q_txt)
+                self.assertEqual(q_obj["output"]["project"], "moli-bridge")
+                self.assertTrue(q_obj["output"]["hasCookie"])
+                self.assertEqual(q_obj["output"]["tier"], "pro")
+
+                # 4. Declarative autosubmit form works without confirm=true
+                is_err, a_txt = client.call_tool(
+                    "browser_webmcp_call", {"name": "quick_note", "arguments": {"text": "hello"}}
+                )
+                self.assertFalse(is_err, a_txt)
+                self.assertEqual(json.loads(a_txt)["output"]["saved"], "hello")
+
+                # 5. Declarative manual-confirm form fails closed unless confirm=true
+                is_err, refuse = client.call_tool(
+                    "browser_webmcp_call", {"name": "approve_transfer", "arguments": {"amount": "42"}}
+                )
+                self.assertTrue(is_err)
+                self.assertIn("confirm=true", refuse)
+
+                is_err, ok_txt = client.call_tool(
+                    "browser_webmcp_call",
+                    {"name": "approve_transfer", "arguments": {"amount": "42"}, "confirm": True},
+                )
+                self.assertFalse(is_err, ok_txt)
+                self.assertEqual(json.loads(ok_txt)["output"]["approved"], "42")
+
+                # 6. Navigating to a non-WebMCP page clears stale tool registrations
+                is_err, _ = client.call_tool("browser_navigate", {"url": f"{self.origin}/", "snapshot": False})
+                self.assertFalse(is_err)
+                is_err, empty_cat = client.call_tool("browser_webmcp_list", {})
+                self.assertFalse(is_err, empty_cat)
+                self.assertIn("WebMCP Tools (0)", empty_cat)
             finally:
                 client.close()
 

@@ -1,8 +1,10 @@
 mod ax;
 mod browser;
 mod cdp;
+mod markdown;
 mod mcp;
 mod storage;
+mod webmcp;
 
 use browser::{BrowserConfig, BrowserManager};
 use serde_json::Value;
@@ -26,7 +28,10 @@ fn find_moli_binary(explicit: Option<&str>) -> Result<PathBuf, String> {
         if pb.is_file() {
             return Ok(pb);
         }
-        return Err(format!("Specified --moli binary not found: {}", pb.display()));
+        return Err(format!(
+            "Specified --moli binary not found: {}",
+            pb.display()
+        ));
     }
     if let Ok(env_p) = env::var("SESSFORK_MOLI_PATH") {
         let pb = PathBuf::from(env_p.trim());

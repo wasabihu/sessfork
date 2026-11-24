@@ -135,6 +135,43 @@ pub fn tools_manifest() -> Value {
             }
         },
         {
+            "name": "browser_extract_markdown",
+            "description": "Extract clean, structure-first Markdown from the current page DOM without triggering layout or paint (optionally scoped to a CSS selector).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "selector": { "type": "string", "description": "Optional CSS selector to scope extraction (e.g. 'main', 'article')" },
+                    "maxChars": { "type": "integer", "description": "Max Markdown characters (default: 32000)" }
+                }
+            }
+        },
+        {
+            "name": "browser_webmcp_list",
+            "description": "List native WebMCP tools registered by the current page (and its child frames) via Moli's WebMCP CDP domain.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "frameId": { "type": "string", "description": "Optional frameId to filter tools to a single frame" },
+                    "waitMs": { "type": "integer", "description": "Optional milliseconds to wait for late-registering tools if empty (max 5000)" }
+                }
+            }
+        },
+        {
+            "name": "browser_webmcp_call",
+            "description": "Invoke a native WebMCP tool registered by the current page with JSON arguments (zero clicks, inherits current tab auth session).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Registered WebMCP tool name from browser_webmcp_list" },
+                    "arguments": { "type": "object", "description": "JSON object of tool input arguments (default: {})" },
+                    "frameId": { "type": "string", "description": "Optional frameId when multiple frames register the same tool name" },
+                    "confirm": { "type": "boolean", "description": "Explicitly confirm & submit a declarative WebMCP form that lacks autosubmit (default: false)" },
+                    "timeoutMs": { "type": "integer", "description": "Response timeout in milliseconds (500..30000, default: 15000)" }
+                },
+                "required": ["name"]
+            }
+        },
+        {
             "name": "browser_close",
             "description": "Close the underlying Moli browser instance cleanly.",
             "inputSchema": { "type": "object", "properties": {} }
@@ -235,7 +272,7 @@ fn dispatch_tool(name: &str, args: &Value, browser: &mut BrowserManager) -> Resu
             let max_chars = args
                 .get("maxChars")
                 .and_then(|v| v.as_u64())
-                .map(|v| (v as usize).clamp(512, 200_000))
+                .map(|v| v.clamp(512, 200_000) as usize)
                 .unwrap_or(DEFAULT_MAX_SNAPSHOT_CHARS);
             browser.tool_navigate(url, include_snapshot, max_chars)
         }
@@ -243,7 +280,7 @@ fn dispatch_tool(name: &str, args: &Value, browser: &mut BrowserManager) -> Resu
             let max_chars = args
                 .get("maxChars")
                 .and_then(|v| v.as_u64())
-                .map(|v| (v as usize).clamp(512, 200_000))
+                .map(|v| v.clamp(512, 200_000) as usize)
                 .unwrap_or(DEFAULT_MAX_SNAPSHOT_CHARS);
             browser.tool_snapshot(max_chars)
         }
@@ -279,7 +316,10 @@ fn dispatch_tool(name: &str, args: &Value, browser: &mut BrowserManager) -> Resu
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required parameter 'text'".to_string())?;
             let clear = args.get("clear").and_then(|v| v.as_bool()).unwrap_or(true);
-            let submit = args.get("submit").and_then(|v| v.as_bool()).unwrap_or(false);
+            let submit = args
+                .get("submit")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             browser.tool_type(ref_id, selector, text, clear, submit)
         }
         "browser_press_key" => {
@@ -294,7 +334,9 @@ fn dispatch_tool(name: &str, args: &Value, browser: &mut BrowserManager) -> Resu
                 .get("function")
                 .and_then(|v| v.as_str())
                 .or_else(|| args.get("expression").and_then(|v| v.as_str()))
-                .ok_or_else(|| "Missing required parameter 'function' or 'expression'".to_string())?;
+                .ok_or_else(|| {
+                    "Missing required parameter 'function' or 'expression'".to_string()
+                })?;
             browser.tool_evaluate(script)
         }
         "browser_navigate_back" => browser.tool_navigate_back(),
@@ -307,6 +349,42 @@ fn dispatch_tool(name: &str, args: &Value, browser: &mut BrowserManager) -> Resu
         "browser_take_screenshot" => {
             let filename = args.get("filename").and_then(|v| v.as_str());
             browser.tool_take_screenshot(filename)
+        }
+        "browser_extract_markdown" => {
+            let selector = args.get("selector").and_then(|v| v.as_str());
+            let max_chars = args
+                .get("maxChars")
+                .and_then(|v| v.as_u64())
+                .map(|v| v.clamp(512, 200_000) as usize)
+                .unwrap_or(DEFAULT_MAX_SNAPSHOT_CHARS);
+            browser.tool_extract_markdown(selector, max_chars)
+        }
+        "browser_webmcp_list" => {
+            let frame_id = args.get("frameId").and_then(|v| v.as_str());
+            let wait_ms = args
+                .get("waitMs")
+                .and_then(|v| v.as_u64())
+                .map(|v| v.min(5_000))
+                .unwrap_or(0);
+            browser.tool_webmcp_list(frame_id, wait_ms)
+        }
+        "browser_webmcp_call" => {
+            let tool_name = args
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "Missing required parameter 'name'".to_string())?;
+            let tool_args = args.get("arguments").cloned().unwrap_or_else(|| json!({}));
+            let frame_id = args.get("frameId").and_then(|v| v.as_str());
+            let confirm = args
+                .get("confirm")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let timeout_ms = args
+                .get("timeoutMs")
+                .and_then(|v| v.as_u64())
+                .map(|v| v.clamp(500, 30_000))
+                .unwrap_or(15_000);
+            browser.tool_webmcp_call(tool_name, tool_args, frame_id, confirm, timeout_ms)
         }
         "browser_close" => browser.tool_close(),
         other => Err(format!("Unknown tool '{}'", other)),
@@ -355,9 +433,48 @@ mod tests {
         assert!(names.contains(&"browser_navigate"));
         assert!(names.contains(&"browser_set_storage_state"));
         assert!(names.contains(&"browser_tabs"));
+        assert!(names.contains(&"browser_extract_markdown"));
+        assert!(names.contains(&"browser_webmcp_list"));
+        assert!(names.contains(&"browser_webmcp_call"));
+        assert_eq!(names.len(), 16);
         // Redaction guarantee: raw credential dump tools must not be registered.
         assert!(!names.contains(&"browser_cookie_list"));
         assert!(!names.contains(&"browser_storage_state"));
         assert!(!names.contains(&"browser_localstorage_get"));
+
+        // Input validation fail-closed checks (must reject before spawning Moli).
+        for (req_id, arguments, expected_substr) in [
+            (
+                3,
+                json!({ "name": "add_numbers", "arguments": [1, 2] }),
+                "JSON object",
+            ),
+            (
+                4,
+                json!({ "name": "add_numbers", "arguments": null }),
+                "JSON object",
+            ),
+            (5, json!({}), "Missing required parameter 'name'"),
+            (6, json!({ "name": "   " }), "non-empty WebMCP tool name"),
+        ] {
+            let resp = handle_jsonrpc_message(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "browser_webmcp_call",
+                        "arguments": arguments
+                    }
+                }),
+                &mut mgr,
+            )
+            .expect("validation response");
+            assert_eq!(resp["result"]["isError"], true);
+            assert!(resp["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or("")
+                .contains(expected_substr));
+        }
     }
 }

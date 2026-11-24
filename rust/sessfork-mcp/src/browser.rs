@@ -1,9 +1,11 @@
 use crate::ax::format_ax_tree;
-use crate::cdp::CdpPipeClient;
+use crate::cdp::{CdpPipeClient, WebMcpInvokeWait, WebMcpResponseWait};
+use crate::markdown::{build_markdown_extract_expression, format_markdown_response};
 use crate::storage::{
     build_live_local_storage_sync_script, build_local_storage_init_script, cookies_to_cdp_params,
     load_storage_state_file, validate_allowed_path, StorageState,
 };
+use crate::webmcp::{format_invocation_outcome, format_tool_catalog, select_tool};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
@@ -30,6 +32,7 @@ struct TabState {
     title: String,
     init_script_id: Option<String>,
     ref_map: HashMap<String, i64>,
+    webmcp_error: Option<String>,
 }
 
 pub struct BrowserConfig {
@@ -97,7 +100,9 @@ impl BrowserManager {
         let ctx_id = res
             .get("browserContextId")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| "CDP Target.createBrowserContext returned no browserContextId".to_string())?
+            .ok_or_else(|| {
+                "CDP Target.createBrowserContext returned no browserContextId".to_string()
+            })?
             .to_string();
         self.contexts.insert(
             context_name.to_string(),
@@ -136,11 +141,25 @@ impl BrowserManager {
             .ok_or_else(|| "CDP Target.attachToTarget returned no sessionId".to_string())?
             .to_string();
 
-        for domain in ["Page.enable", "DOM.enable", "Runtime.enable", "Accessibility.enable"] {
+        for domain in [
+            "Page.enable",
+            "DOM.enable",
+            "Runtime.enable",
+            "Accessibility.enable",
+        ] {
             let _ = self
                 .cdp()?
                 .call(domain, json!({}), Some(&session_id), DEFAULT_CDP_TIMEOUT);
         }
+        let webmcp_error = self
+            .cdp()?
+            .call(
+                "WebMCP.enable",
+                json!({}),
+                Some(&session_id),
+                DEFAULT_CDP_TIMEOUT,
+            )
+            .err();
 
         let mut init_script_id = None;
         if let Some(src) = self
@@ -169,6 +188,7 @@ impl BrowserManager {
             title: String::new(),
             init_script_id,
             ref_map: HashMap::new(),
+            webmcp_error,
         });
         let idx = self.tabs.len() - 1;
         self.current_tab = idx;
@@ -268,7 +288,11 @@ impl BrowserManager {
     fn format_open_tabs(&self) -> String {
         let mut out = String::from("### Open tabs\n");
         for (i, t) in self.tabs.iter().enumerate() {
-            let marker = if i == self.current_tab { "(current) " } else { "" };
+            let marker = if i == self.current_tab {
+                "(current) "
+            } else {
+                ""
+            };
             let title = if t.title.is_empty() {
                 "about:blank"
             } else {
@@ -347,7 +371,10 @@ impl BrowserManager {
     ) -> Result<String, String> {
         let (mut url, mut title, mut ready_state) = self.sync_current_page_meta()?;
         if !include_snapshot {
-            return Ok(format!("### Page\n- Page URL: {}\n- Page Title: {}\n", url, title));
+            return Ok(format!(
+                "### Page\n- Page URL: {}\n- Page Title: {}\n",
+                url, title
+            ));
         }
 
         let mut snap = self.capture_snapshot(max_chars)?;
@@ -450,7 +477,8 @@ impl BrowserManager {
                 Ok(self.format_open_tabs())
             }
             "select" => {
-                let idx = index.ok_or_else(|| "browser_tabs action='select' requires 'index'".to_string())?;
+                let idx = index
+                    .ok_or_else(|| "browser_tabs action='select' requires 'index'".to_string())?;
                 if idx >= self.tabs.len() {
                     return Err(format!(
                         "Tab index {} out of range (open tabs: {})",
@@ -473,8 +501,13 @@ impl BrowserManager {
                     None,
                     DEFAULT_CDP_TIMEOUT,
                 );
+                // Clear session buffers AFTER Target.closeTarget finishes so trailing
+                // teardown events cannot re-populate a permanently orphaned entry.
+                self.cdp()?.clear_session_state(&removed.session_id);
                 if self.tabs.is_empty() {
                     let _ = self.open_tab_in_context("default")?;
+                } else if idx < self.current_tab {
+                    self.current_tab -= 1;
                 } else if self.current_tab >= self.tabs.len() {
                     self.current_tab = self.tabs.len() - 1;
                 }
@@ -584,9 +617,9 @@ impl BrowserManager {
             if after_url != before_url || ready_state != "complete" {
                 should_settle = true;
                 if !loaded && ready_state != "complete" {
-                    let _ = self
-                        .cdp()?
-                        .wait_for_load_advance(&sid, prev_seq, Duration::from_secs(8));
+                    let _ =
+                        self.cdp()?
+                            .wait_for_load_advance(&sid, prev_seq, Duration::from_secs(8));
                 }
             }
         }
@@ -726,7 +759,11 @@ impl BrowserManager {
         self.format_page_response(true, DEFAULT_MAX_SNAPSHOT_CHARS, true)
     }
 
-    pub fn tool_wait_for(&mut self, text: Option<&str>, seconds: Option<f64>) -> Result<String, String> {
+    pub fn tool_wait_for(
+        &mut self,
+        text: Option<&str>,
+        seconds: Option<f64>,
+    ) -> Result<String, String> {
         self.ensure_started()?;
         if let Some(sec) = seconds {
             let bounded = sec.clamp(0.0, 30.0);
@@ -805,6 +842,279 @@ impl BrowserManager {
             bytes.len(),
             out_path.display()
         ))
+    }
+
+    pub fn tool_extract_markdown(
+        &mut self,
+        selector: Option<&str>,
+        max_chars: usize,
+    ) -> Result<String, String> {
+        self.ensure_started()?;
+        let sid = self.current_session_id()?;
+        let expr = build_markdown_extract_expression(selector)?;
+        let ev = self.cdp()?.call(
+            "Runtime.evaluate",
+            json!({
+                "expression": expr,
+                "returnByValue": true,
+            }),
+            Some(&sid),
+            DEFAULT_CDP_TIMEOUT,
+        )?;
+        if let Some(exc) = ev.get("exceptionDetails") {
+            return Err(format!("Markdown extraction JavaScript exception: {}", exc));
+        }
+        let raw = ev
+            .pointer("/result/value")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Markdown extractor returned no string payload".to_string())?;
+        format_markdown_response(raw, max_chars)
+    }
+
+    fn ensure_webmcp_supported(&self) -> Result<(), String> {
+        if let Some(err) = self
+            .tabs
+            .get(self.current_tab)
+            .and_then(|t| t.webmcp_error.as_deref())
+        {
+            return Err(format!(
+                "Current Moli/browser build does not support the WebMCP CDP domain ({})",
+                err
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn tool_webmcp_list(
+        &mut self,
+        frame_id: Option<&str>,
+        wait_ms: u64,
+    ) -> Result<String, String> {
+        self.ensure_started()?;
+        self.ensure_webmcp_supported()?;
+        let sid = self.current_session_id()?;
+        // CDP command reply acts as a barrier flushing any queued WebMCP.toolsAdded events.
+        self.cdp()?.call(
+            "Page.getFrameTree",
+            json!({}),
+            Some(&sid),
+            DEFAULT_CDP_TIMEOUT,
+        )?;
+        let tools = self
+            .cdp()?
+            .webmcp_tools(&sid, frame_id, Duration::from_millis(wait_ms));
+        let (url, title, _) = self.sync_current_page_meta()?;
+        Ok(format_tool_catalog(&url, &title, &tools))
+    }
+
+    fn confirm_declarative_webmcp_form(
+        &self,
+        sid: &str,
+        backend_node_id: i64,
+    ) -> Result<(), String> {
+        let resolved = self.cdp()?.call(
+            "DOM.resolveNode",
+            json!({ "backendNodeId": backend_node_id }),
+            Some(sid),
+            DEFAULT_CDP_TIMEOUT,
+        )?;
+        let object_id = resolved
+            .pointer("/object/objectId")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "Failed to resolve declarative WebMCP form node {}",
+                    backend_node_id
+                )
+            })?
+            .to_string();
+
+        let submit_result = self.cdp()?.call(
+            "Runtime.callFunctionOn",
+            json!({
+                "objectId": &object_id,
+                "userGesture": true,
+                "functionDeclaration": r#"function() {
+                    if (!this.matches(':tool-form-active')) {
+                        throw new Error('The declarative WebMCP form is no longer active.');
+                    }
+                    const button = Array.from(this.elements || []).find(el => el.matches(':tool-submit-active'))
+                        || (typeof this.querySelector === 'function' ? this.querySelector(':tool-submit-active') : null);
+                    if (button) {
+                        if (button.matches(':disabled')) {
+                            throw new Error('The declarative WebMCP submit button is disabled.');
+                        }
+                        button.click();
+                    } else if (typeof this.requestSubmit === 'function') {
+                        this.requestSubmit();
+                    } else {
+                        this.submit();
+                    }
+                }"#,
+                "returnByValue": true,
+            }),
+            Some(sid),
+            DEFAULT_CDP_TIMEOUT,
+        );
+
+        let _ = self.cdp()?.call(
+            "Runtime.releaseObject",
+            json!({ "objectId": &object_id }),
+            Some(sid),
+            Duration::from_secs(5),
+        );
+
+        let res = submit_result?;
+        if let Some(exc) = res.get("exceptionDetails") {
+            return Err(format!(
+                "Declarative WebMCP form confirmation failed: {}",
+                exc
+            ));
+        }
+        Ok(())
+    }
+
+    fn cancel_webmcp_best_effort(&self, sid: &str, invocation_id: &str) {
+        if let Ok(cdp) = self.cdp() {
+            if !cdp.is_closed() {
+                let _ = cdp.call(
+                    "WebMCP.cancelInvocation",
+                    json!({ "invocationId": invocation_id }),
+                    Some(sid),
+                    Duration::from_secs(5),
+                );
+            }
+        }
+    }
+
+    pub fn tool_webmcp_call(
+        &mut self,
+        name: &str,
+        arguments: Value,
+        frame_id: Option<&str>,
+        confirm: bool,
+        timeout_ms: u64,
+    ) -> Result<String, String> {
+        if name.trim().is_empty() {
+            return Err("Parameter 'name' must be a non-empty WebMCP tool name".to_string());
+        }
+        if !arguments.is_object() {
+            return Err("Parameter 'arguments' must be a JSON object".to_string());
+        }
+        self.ensure_started()?;
+        self.ensure_webmcp_supported()?;
+        let sid = self.current_session_id()?;
+        self.cdp()?.call(
+            "Page.getFrameTree",
+            json!({}),
+            Some(&sid),
+            DEFAULT_CDP_TIMEOUT,
+        )?;
+        let tools = self.cdp()?.webmcp_tools(&sid, None, Duration::ZERO);
+        let tool = select_tool(&tools, name, frame_id)?.clone();
+
+        if tool.requires_manual_confirmation() && !confirm {
+            return Err(format!(
+                "WebMCP tool '{}' is a declarative form without autosubmit and requires explicit confirmation. Review the arguments and re-call browser_webmcp_call with confirm=true.",
+                tool.name
+            ));
+        }
+
+        let nav_gen = self.cdp()?.current_webmcp_nav_gen(&sid);
+        let inv = self.cdp()?.call(
+            "WebMCP.invokeTool",
+            json!({
+                "frameId": tool.frame_id,
+                "toolName": tool.name,
+                "input": arguments,
+            }),
+            Some(&sid),
+            DEFAULT_CDP_TIMEOUT,
+        )?;
+        let invocation_id = inv
+            .get("invocationId")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| "CDP WebMCP.invokeTool returned no invocationId".to_string())?
+            .to_string();
+
+        let timeout = Duration::from_millis(timeout_ms);
+        let deadline = Instant::now() + timeout;
+
+        if tool.requires_manual_confirmation() {
+            if let Some(backend_node_id) = tool.backend_node_id {
+                let wait_cap = deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_secs(5));
+                match self.cdp()?.wait_for_webmcp_invoked_or_responded(
+                    &sid,
+                    &invocation_id,
+                    nav_gen,
+                    wait_cap,
+                ) {
+                    WebMcpInvokeWait::Responded(resp) => {
+                        return format_invocation_outcome(&tool.name, &resp);
+                    }
+                    WebMcpInvokeWait::Invoked => {
+                        if let Err(err) =
+                            self.confirm_declarative_webmcp_form(&sid, backend_node_id)
+                        {
+                            // A response may have arrived concurrently (e.g. page auto-completed
+                            // right before submit); deliver it instead of discarding it.
+                            if let Some(resp) =
+                                self.cdp()?.take_webmcp_response(&sid, &invocation_id)
+                            {
+                                return format_invocation_outcome(&tool.name, &resp);
+                            }
+                            self.cancel_webmcp_best_effort(&sid, &invocation_id);
+                            return Err(err);
+                        }
+                    }
+                    WebMcpInvokeWait::Navigated => {
+                        return Err(format!(
+                            "Page navigated away while declarative WebMCP form '{}' was pending",
+                            tool.name
+                        ));
+                    }
+                    WebMcpInvokeWait::TimedOut => {
+                        self.cancel_webmcp_best_effort(&sid, &invocation_id);
+                        return Err(format!(
+                            "Timed out waiting for declarative WebMCP form '{}' to activate",
+                            tool.name
+                        ));
+                    }
+                    WebMcpInvokeWait::Closed => {
+                        return Err(
+                            "CDP pipe closed while waiting for WebMCP form activation".to_string()
+                        );
+                    }
+                }
+            }
+        }
+
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match self
+            .cdp()?
+            .wait_for_webmcp_response(&sid, &invocation_id, nav_gen, remaining)
+        {
+            WebMcpResponseWait::Responded(resp) => format_invocation_outcome(&tool.name, &resp),
+            WebMcpResponseWait::Navigated => Err(format!(
+                "Page navigated away while WebMCP tool '{}' was running",
+                tool.name
+            )),
+            WebMcpResponseWait::TimedOut => {
+                self.cancel_webmcp_best_effort(&sid, &invocation_id);
+                Err(format!(
+                    "WebMCP tool '{}' invocation '{}' timed out after {}ms",
+                    tool.name,
+                    invocation_id,
+                    timeout.as_millis()
+                ))
+            }
+            WebMcpResponseWait::Closed => {
+                Err("CDP pipe closed while waiting for WebMCP tool response".to_string())
+            }
+        }
     }
 
     pub fn tool_close(&mut self) -> Result<String, String> {

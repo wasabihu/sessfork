@@ -1,6 +1,6 @@
 # sessfork-mcp — Native Rust MCP Server for Moli
 
-A **605 KB**, **13-crate**, **zero-Node.js / zero-Tokio / zero-TCP-port** native Rust MCP server for [`lexmount/moli`](https://github.com/lexmount/moli) — works **completely standalone with Moli** (no Python, no Chrome required) or paired with [`sessfork`](../../README.md) to fork live Chrome Cookies & LocalStorage into your background agent browser.
+A **686 KiB**, **13-crate**, **zero-Node.js / zero-Tokio / zero-TCP-port** native Rust MCP server for [`lexmount/moli`](https://github.com/lexmount/moli) — works **completely standalone with Moli** (no Python, no Chrome required) or paired with [`sessfork`](../../README.md) to fork live Chrome Cookies & LocalStorage into your background agent browser.
 
 It talks directly to `moli serve --remote-debugging-pipe` over OS file descriptors 3 & 4 (NUL-framed JSON), replacing the `~272 MB` Node.js `@playwright/mcp` wrapper and eliminating `npx` cold starts and orphan browser processes.
 
@@ -39,11 +39,11 @@ Reproducible locally via `python3 scripts/stress_test.py --heavy-compare` (full 
 curl --proto '=https' --tlsv1.2 -fsSL \
   https://github.com/lexmount/moli/releases/latest/download/moli-installer.sh | sh
 
-# Install prebuilt 605 KB sessfork-mcp (macOS arm64/x64, Linux x64/arm64, SHA-256 verified)
+# Install prebuilt 686 KiB sessfork-mcp (macOS arm64/x64, Linux x64/arm64, SHA-256 verified)
 curl -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/main/install.sh | bash -s -- --rust-mcp-only
 ```
 
-Or build from source (Rust `>=1.75`, ~5 seconds) or grab tarballs + `SHA256SUMS.txt` from [GitHub Releases](https://github.com/wasabihu/sessfork/releases):
+Or build from source (Rust `>=1.82`, ~5 seconds) or grab tarballs + `SHA256SUMS.txt` from [GitHub Releases](https://github.com/wasabihu/sessfork/releases):
 
 ```bash
 cargo install --git https://github.com/wasabihu/sessfork sessfork-mcp
@@ -101,9 +101,24 @@ See the main [sessfork README](../../README.md) for full session-forking docs.
 | `--output-dir <PATH>` | `~/.sessfork/playwright-output` | Confined sandbox root for `browser_set_storage_state` hot-reload & screenshots |
 | `--layout` | off (DOM-first) | Enable Moli's on-demand layout engine (required for screenshots) |
 
+## Native WebMCP & Structure-First Markdown (Zero Clicks, Zero Layout)
+
+`sessfork-mcp` bridges Moli's native [`WebMCP`](https://github.com/lexmount/moli/blob/main/moli-playground/webmcp/README.md) CDP domain and DOM-first runtime directly into MCP:
+
+- **Zero-click WebMCP discovery & execution** (`browser_webmcp_list` + `browser_webmcp_call`): Discover and call a page's native `document.modelContext` / `<form toolname="...">` tools with typed JSON arguments — inheriting the tab's forked Chrome auth session automatically, and failing closed unless `confirm: true` is passed for manual-confirm declarative forms.
+- **Structure-first Markdown extraction** (`browser_extract_markdown`): Convert live SPA DOM (or a scoped CSS `selector` like `main` / `article`) straight into clean Markdown without triggering Moli's layout or paint engines.
+
+```text
+1. browser_navigate { "url": "https://googlechromelabs.github.io/webmcp-tools/demos/pizza-maker/", "snapshot": false }
+2. browser_webmcp_list { "waitMs": 3000 }
+3. browser_webmcp_call { "name": "set_pizza_size", "arguments": { "size": "Large" } }
+4. browser_webmcp_call { "name": "add_topping", "arguments": { "topping": "🍍", "size": "Large", "count": 3 } }
+5. browser_extract_markdown { "maxChars": 4000 }
+```
+
 ## Exposed Tools & Security Guarantees
 
-- **13 core tools**: `browser_navigate`, `browser_snapshot`, `browser_tabs` (including named `isolatedContext` sandboxes), `browser_set_storage_state`, `browser_click`, `browser_type` (React/Vue compatible), `browser_press_key`, `browser_evaluate` (sync + async), `browser_navigate_back`, `browser_wait_for`, `browser_console_messages`, `browser_take_screenshot` (with `--layout`), and `browser_close`.
+- **16 core tools**: `browser_navigate`, `browser_snapshot`, `browser_extract_markdown` (structure-first DOM-to-Markdown), `browser_webmcp_list`, `browser_webmcp_call` (imperative + declarative WebMCP with manual-confirm guard), `browser_tabs` (including named `isolatedContext` sandboxes), `browser_set_storage_state`, `browser_click`, `browser_type` (React/Vue compatible), `browser_press_key`, `browser_evaluate` (sync + async), `browser_navigate_back`, `browser_wait_for`, `browser_console_messages`, `browser_take_screenshot` (with `--layout`), and `browser_close`.
 - **Zero raw secret export tools**: Deliberately omits `browser_cookie_list`, `browser_cookie_get`, `browser_storage_state`, and `browser_localstorage_get` so raw session tokens are never echoed into LLM context.
 - **Strict `--output-dir` confinement**: Canonicalizes paths and rejects `..` traversal and symlinks escaping `--output-dir`.
 - **Zero orphan `moli` processes**: Uses OS pipe FD 3/4 (`--remote-debugging-pipe`); even if `sessfork-mcp` receives `SIGKILL`, the kernel closes FD 3 and `moli` terminates cleanly.
