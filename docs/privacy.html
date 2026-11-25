@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Privacy Policy — sessfork Companion Extension</title>
+  <meta name="description" content="Privacy Policy for the sessfork Companion Extension (Chrome / Edge / Brave): 100% local on-device operation, zero remote servers, zero analytics, per-click user consent." />
+  <style>
+    :root {
+      --bg: #0B0F19;
+      --bg-card: #131B2E;
+      --border: rgba(148, 163, 184, 0.18);
+      --fg: #F8FAFC;
+      --fg-muted: #94A3B8;
+      --accent: #22C55E;
+      --accent-soft: rgba(34, 197, 94, 0.14);
+      --sky: #38BDF8;
+      --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --font-mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(820px 380px at 15% -5%, rgba(56, 189, 248, 0.10), transparent 60%),
+        radial-gradient(760px 380px at 85% 0%, rgba(34, 197, 94, 0.09), transparent 58%),
+        var(--bg);
+      color: var(--fg);
+      font-family: var(--font-sans);
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+    }
+    .wrap {
+      max-width: 820px;
+      margin: 0 auto;
+      padding: 40px 24px 72px;
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 28px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .brand {
+      font-weight: 700;
+      font-size: 16px;
+      color: var(--fg);
+      text-decoration: none;
+      letter-spacing: -0.01em;
+    }
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      font-size: 13.5px;
+    }
+    .nav-links a {
+      color: var(--fg-muted);
+      text-decoration: none;
+    }
+    .nav-links a:hover { color: var(--fg); }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      margin-bottom: 12px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 30px;
+      letter-spacing: -0.02em;
+      line-height: 1.2;
+    }
+    .meta {
+      color: var(--fg-muted);
+      font-size: 13.5px;
+      margin-bottom: 28px;
+    }
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 22px 24px;
+      margin-bottom: 18px;
+    }
+    h2 {
+      margin: 0 0 10px;
+      font-size: 18px;
+      letter-spacing: -0.01em;
+    }
+    p, li {
+      color: #CBD5E1;
+      font-size: 14.5px;
+    }
+    ul { padding-left: 20px; margin: 8px 0 0; }
+    li { margin-bottom: 6px; }
+    code {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      padding: 2px 6px;
+      border-radius: 5px;
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid var(--border);
+      color: #E2E8F0;
+    }
+    a.link { color: var(--sky); text-decoration: none; }
+    a.link:hover { text-decoration: underline; }
+    .lang-divider {
+      margin: 44px 0 28px;
+      border: 0;
+      border-top: 1px solid var(--border);
+    }
+    footer {
+      margin-top: 40px;
+      padding-top: 18px;
+      border-top: 1px solid var(--border);
+      color: var(--fg-muted);
+      font-size: 13px;
+      display: flex;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header class="topbar">
+      <a class="brand" href="index.html">sessfork</a>
+      <nav class="nav-links" aria-label="Navigation">
+        <a href="#en">English</a>
+        <a href="#zh">简体中文</a>
+        <a href="https://github.com/wasabihu/sessfork" target="_blank" rel="noopener">GitHub</a>
+      </nav>
+    </header>
+
+    <section id="en">
+      <div class="pill">100% Local On-Device · Zero Cloud · Zero Telemetry</div>
+      <h1>Privacy Policy — sessfork Companion Extension</h1>
+      <p class="meta">Effective Date: November 26, 2026 · Open-Source MIT License · Project: <a class="link" href="https://github.com/wasabihu/sessfork">wasabihu/sessfork</a></p>
+
+      <div class="card">
+        <h2>1. Summary</h2>
+        <p>The <strong>sessfork Companion Extension</strong> is an open-source, auditable, zero-dependency browser extension that runs <strong>exclusively on your local device</strong>. It has no background service worker, makes zero outbound network requests, collects zero analytics or telemetry, and never transmits any data to the author or any third party.</p>
+      </div>
+
+      <div class="card">
+        <h2>2. Data Accessed &amp; When It Is Accessed</h2>
+        <p>The extension accesses browser data <strong>only when you explicitly open the popup and click a sync button</strong> ("Fork This Site" / "Fork Selected"):</p>
+        <ul>
+          <li><strong>Cookies</strong> (via <code>chrome.cookies.getAll</code>): strictly scoped to the domain of the tab(s) you explicitly select.</li>
+          <li><strong>LocalStorage</strong> (via <code>chrome.scripting.executeScript</code>): strictly scoped to the origin of the tab(s) you explicitly select, verified against the tab's authoritative origin.</li>
+          <li><strong>Open Tab URLs</strong> (via <code>chrome.tabs.query</code>): read locally inside the popup UI solely to display the current site and let you optionally choose other open tabs in the same window.</li>
+          <li><strong>UI Language Preference</strong>: saved locally in the extension popup's <code>localStorage</code> (<code>sessfork_ui_lang</code>) only.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h2>3. How Data Is Stored &amp; Transferred</h2>
+        <ul>
+          <li>Selected session data is sent <strong>solely over local Chrome/Edge Native Messaging</strong> (<code>com.wasabihu.sessfork</code>) to the local <code>sessfork-mcp</code> binary installed by you on the same machine.</li>
+          <li>The local binary validates domain scope and writes a Playwright-compatible <code>storageState</code> snapshot to <code>~/.sessfork/state.json</code> (strict user-only permissions, <code>0600</code> on Unix) so your local headless AI agent can browse without stealing browser window focus.</li>
+          <li><strong>No remote transmission:</strong> Neither the extension nor <code>sessfork-mcp</code> uploads, logs, sells, or shares cookies, tokens, browsing history, or personal data with any remote server.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h2>4. Data Retention &amp; Deletion</h2>
+        <p>You remain in full control of your local session snapshots at all times. You can delete any individual site's synced session or wipe all synced sessions in one click from the extension popup (<strong>Synced Sessions → × / Clear All</strong>), or delete <code>~/.sessfork/</code> directly from disk.</p>
+      </div>
+
+      <div class="card">
+        <h2>5. Permissions Justification</h2>
+        <ul>
+          <li><code>cookies</code>: Read cookies (including <code>HttpOnly</code> session cookies) strictly for the domain explicitly triggered by the user.</li>
+          <li><code>activeTab</code> &amp; <code>scripting</code>: Read <code>window.localStorage</code> from the user-selected tab(s) when the user clicks sync.</li>
+          <li><code>nativeMessaging</code>: Send the user-selected snapshot directly to the user's local <code>com.wasabihu.sessfork</code> Rust Native Messaging host on the same computer.</li>
+          <li><code>http://*/*</code> &amp; <code>https://*/*</code>: Required so the user can choose to fork any logged-in web application (including internal portals and <code>http://localhost</code> dev servers) without hardcoding specific websites.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h2>6. Open Source &amp; Contact</h2>
+        <p>The entire source code is publicly auditable at <a class="link" href="https://github.com/wasabihu/sessfork/tree/main/extension">github.com/wasabihu/sessfork/tree/main/extension</a>. For privacy or security inquiries, please open an issue or follow our private disclosure process in <a class="link" href="https://github.com/wasabihu/sessfork/blob/main/SECURITY.md">SECURITY.md</a>.</p>
+      </div>
+    </section>
+
+    <hr class="lang-divider" />
+
+    <section id="zh" lang="zh-CN">
+      <div class="pill">纯本地运行 · 零云端回传 · 零遥测统计</div>
+      <h1>隐私政策 — sessfork 伴生扩展</h1>
+      <p class="meta">生效日期：2026 年 11 月 26 日 · MIT 开源协议 · 项目仓库：<a class="link" href="https://github.com/wasabihu/sessfork">wasabihu/sessfork</a></p>
+
+      <div class="card">
+        <h2>1. 核心承诺</h2>
+        <p><strong>sessfork 伴生扩展</strong>是一款开源、零依赖、完全可审计的浏览器扩展，<strong>100% 仅在您的本机运行</strong>。本扩展不包含任何后台常驻脚本（无 <code>service_worker</code>）、不发起任何对外网络请求、不包含任何统计/埋点/遥测代码，也绝不会将任何数据发送给作者或任何第三方服务器。</p>
+      </div>
+
+      <div class="card">
+        <h2>2. 访问的数据与触发时机</h2>
+        <p>本扩展<strong>仅在您手动点开弹窗并点击同步按钮</strong>（「同步当前站点」或「一键同步已选」）时，才按需读取以下本机数据：</p>
+        <ul>
+          <li><strong>Cookie</strong>（通过 <code>chrome.cookies.getAll</code>）：严格限定为您显式选中的目标域名。</li>
+          <li><strong>LocalStorage</strong>（通过 <code>chrome.scripting.executeScript</code>）：严格限定为您显式选中的标签页源（Origin），并二次校验标签页来源未发生跳转。</li>
+          <li><strong>当前窗口标签页网址</strong>（通过 <code>chrome.tabs.query</code>）：仅在弹窗内本地展示当前站点及可选的其他已打开标签页列表。</li>
+          <li><strong>界面语言偏好</strong>：仅在本扩展弹窗本地 <code>localStorage</code> 保存中英文切换选项（<code>sessfork_ui_lang</code>）。</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h2>3. 数据流向与本地存储</h2>
+        <ul>
+          <li>您选中的登录态快照<strong>仅通过浏览器原生本机通信（Native Messaging，<code>com.wasabihu.sessfork</code>）</strong>发送给您本机安装的 <code>sessfork-mcp</code> 程序。</li>
+          <li>本机程序在严格校验域名白名单后，将数据原子写入本机 <code>~/.sessfork/state.json</code>（仅限当前用户可读），供您本机后台无头 AI Agent 浏览器使用。</li>
+          <li><strong>零外网传输</strong>：任何 Cookie、令牌或浏览记录均不会离开您的设备。</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h2>4. 数据清理与自主控制</h2>
+        <p>您对本地快照拥有 100% 控制权：可随时在弹窗「已同步站点」列表中一键删除单个站点或清空全部数据，或直接删除本机 <code>~/.sessfork/</code> 目录。</p>
+      </div>
+
+      <div class="card">
+        <h2>5. 开源审计与联系方式</h2>
+        <p>扩展全部源码公开于 <a class="link" href="https://github.com/wasabihu/sessfork/tree/main/extension">github.com/wasabihu/sessfork/tree/main/extension</a>。如有隐私或安全疑问，请前往 GitHub Issues 或查阅 <a class="link" href="https://github.com/wasabihu/sessfork/blob/main/SECURITY.md">SECURITY.md</a>。</p>
+      </div>
+    </section>
+
+    <footer>
+      <span>sessfork · MIT License</span>
+      <span><a class="link" href="index.html">Back to Home</a> · <a class="link" href="https://github.com/wasabihu/sessfork">GitHub</a></span>
+    </footer>
+  </main>
+</body>
+</html>
