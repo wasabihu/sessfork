@@ -125,9 +125,17 @@ How to test:
 
 ---
 
-## 6. Post-Approval 1-Minute Sync (After Edge Store Approves)
+## 6. Live Submission Record & Post-Approval Sync
 
-Once Microsoft Edge Add-ons approves the listing and assigns its permanent 32-character Store Extension ID (`<EDGE_STORE_ID>`):
+Submitted to Microsoft Edge Add-ons Partner Center on **2026-11-26** (`Status: In review`, Version `0.2.1`):
 
-1. Add `<EDGE_STORE_ID>` alongside `DEFAULT_EXTENSION_ID` (`eipgnmlpcpmadpbignmifidnbjfmlphm`) in `rust/sessfork-mcp/src/native_host.rs` (`allowed_origins`) so `sessfork-mcp register-host` pre-authorizes **both** the Edge Add-ons Store build and the unpacked GitHub build.
-2. Print the Edge Add-ons Store one-click install link in `install.ps1` and `README.md` / `README.zh-CN.md`, and ship `v0.2.2`.
+- **Extension Name**: `sessfork — Local Session Bridge`
+- **Store ID**: `0RDCKDW6WFH7`
+- **Permanent Edge Store CRX ID**: `gfjpmefbcbenccjlmakaalgnmkpbageo`
+- **Partner Center Product ID**: `17aab622-e3db-489b-b355-50457ba9542b`
+- **Privacy Policy URL**: `https://wasabihu.github.io/sessfork/privacy.html`
+
+Once Microsoft Edge Add-ons approves the listing:
+
+1. Add `gfjpmefbcbenccjlmakaalgnmkpbageo` alongside `DEFAULT_EXTENSION_ID` (`eipgnmlpcpmadpbignmifidnbjfmlphm`) in `rust/sessfork-mcp/src/native_host.rs` (`allowed_origins`) and `extension/popup.js` so `sessfork-mcp register-host` pre-authorizes **both** the Edge Add-ons Store build and the unpacked GitHub build.
+2. Print the direct Edge Add-ons Store one-click install link (`https://microsoftedge.microsoft.com/addons/detail/gfjpmefbcbenccjlmakaalgnmkpbageo`) in `install.ps1` and `README.md` / `README.zh-CN.md`, and ship `v0.2.2`.
