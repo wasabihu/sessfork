@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>sessfork</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #ffffff;
+      --fg: #111827;
+      --muted: #6b7280;
+      --card: #f3f4f6;
+      --border: #e5e7eb;
+      --accent: #0f766e;
+      --accent-hover: #115e59;
+      --danger: #b91c1c;
+      --ok: #15803d;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --fg: #f8fafc;
+        --muted: #94a3b8;
+        --card: #1e293b;
+        --border: #334155;
+        --accent: #14b8a6;
+        --accent-hover: #0d9488;
+        --danger: #f87171;
+        --ok: #4ade80;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 14px;
+      width: 340px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      font-size: 13px;
+      line-height: 1.45;
+      background: var(--bg);
+      color: var(--fg);
+    }
+    .hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .title { font-weight: 700; font-size: 15px; letter-spacing: -0.01em; }
+    .badge { font-size: 11px; padding: 2px 7px; border-radius: 999px; background: var(--card); color: var(--muted); border: 1px solid var(--border); }
+    .badge.ok { color: var(--ok); }
+    .badge.err { color: var(--danger); }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin-bottom: 10px;
+    }
+    .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px; }
+    .domain { font-weight: 600; font-size: 14px; word-break: break-all; }
+    .row { display: flex; gap: 8px; margin-top: 10px; }
+    button {
+      flex: 1;
+      border: 0;
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button.primary { background: var(--accent); color: #ffffff; }
+    button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+    button.secondary { background: var(--card); color: var(--fg); border: 1px solid var(--border); flex: 0 0 auto; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .msg { font-size: 12px; margin-top: 8px; min-height: 18px; word-break: break-word; }
+    .msg.ok { color: var(--ok); }
+    .msg.err { color: var(--danger); }
+    .code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 8px;
+      margin-top: 6px;
+      word-break: break-all;
+      user-select: all;
+    }
+    .muted { color: var(--muted); font-size: 11px; }
+    label.toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); margin-top: 6px; cursor: pointer; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="hdr">
+    <span class="title">sessfork</span>
+    <span id="hostBadge" class="badge">Checking host…</span>
+  </div>
+
+  <div class="card">
+    <div class="label">Active Site</div>
+    <div id="domainText" class="domain">—</div>
+    <label id="subToggleRow" class="toggle hidden">
+      <input id="rootDomainToggle" type="checkbox">
+      <span id="rootDomainLabel">Include parent domain cookies</span>
+    </label>
+    <div class="row">
+      <button id="syncBtn" class="primary" disabled>Fork This Site</button>
+      <button id="clearBtn" class="secondary" disabled>Clear</button>
+    </div>
+    <div id="statusMsg" class="msg"></div>
+  </div>
+
+  <div id="setupCard" class="card hidden">
+    <div class="label">One-Time Host Registration</div>
+    <div class="muted">Run this command once in your terminal (Windows / macOS / Linux) to connect Chrome to local <code>sessfork-mcp</code>:</div>
+    <div id="registerCmd" class="code"></div>
+    <div class="row">
+      <button id="copyCmdBtn" class="secondary" style="flex:1">Copy Registration Command</button>
+    </div>
+  </div>
+
+  <div id="summaryText" class="muted">Local only · Zero cloud · Explicit per-click consent</div>
+  <script src="popup.js"></script>
+</body>
+</html>

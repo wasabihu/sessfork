@@ -1,10 +1,10 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct StorageState {
     #[serde(default)]
     pub cookies: Vec<PlaywrightCookie>,
@@ -12,7 +12,7 @@ pub struct StorageState {
     pub origins: Vec<OriginState>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaywrightCookie {
     pub name: String,
@@ -20,13 +20,13 @@ pub struct PlaywrightCookie {
     pub domain: String,
     #[serde(default = "default_path")]
     pub path: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires: Option<f64>,
     #[serde(default)]
     pub http_only: bool,
     #[serde(default)]
     pub secure: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub same_site: Option<String>,
 }
 
@@ -34,7 +34,7 @@ fn default_path() -> String {
     "/".to_string()
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OriginState {
     pub origin: String,
@@ -42,7 +42,7 @@ pub struct OriginState {
     pub local_storage: Vec<LocalStorageItem>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LocalStorageItem {
     pub name: String,
     pub value: String,

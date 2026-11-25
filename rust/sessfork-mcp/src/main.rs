@@ -3,24 +3,18 @@ mod browser;
 mod cdp;
 mod markdown;
 mod mcp;
+mod native_host;
 mod storage;
 mod webmcp;
+mod ws_cdp;
 
 use browser::{BrowserConfig, BrowserManager};
+use native_host::default_home_dir;
 use serde_json::Value;
 use std::env;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process;
-
-fn default_home_dir() -> PathBuf {
-    if let Ok(h) = env::var("HOME") {
-        if !h.is_empty() {
-            return PathBuf::from(h);
-        }
-    }
-    PathBuf::from(".")
-}
 
 fn find_moli_binary(explicit: Option<&str>) -> Result<PathBuf, String> {
     if let Some(p) = explicit {
@@ -39,9 +33,10 @@ fn find_moli_binary(explicit: Option<&str>) -> Result<PathBuf, String> {
             return Ok(pb);
         }
     }
+    let bin_name = if cfg!(windows) { "moli.exe" } else { "moli" };
     if let Ok(path_var) = env::var("PATH") {
         for dir in env::split_paths(&path_var) {
-            let cand = dir.join("moli");
+            let cand = dir.join(bin_name);
             if cand.is_file() {
                 return Ok(cand);
             }
@@ -49,14 +44,39 @@ fn find_moli_binary(explicit: Option<&str>) -> Result<PathBuf, String> {
     }
     let home = default_home_dir();
     let mut candidates = vec![
-        home.join(".local/bin/moli"),
-        PathBuf::from("/opt/homebrew/bin/moli"),
-        PathBuf::from("/usr/local/bin/moli"),
+        home.join(".local").join("bin").join(bin_name),
+        home.join(".cargo").join("bin").join(bin_name),
     ];
-    // Handle profile-isolated HOME on macOS by also probing /Users/<USER>/.local/bin/moli.
-    if let Ok(user) = env::var("USER") {
-        if !user.is_empty() {
-            candidates.push(Path::new("/Users").join(&user).join(".local/bin/moli"));
+    #[cfg(unix)]
+    {
+        candidates.push(PathBuf::from("/opt/homebrew/bin/moli"));
+        candidates.push(PathBuf::from("/usr/local/bin/moli"));
+        // Handle profile-isolated HOME on macOS by also probing /Users/<USER>/.local/bin/moli.
+        if let Ok(user) = env::var("USER") {
+            let trimmed = user.trim();
+            if !trimmed.is_empty()
+                && !trimmed.contains("..")
+                && trimmed
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+            {
+                candidates.push(Path::new("/Users").join(trimmed).join(".local/bin/moli"));
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        if let Ok(local_app) = env::var("LOCALAPPDATA") {
+            let trimmed = local_app.trim();
+            if !trimmed.is_empty() {
+                candidates.push(Path::new(trimmed).join("moli").join("moli.exe"));
+                candidates.push(
+                    Path::new(trimmed)
+                        .join("Programs")
+                        .join("moli")
+                        .join("moli.exe"),
+                );
+            }
         }
     }
     for cand in candidates {
@@ -64,15 +84,22 @@ fn find_moli_binary(explicit: Option<&str>) -> Result<PathBuf, String> {
             return Ok(cand);
         }
     }
-    Err("Could not locate `moli` binary. Install via `curl -fsSL https://moli.sh/install.sh | sh` or pass --moli <path>.".to_string())
+    if cfg!(windows) {
+        Err("Could not locate `moli.exe`. Install via PowerShell:\n  powershell -ExecutionPolicy ByPass -c \"irm https://github.com/lexmount/moli/releases/latest/download/moli-installer.ps1 | iex\"\nor pass --moli <path>.".to_string())
+    } else {
+        Err("Could not locate `moli` binary. Install via `curl -fsSL https://github.com/lexmount/moli/releases/latest/download/moli-installer.sh | sh` or pass --moli <path>.".to_string())
+    }
 }
 
 fn print_help() {
     println!(
-        "sessfork-mcp {} — Native Rust CDP MCP server for sessfork + lexmount/moli\n\n\
+        "sessfork-mcp {} — Native Rust CDP MCP server & Native Messaging host for sessfork + lexmount/moli\n\n\
          USAGE:\n\
-           sessfork-mcp [OPTIONS]\n\n\
-         OPTIONS:\n\
+           sessfork-mcp [OPTIONS]                      Run stdio MCP server (default)\n\
+           sessfork-mcp native-host [OPTIONS]          Run Chrome/Edge Native Messaging session bridge\n\
+           sessfork-mcp register-host --extension-id <ID> [--browser chrome|edge|brave|chromium|all]\n\
+           sessfork-mcp setup --mcp-file <PATH>        Wire sessfork-moli into an MCP JSON config\n\n\
+         MCP OPTIONS:\n\
            --moli <PATH>           Path to moli binary (auto-detected by default)\n\
            --storage-state <PATH>  Initial Playwright storageState JSON file\n\
            --output-dir <PATH>     Allowed root directory for storageState hot-reload & screenshots\n\
@@ -83,8 +110,7 @@ fn print_help() {
     );
 }
 
-fn parse_args() -> Result<BrowserConfig, i32> {
-    let args: Vec<String> = env::args().skip(1).collect();
+fn parse_args(args: &[String]) -> Result<BrowserConfig, i32> {
     let mut moli_arg: Option<String> = None;
     let mut state_arg: Option<PathBuf> = None;
     let mut output_dir: Option<PathBuf> = None;
@@ -135,9 +161,15 @@ fn parse_args() -> Result<BrowserConfig, i32> {
         if let Some(ref st) = state_arg {
             st.parent()
                 .map(|p| p.join("playwright-output"))
-                .unwrap_or_else(|| default_home_dir().join(".sessfork/playwright-output"))
+                .unwrap_or_else(|| {
+                    default_home_dir()
+                        .join(".sessfork")
+                        .join("playwright-output")
+                })
         } else {
-            default_home_dir().join(".sessfork/playwright-output")
+            default_home_dir()
+                .join(".sessfork")
+                .join("playwright-output")
         }
     });
 
@@ -150,7 +182,28 @@ fn parse_args() -> Result<BrowserConfig, i32> {
 }
 
 fn main() {
-    let cfg = match parse_args() {
+    let args: Vec<String> = env::args().skip(1).collect();
+
+    // Auto-detect Chrome/Edge Native Messaging host launch (argv[1] is `chrome-extension://<id>/`
+    // or Windows passes `--parent-window=<hwnd>`), as well as explicit subcommands.
+    if let Some(first) = args.first() {
+        if first == "native-host" {
+            process::exit(native_host::run_stdio_native_host(&args[1..]));
+        }
+        if first.starts_with("chrome-extension://")
+            || args.iter().any(|a| a.starts_with("--parent-window="))
+        {
+            process::exit(native_host::run_stdio_native_host(&args));
+        }
+        if first == "register-host" {
+            process::exit(native_host::run_register_host(&args[1..]));
+        }
+        if first == "setup" {
+            process::exit(native_host::run_setup_mcp(&args[1..]));
+        }
+    }
+
+    let cfg = match parse_args(&args) {
         Ok(c) => c,
         Err(code) => process::exit(code),
     };

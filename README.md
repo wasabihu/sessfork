@@ -232,7 +232,11 @@ By default `sessfork` does **not** store the derived decryption key anywhere, so
 
 - **macOS (`arm64` / `x64`)**: fully supported and tested on real Chrome profiles, with prebuilt `sessfork-mcp` binaries.
 - **Linux (`x64` / `arm64`)**: supported (in-memory OpenSSL `libcrypto` AES-128-CBC + Secret Service / `peanuts`, verified on Ubuntu CI, with prebuilt `sessfork-mcp` binaries for `x64` & `arm64`).
-- **Windows**: not natively supported — Chrome 127+ on Windows enforces App-Bound Encryption (`v20`), which cannot be decrypted from unprivileged user space without process injection or privilege escalation. On Windows, run inside **WSL2**.
+- **Windows (`x64`, zero Python / zero Node.js)**: natively supported via the standalone Rust `sessfork-mcp.exe` (`~784 KiB`, loopback RFC 6455 WebSocket CDP on kernel-assigned `--port 0` + Win32 Job Object zero-orphan reaping + `CREATE_NO_WINDOW`) paired with Windows [`moli.exe`](https://github.com/lexmount/moli) and the ~200-line auditable [Companion Chrome/Edge Extension](extension/README.md). Instead of process injection or privilege escalation against Chrome 127+ App-Bound Encryption (`v20`), Chrome decrypts cookies itself upon explicit user click ("Fork This Site") and syncs over Native Messaging (`com.wasabihu.sessfork`). Install with:
+  ```powershell
+  powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/wasabihu/sessfork/main/install.ps1 | iex"
+  powershell -ExecutionPolicy ByPass -c "irm https://github.com/lexmount/moli/releases/latest/download/moli-installer.ps1 | iex"
+  ```
 
 </details>
 

@@ -1,9 +1,19 @@
 use crate::markdown::truncate_chars;
 use crate::webmcp::WebMcpTool;
+#[cfg(windows)]
+use crate::ws_cdp::Win32JobGuard;
+use crate::ws_cdp::{
+    connect_loopback_ws, read_moli_bound_port_from_stderr, read_next_ws_message,
+    wait_for_ws_debugger_path, WsFrameWriter,
+};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
+#[cfg(unix)]
 use std::fs::File;
+use std::io::BufReader;
+#[cfg(unix)]
 use std::io::{Read, Write};
+use std::net::TcpStream;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -15,6 +25,8 @@ use std::time::{Duration, Instant};
 use std::os::unix::io::{FromRawFd, RawFd};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 const MAX_CONSOLE_ENTRIES_PER_SESSION: usize = 200;
 const MAX_CONSOLE_LINE_CHARS: usize = 4_096;
@@ -395,9 +407,51 @@ impl SharedState {
     }
 }
 
+enum CdpWriter {
+    #[cfg(unix)]
+    Pipe(File),
+    WebSocket(WsFrameWriter),
+}
+
+impl CdpWriter {
+    fn send_json(&mut self, json_bytes: &[u8]) -> Result<(), String> {
+        match self {
+            #[cfg(unix)]
+            Self::Pipe(f) => {
+                let mut framed = Vec::with_capacity(json_bytes.len() + 1);
+                framed.extend_from_slice(json_bytes);
+                framed.push(0);
+                f.write_all(&framed)
+                    .map_err(|e| format!("CDP pipe write failed: {e}"))
+            }
+            Self::WebSocket(ws) => ws.send_text(json_bytes),
+        }
+    }
+
+    fn send_pong(&mut self, payload: &[u8]) {
+        match self {
+            #[cfg(unix)]
+            Self::Pipe(_) => {}
+            Self::WebSocket(ws) => {
+                let _ = ws.send_pong(payload);
+            }
+        }
+    }
+
+    fn close_graceful(&mut self) {
+        match self {
+            #[cfg(unix)]
+            Self::Pipe(_) => {}
+            Self::WebSocket(ws) => ws.send_close(),
+        }
+    }
+}
+
 pub struct CdpPipeClient {
     child: Child,
-    writer: Mutex<Option<File>>,
+    #[cfg(windows)]
+    _job: Option<Win32JobGuard>,
+    writer: Arc<Mutex<Option<CdpWriter>>>,
     next_id: AtomicU64,
     shared: Arc<SharedState>,
     reader_thread: Option<JoinHandle<()>>,
@@ -526,7 +580,7 @@ impl CdpPipeClient {
 
         let client = Self {
             child,
-            writer: Mutex::new(Some(write_file)),
+            writer: Arc::new(Mutex::new(Some(CdpWriter::Pipe(write_file)))),
             next_id: AtomicU64::new(1),
             shared,
             reader_thread: Some(reader_thread),
@@ -543,8 +597,125 @@ impl CdpPipeClient {
     }
 
     #[cfg(not(unix))]
-    pub fn spawn_moli(_moli_bin: &Path, _enable_layout: bool) -> Result<Self, String> {
-        Err("--remote-debugging-pipe transport currently requires Unix (macOS/Linux)".to_string())
+    pub fn spawn_moli(moli_bin: &Path, enable_layout: bool) -> Result<Self, String> {
+        Self::spawn_moli_ws(moli_bin, enable_layout)
+    }
+
+    /// Spawn `moli serve --host 127.0.0.1 --port 0` (kernel-assigned port reported directly on
+    /// child stderr — eliminating bind-then-close port TOCTOU) and connect via loopback RFC 6455
+    /// WebSocket CDP (default transport on Windows with Win32 Job Object orphan-reaping, and
+    /// testable cross-platform against real `moli` on macOS/Linux as well).
+    #[cfg_attr(unix, allow(dead_code))]
+    pub fn spawn_moli_ws(moli_bin: &Path, enable_layout: bool) -> Result<Self, String> {
+        let mut cmd = Command::new(moli_bin);
+        cmd.arg("serve")
+            .arg("--host")
+            .arg("127.0.0.1")
+            .arg("--port")
+            .arg("0");
+        if enable_layout {
+            cmd.arg("--layout");
+        }
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+
+        #[cfg(windows)]
+        {
+            // CREATE_NO_WINDOW prevents flashing a console window when GUI IDEs launch sessfork-mcp.
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        #[cfg(unix)]
+        unsafe {
+            cmd.pre_exec(|| {
+                // SAFETY: `setpgid(0, 0)` is async-signal-safe per POSIX.1-2008.
+                if libc::setpgid(0, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("Failed to spawn moli ({}): {}", moli_bin.display(), e))?;
+
+        #[cfg(windows)]
+        let job = match Win32JobGuard::bind_child(&child) {
+            Ok(j) => Some(j),
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("Failed to bind Windows Job Object for moli: {e}"));
+            }
+        };
+
+        let stderr = match child.stderr.take() {
+            Some(s) => s,
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Failed to capture moli stderr for port discovery".to_string());
+            }
+        };
+
+        let port =
+            match read_moli_bound_port_from_stderr(stderr, &mut child, Duration::from_secs(10)) {
+                Ok(p) => p,
+                Err(e) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(e);
+                }
+            };
+
+        let ws_path = match wait_for_ws_debugger_path(port, &mut child, Duration::from_secs(10)) {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e);
+            }
+        };
+
+        let (ws_reader, ws_writer) = match connect_loopback_ws(port, &ws_path) {
+            Ok(pair) => pair,
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e);
+            }
+        };
+
+        let shared = Arc::new(SharedState::new());
+        let writer = Arc::new(Mutex::new(Some(CdpWriter::WebSocket(ws_writer))));
+        let reader_shared = Arc::clone(&shared);
+        let reader_writer = Arc::clone(&writer);
+
+        let reader_thread = thread::spawn(move || {
+            ws_reader_loop(ws_reader, reader_shared, reader_writer);
+        });
+
+        let client = Self {
+            child,
+            #[cfg(windows)]
+            _job: job,
+            writer,
+            next_id: AtomicU64::new(1),
+            shared,
+            reader_thread: Some(reader_thread),
+        };
+
+        // Verify CDP WebSocket handshake immediately.
+        let _ = client.call(
+            "Browser.getVersion",
+            json!({}),
+            None,
+            Duration::from_secs(10),
+        )?;
+        Ok(client)
     }
 
     pub fn call(
@@ -579,23 +750,25 @@ impl CdpPipeClient {
             }
         }
 
-        let mut encoded =
+        let encoded =
             serde_json::to_vec(&payload).map_err(|e| format!("CDP encode error: {}", e))?;
-        encoded.push(0);
 
         {
             let mut guard = self
                 .writer
                 .lock()
                 .map_err(|_| "CDP writer lock poisoned".to_string())?;
-            let Some(ref mut f) = *guard else {
-                return Err("CDP pipe is closed".to_string());
-            };
-            if let Err(e) = f.write_all(&encoded) {
+            let Some(ref mut w) = *guard else {
                 if let Ok(mut pending) = self.shared.pending.lock() {
                     pending.remove(&id);
                 }
-                return Err(format!("CDP pipe write failed for {}: {}", method, e));
+                return Err("CDP transport is closed".to_string());
+            };
+            if let Err(e) = w.send_json(&encoded) {
+                if let Ok(mut pending) = self.shared.pending.lock() {
+                    pending.remove(&id);
+                }
+                return Err(format!("CDP write failed for {}: {}", method, e));
             }
         }
 
@@ -694,6 +867,7 @@ impl CdpPipeClient {
     }
 }
 
+#[cfg(unix)]
 fn reader_loop(mut reader: File, shared: Arc<SharedState>) {
     let mut buf = Vec::<u8>::with_capacity(65536);
     let mut chunk = [0u8; 65536];
@@ -747,6 +921,31 @@ fn reader_loop(mut reader: File, shared: Arc<SharedState>) {
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => break,
+        }
+    }
+    shared.mark_closed();
+}
+
+fn ws_reader_loop(
+    mut reader: BufReader<TcpStream>,
+    shared: Arc<SharedState>,
+    writer: Arc<Mutex<Option<CdpWriter>>>,
+) {
+    loop {
+        let next = read_next_ws_message(&mut reader, MAX_CDP_FRAME_BYTES, |ping_payload| {
+            if let Ok(mut guard) = writer.lock() {
+                if let Some(ref mut w) = *guard {
+                    w.send_pong(ping_payload);
+                }
+            }
+        });
+        match next {
+            Ok(Some(bytes)) => {
+                if let Ok(msg) = serde_json::from_slice::<Value>(&bytes) {
+                    dispatch_cdp_message(msg, &shared);
+                }
+            }
+            Ok(None) | Err(_) => break,
         }
     }
     shared.mark_closed();
@@ -892,9 +1091,21 @@ fn terminate_child_process_group(child: &mut Child, term_grace: Duration) {
 
 impl Drop for CdpPipeClient {
     fn drop(&mut self) {
-        // Closing FD 3 sends EOF to `moli serve --remote-debugging-pipe`, prompting clean shutdown.
+        // On WebSocket transport, send a graceful Browser.close + Close frame before shutting down;
+        // on Unix pipe transport, dropping FD 3 sends EOF to `moli serve --remote-debugging-pipe`.
+        let is_ws = self
+            .writer
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|w| matches!(w, CdpWriter::WebSocket(_))))
+            .unwrap_or(false);
+        if is_ws {
+            let _ = self.call("Browser.close", json!({}), None, Duration::from_millis(400));
+        }
         if let Ok(mut guard) = self.writer.lock() {
-            guard.take();
+            if let Some(mut w) = guard.take() {
+                w.close_graceful();
+            }
         }
         // Wait for FD 4 EOF (all processes in the child group closed FD 4) before reaping the
         // leader; keeping the leader unreaped until EOF pins its PGID so timeout teardown can
@@ -922,6 +1133,12 @@ impl Drop for CdpPipeClient {
             );
             #[cfg(not(unix))]
             {
+                // Close Win32 Job Object BEFORE waiting so `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
+                // terminates both `moli.exe` and any grandchildren holding inherited sockets.
+                #[cfg(windows)]
+                {
+                    let _ = self._job.take();
+                }
                 let _ = self.child.kill();
                 let _ = self.child.wait();
             }
@@ -1271,5 +1488,81 @@ mod tests {
         handle.join().expect("reader thread join");
         let logs = shared.get_console("S1");
         assert_eq!(logs, vec!["[log] split_ok", "[log] after_giant_ok"]);
+    }
+
+    #[test]
+    fn ws_transport_round_trips_and_compares_latency_against_real_moli_if_installed() {
+        let mut candidates = Vec::new();
+        if let Ok(p) = std::env::var("SESSFORK_MOLI_PATH") {
+            candidates.push(std::path::PathBuf::from(p));
+        }
+        let bin = if cfg!(windows) { "moli.exe" } else { "moli" };
+        candidates.push(
+            crate::native_host::default_home_dir()
+                .join(".local")
+                .join("bin")
+                .join(bin),
+        );
+        #[cfg(target_os = "macos")]
+        if let Ok(u) = std::env::var("USER") {
+            candidates.push(Path::new("/Users").join(u).join(".local/bin/moli"));
+        }
+        let Some(moli_bin) = candidates.into_iter().find(|p| p.is_file()) else {
+            return;
+        };
+
+        let t_ws_spawn = Instant::now();
+        let ws_client = CdpPipeClient::spawn_moli_ws(&moli_bin, false).expect("spawn_moli_ws");
+        let ws_spawn_ms = t_ws_spawn.elapsed().as_secs_f64() * 1000.0;
+
+        let t_ws_calls = Instant::now();
+        for _ in 0..50 {
+            let v = ws_client
+                .call(
+                    "Browser.getVersion",
+                    json!({}),
+                    None,
+                    Duration::from_secs(5),
+                )
+                .expect("ws getVersion");
+            assert!(v.get("protocolVersion").is_some());
+        }
+        let ws_50_ms = t_ws_calls.elapsed().as_secs_f64() * 1000.0;
+        drop(ws_client);
+
+        #[cfg(unix)]
+        {
+            let t_pipe_spawn = Instant::now();
+            let pipe_client = CdpPipeClient::spawn_moli(&moli_bin, false).expect("spawn_moli");
+            let pipe_spawn_ms = t_pipe_spawn.elapsed().as_secs_f64() * 1000.0;
+
+            let t_pipe_calls = Instant::now();
+            for _ in 0..50 {
+                let v = pipe_client
+                    .call(
+                        "Browser.getVersion",
+                        json!({}),
+                        None,
+                        Duration::from_secs(5),
+                    )
+                    .expect("pipe getVersion");
+                assert!(v.get("protocolVersion").is_some());
+            }
+            let pipe_50_ms = t_pipe_calls.elapsed().as_secs_f64() * 1000.0;
+            drop(pipe_client);
+
+            eprintln!(
+                "[LIVE MOLI BENCH] pipe: spawn={pipe_spawn_ms:.1}ms, 50_calls={pipe_50_ms:.2}ms ({:.3}ms/call) | ws(win): spawn={ws_spawn_ms:.1}ms, 50_calls={ws_50_ms:.2}ms ({:.3}ms/call)",
+                pipe_50_ms / 50.0,
+                ws_50_ms / 50.0
+            );
+        }
+        #[cfg(not(unix))]
+        {
+            eprintln!(
+                "[LIVE MOLI BENCH] ws(win): spawn={ws_spawn_ms:.1}ms, 50_calls={ws_50_ms:.2}ms ({:.3}ms/call)",
+                ws_50_ms / 50.0
+            );
+        }
     }
 }

@@ -28,18 +28,27 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             asset: sessfork-mcp-darwin-arm64.tar.gz
+            archive: tar.gz
             run_tests: true
           - os: macos-latest
             target: x86_64-apple-darwin
             asset: sessfork-mcp-darwin-x64.tar.gz
+            archive: tar.gz
             run_tests: false
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             asset: sessfork-mcp-linux-x64.tar.gz
+            archive: tar.gz
             run_tests: true
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             asset: sessfork-mcp-linux-arm64.tar.gz
+            archive: tar.gz
+            run_tests: true
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: sessfork-mcp-windows-x64.zip
+            archive: zip
             run_tests: true
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -50,16 +59,28 @@ jobs:
       - name: Run unit tests & clippy (native targets)
         if: ${{ matrix.run_tests }}
         working-directory: rust/sessfork-mcp
+        shell: bash
         run: |
           cargo test --locked
           cargo clippy --locked --all-targets -- -D warnings
-      - name: Build stripped release binary
+      - name: Build stripped release binary (Unix)
+        if: ${{ matrix.archive == 'tar.gz' }}
         working-directory: rust/sessfork-mcp
+        shell: bash
         run: |
           cargo build --release --locked --target ${{ matrix.target }}
           mkdir -p dist
           tar -czf "dist/${{ matrix.asset }}" -C "target/${{ matrix.target }}/release" sessfork-mcp
           ls -lh "target/${{ matrix.target }}/release/sessfork-mcp" "dist/${{ matrix.asset }}"
+      - name: Build stripped release binary (Windows)
+        if: ${{ matrix.archive == 'zip' }}
+        working-directory: rust/sessfork-mcp
+        shell: pwsh
+        run: |
+          cargo build --release --locked --target ${{ matrix.target }}
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path "target\${{ matrix.target }}\release\sessfork-mcp.exe" -DestinationPath "dist\${{ matrix.asset }}" -Force
+          Get-Item "target\${{ matrix.target }}\release\sessfork-mcp.exe", "dist\${{ matrix.asset }}"
       - name: Upload release tarball artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -83,10 +104,21 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Package companion Chrome/Edge extension
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import pathlib, zipfile
+          ext_dir = pathlib.Path("extension")
+          with zipfile.ZipFile("dist/sessfork-extension.zip", "w", zipfile.ZIP_DEFLATED) as zf:
+              for p in sorted(ext_dir.rglob("*")):
+                  if p.is_file():
+                      zf.write(p, p.relative_to(ext_dir).as_posix())
+          PY
       - name: Generate SHA256SUMS.txt
         working-directory: dist
         run: |
-          sha256sum sessfork-mcp-*.tar.gz | sort -k2 > SHA256SUMS.txt
+          LC_ALL=C sha256sum sessfork-* | sort -k2 > SHA256SUMS.txt
           cat SHA256SUMS.txt
       - name: Create or update GitHub Release
         env:
@@ -99,14 +131,14 @@ jobs:
           fi
           git rev-parse --verify "refs/tags/${RELEASE_TAG}" >/dev/null
           if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release upload "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --clobber -- dist/sessfork-mcp-*.tar.gz dist/SHA256SUMS.txt
+            gh release upload "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --clobber -- dist/sessfork-* dist/SHA256SUMS.txt
           else
             gh release create "${RELEASE_TAG}" \
               --repo "${GITHUB_REPOSITORY}" \
               --title "sessfork ${RELEASE_TAG}" \
               --generate-notes \
               -- \
-              dist/sessfork-mcp-*.tar.gz \
+              dist/sessfork-* \
               dist/SHA256SUMS.txt
           fi
 
@@ -128,8 +160,12 @@ jobs:
           import json, os, tomllib
           tag = os.environ["RELEASE_TAG"]
           py_ver = tomllib.load(open("pyproject.toml", "rb"))["project"]["version"]
+          rust_ver = tomllib.load(open("rust/sessfork-mcp/Cargo.toml", "rb"))["package"]["version"]
+          ext_ver = json.load(open("extension/manifest.json", encoding="utf-8"))["version"]
           srv = json.load(open("server.json", encoding="utf-8"))
           assert f"v{py_ver}" == tag, f"pyproject.toml {py_ver} != {tag}"
+          assert f"v{rust_ver}" == tag, f"Cargo.toml {rust_ver} != {tag}"
+          assert f"v{ext_ver}" == tag, f"extension/manifest.json {ext_ver} != {tag}"
           assert f"v{srv['version']}" == tag, f"server.json {srv['version']} != {tag}"
           assert f"v{srv['packages'][0]['version']}" == tag, f"server.json pkg != {tag}"
           PY

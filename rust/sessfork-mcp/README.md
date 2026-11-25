@@ -1,8 +1,8 @@
 # sessfork-mcp — Native Rust MCP Server for Moli
 
-A **686 KiB**, **13-crate**, **zero-Node.js / zero-Tokio / zero-TCP-port** native Rust MCP server for [`lexmount/moli`](https://github.com/lexmount/moli) — works **completely standalone with Moli** (no Python, no Chrome required) or paired with [`sessfork`](../../README.md) to fork live Chrome Cookies & LocalStorage into your background agent browser.
+A **~784 KiB**, **zero-Node.js / zero-Tokio** native Rust MCP server (plus built-in Chrome/Edge Native Messaging host) for [`lexmount/moli`](https://github.com/lexmount/moli) — works **completely standalone on macOS, Linux, and Windows** (no Python, no Chrome required) or paired with [`sessfork`](../../README.md) / the [Companion Extension](../../extension/README.md) to fork live Chrome Cookies & LocalStorage into your background agent browser.
 
-It talks directly to `moli serve --remote-debugging-pipe` over OS file descriptors 3 & 4 (NUL-framed JSON), replacing the `~272 MB` Node.js `@playwright/mcp` wrapper and eliminating `npx` cold starts and orphan browser processes.
+On **macOS & Linux**, it talks directly to `moli serve --remote-debugging-pipe` over OS file descriptors 3 & 4 (NUL-framed JSON, zero TCP ports). On **Windows**, it launches `moli.exe serve --host 127.0.0.1 --port 0` (kernel-assigned port, zero TOCTOU) over a pure-std RFC 6455 loopback WebSocket (`34.2 ms` spawn, `0.086 ms/call` vs `23.2 ms` / `0.042 ms/call` on Unix pipe) guarded by a Win32 Job Object (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) and `CREATE_NO_WINDOW` — replacing the `~272 MB` Node.js `@playwright/mcp` wrapper and eliminating `npx` cold starts and orphan browser processes across all three platforms.
 
 ![Chrome Headless Shell vs Moli + Node MCP vs Moli + Rust sessfork-mcp Benchmark](../../docs/assets/benchmark-v014-en.png)
 
@@ -39,11 +39,18 @@ Reproducible locally via `python3 scripts/stress_test.py --heavy-compare` (full 
 curl --proto '=https' --tlsv1.2 -fsSL \
   https://github.com/lexmount/moli/releases/latest/download/moli-installer.sh | sh
 
-# Install prebuilt 686 KiB sessfork-mcp (macOS arm64/x64, Linux x64/arm64, SHA-256 verified)
+# Install prebuilt ~784 KiB sessfork-mcp (macOS arm64/x64, Linux x64/arm64, SHA-256 verified)
 curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.1.6/install.sh | bash -s -- --rust-mcp-only
 ```
 
-Or build from source (Rust `>=1.82`, ~5 seconds) or grab tarballs + `SHA256SUMS.txt` from [GitHub Releases](https://github.com/wasabihu/sessfork/releases):
+**Windows (PowerShell — zero Python / zero Node.js):**
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/lexmount/moli/releases/latest/download/moli-installer.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/wasabihu/sessfork/main/install.ps1 | iex"
+```
+
+Or build from source (Rust `>=1.88`, ~5 seconds) or grab archives + `SHA256SUMS.txt` from [GitHub Releases](https://github.com/wasabihu/sessfork/releases):
 
 ```bash
 cargo install --git https://github.com/wasabihu/sessfork sessfork-mcp
@@ -92,14 +99,17 @@ sessfork github.com linear.app
 
 See the main [sessfork README](../../README.md) for full session-forking docs.
 
-## CLI Options
+## CLI Options & Subcommands
 
-| Flag | Default | Description |
+| Flag / Subcommand | Default | Description |
 | :--- | :--- | :--- |
-| `--moli <PATH>` | auto-detected | Explicit path to the `moli` binary (`SESSFORK_MOLI_PATH` also supported) |
+| `--moli <PATH>` | auto-detected | Explicit path to the `moli` / `moli.exe` binary (`SESSFORK_MOLI_PATH` also supported) |
 | `--storage-state <PATH>` | none | Optional initial Playwright `storageState` JSON to hydrate on startup |
 | `--output-dir <PATH>` | `~/.sessfork/playwright-output` | Confined sandbox root for `browser_set_storage_state` hot-reload & screenshots |
 | `--layout` | off (DOM-first) | Enable Moli's on-demand layout engine (required for screenshots) |
+| `native-host` | auto-detected on Chrome launch | Run Chrome/Edge Native Messaging host (`com.wasabihu.sessfork`) for the [Companion Extension](../../extension/README.md) |
+| `register-host --extension-id <ID>` | `--browser all` | Register Native Messaging manifest in Chrome / Edge / Brave / Chromium (HKCU Registry on Windows, JSON manifest on macOS/Linux) |
+| `setup --mcp-file <PATH>` | `--name sessfork-moli` | Atomically wire `sessfork-mcp` into an MCP JSON config (zero Python needed) |
 
 ## Native WebMCP & Structure-First Markdown (Zero Clicks, Zero Layout)
 

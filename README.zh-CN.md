@@ -228,7 +228,11 @@ Chromium 会在系统钥匙串的 `"Chrome Safe Storage"` 条目下保存主加�
 
 - **macOS（`arm64` / `x64`）**：完整支持并在真实 Chrome 配置上充分验证，提供 `sessfork-mcp` 预编译包。
 - **Linux（`x64` / `arm64`）**：已支持（纯内存 `libcrypto` AES-128-CBC + Secret Service / `peanuts`，Ubuntu 全版本 CI 通过，提供 `x64` / `arm64` 预编译包）。
-- **Windows**：暂不原生支持——Windows 版 Chrome 127+ 启用了应用绑定加密（App-Bound Encryption `v20`），非提权用户态无法在不做进程注入的情况下合法解密；Windows 用户推荐在 **WSL2** 中使用。
+- **Windows（`x64`，零 Python、零 Node.js）**：已原生支持，采用独立 Rust `sessfork-mcp.exe`（约 `784 KiB`，纯标准库回环 WebSocket CDP + `--port 0` 内核分配端口零 TOCTOU + Win32 Job Object 零孤儿回收 + `CREATE_NO_WINDOW` 静默无黑框）搭配 Windows 原生 [`moli.exe`](https://github.com/lexmount/moli) 与 ~200 行可审计 [Chrome/Edge 伴生扩展](extension/README.md)。针对 Windows Chrome 127+ 应用绑定加密（`v20` ABE）与文件锁，不碰任何进程注入或提权黑科技，而是由用户在浏览器中主动点击「Fork This Site」，经 Chrome 官方 API 与 Native Messaging（`com.wasabihu.sessfork`）毫秒级落盘并热重载。一键安装：
+  ```powershell
+  powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/wasabihu/sessfork/main/install.ps1 | iex"
+  powershell -ExecutionPolicy ByPass -c "irm https://github.com/lexmount/moli/releases/latest/download/moli-installer.ps1 | iex"
+  ```
 
 </details>
 
