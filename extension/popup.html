@@ -2,121 +2,533 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>sessfork</title>
   <style>
     :root {
       color-scheme: light dark;
       --bg: #ffffff;
-      --fg: #111827;
-      --muted: #6b7280;
-      --card: #f3f4f6;
-      --border: #e5e7eb;
+      --surface: #f8fafc;
+      --surface-hover: #f1f5f9;
+      --border: #e2e8f0;
+      --border-strong: #cbd5e1;
+      --fg: #0f172a;
+      --muted: #475569;
+      --subtle: #64748b;
       --accent: #0f766e;
       --accent-hover: #115e59;
-      --danger: #b91c1c;
+      --accent-soft: rgba(15, 118, 110, 0.10);
       --ok: #15803d;
+      --ok-soft: rgba(21, 128, 61, 0.11);
+      --warn: #b45309;
+      --warn-soft: rgba(180, 83, 9, 0.11);
+      --danger: #b91c1c;
+      --danger-soft: rgba(185, 28, 28, 0.10);
+      --focus: #0d9488;
+      --radius-md: 10px;
+      --radius-sm: 7px;
+      --ease: cubic-bezier(0.22, 1, 0.36, 1);
     }
     @media (prefers-color-scheme: dark) {
       :root {
-        --bg: #0f172a;
+        --bg: #0b1120;
+        --surface: #131c31;
+        --surface-hover: #1b2740;
+        --border: #23304a;
+        --border-strong: #334569;
         --fg: #f8fafc;
-        --muted: #94a3b8;
-        --card: #1e293b;
-        --border: #334155;
-        --accent: #14b8a6;
-        --accent-hover: #0d9488;
+        --muted: #cbd5e1;
+        --subtle: #94a3b8;
+        --accent: #10b981;
+        --accent-hover: #059669;
+        --accent-soft: rgba(16, 185, 129, 0.14);
+        --ok: #34d399;
+        --ok-soft: rgba(52, 211, 153, 0.14);
+        --warn: #fbbf24;
+        --warn-soft: rgba(251, 191, 36, 0.14);
         --danger: #f87171;
-        --ok: #4ade80;
+        --danger-soft: rgba(248, 113, 113, 0.14);
+        --focus: #34d399;
       }
     }
+
     * { box-sizing: border-box; }
     body {
       margin: 0;
       padding: 14px;
-      width: 340px;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      width: 364px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei UI", system-ui, sans-serif;
       font-size: 13px;
       line-height: 1.45;
       background: var(--bg);
       color: var(--fg);
+      -webkit-font-smoothing: antialiased;
     }
-    .hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-    .title { font-weight: 700; font-size: 15px; letter-spacing: -0.01em; }
-    .badge { font-size: 11px; padding: 2px 7px; border-radius: 999px; background: var(--card); color: var(--muted); border: 1px solid var(--border); }
-    .badge.ok { color: var(--ok); }
-    .badge.err { color: var(--danger); }
-    .card {
-      background: var(--card);
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+    .brand-icon {
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      flex-shrink: 0;
+    }
+    .brand-name {
+      font-weight: 700;
+      font-size: 15px;
+      letter-spacing: -0.02em;
+    }
+    .ver-tag {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+      color: var(--subtle);
+      background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 10px 12px;
+      border-radius: 999px;
+      padding: 1px 6px;
+    }
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .lang-btn {
+      background: var(--surface);
+      color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 3px 7px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 160ms var(--ease), color 160ms var(--ease), border-color 160ms var(--ease);
+    }
+    .lang-btn:hover { background: var(--surface-hover); color: var(--fg); border-color: var(--border-strong); }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: var(--surface);
+      color: var(--muted);
+      border: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .status-pill.ok { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+    .status-pill.err { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+    .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+      flex-shrink: 0;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 12px;
       margin-bottom: 10px;
     }
-    .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px; }
-    .domain { font-weight: 600; font-size: 14px; word-break: break-all; }
-    .row { display: flex; gap: 8px; margin-top: 10px; }
-    button {
-      flex: 1;
-      border: 0;
+    .card-hdr {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .section-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--subtle);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .site-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .site-icon {
+      width: 32px;
+      height: 32px;
       border-radius: 8px;
-      padding: 8px 10px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      display: grid;
+      place-items: center;
+      color: var(--accent);
+      flex-shrink: 0;
+    }
+    .site-meta {
+      min-width: 0;
+      flex: 1;
+    }
+    .domain-title {
+      font-weight: 700;
+      font-size: 14px;
+      color: var(--fg);
+      word-break: break-all;
+      line-height: 1.3;
+    }
+    .site-sub {
+      font-size: 11.5px;
+      color: var(--subtle);
+      margin-top: 2px;
+      font-variant-numeric: tabular-nums;
+    }
+    .synced-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: var(--ok-soft);
+      color: var(--ok);
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin-top: 10px;
+      padding: 7px 9px;
+      border-radius: var(--radius-sm);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--muted);
+      cursor: pointer;
+      user-select: none;
+    }
+    .toggle-row input {
+      accent-color: var(--accent);
+      width: 14px;
+      height: 14px;
+      margin: 0;
+      cursor: pointer;
+    }
+
+    .btn-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      border-radius: 8px;
+      padding: 9px 12px;
       font-size: 13px;
       font-weight: 600;
       cursor: pointer;
+      border: 1px solid transparent;
+      transition: background 160ms var(--ease), border-color 160ms var(--ease), transform 120ms var(--ease), opacity 160ms var(--ease);
     }
-    button.primary { background: var(--accent); color: #ffffff; }
-    button.primary:hover:not(:disabled) { background: var(--accent-hover); }
-    button.secondary { background: var(--card); color: var(--fg); border: 1px solid var(--border); flex: 0 0 auto; }
-    button:disabled { opacity: 0.5; cursor: not-allowed; }
-    .msg { font-size: 12px; margin-top: 8px; min-height: 18px; word-break: break-word; }
-    .msg.ok { color: var(--ok); }
-    .msg.err { color: var(--danger); }
-    .code {
+    .btn:active:not(:disabled) { transform: scale(0.985); }
+    .btn:disabled { cursor: not-allowed; }
+    .btn-primary {
+      flex: 1;
+      background: var(--accent);
+      color: #ffffff;
+    }
+    @media (prefers-color-scheme: dark) {
+      .btn-primary { color: #052e16; }
+    }
+    .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+    .btn-primary:disabled {
+      background: var(--border);
+      color: var(--subtle);
+      opacity: 1;
+    }
+    .btn-secondary {
+      background: var(--bg);
+      color: var(--fg);
+      border-color: var(--border);
+    }
+    .btn-secondary:hover:not(:disabled) { background: var(--surface-hover); border-color: var(--border-strong); }
+    .btn-danger-ghost {
+      background: transparent;
+      color: var(--subtle);
+      border: none;
+      padding: 3px 6px;
+      font-size: 11.5px;
+      font-weight: 600;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .btn-danger-ghost:hover:not(:disabled) { background: var(--danger-soft); color: var(--danger); }
+    .btn-danger-ghost.confirming { background: var(--danger-soft); color: var(--danger); }
+
+    .feedback {
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+      font-size: 12px;
+      margin-top: 9px;
+      padding: 7px 9px;
+      border-radius: var(--radius-sm);
+      word-break: break-word;
+      font-variant-numeric: tabular-nums;
+    }
+    .feedback.ok { background: var(--ok-soft); color: var(--ok); }
+    .feedback.err { background: var(--danger-soft); color: var(--danger); }
+    .feedback.info { background: var(--accent-soft); color: var(--accent); }
+
+    /* Collapsible Other Tabs batch drawer */
+    .drawer-toggle {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: none;
+      border: none;
+      padding: 0;
+      color: var(--fg);
+      font-size: 12.5px;
+      font-weight: 600;
+      cursor: pointer;
+      text-align: left;
+    }
+    .drawer-toggle .chev {
+      color: var(--subtle);
+      transition: transform 180ms var(--ease);
+    }
+    .drawer-toggle[aria-expanded="true"] .chev { transform: rotate(180deg); }
+    .tabs-list {
+      margin-top: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      max-height: 140px;
+      overflow-y: auto;
+    }
+    .tab-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      border-radius: var(--radius-sm);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .tab-item:hover { border-color: var(--border-strong); }
+    .tab-item input { accent-color: var(--accent); margin: 0; cursor: pointer; }
+    .tab-domain { font-weight: 600; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    .tab-synced { font-size: 10.5px; color: var(--ok); font-weight: 600; flex-shrink: 0; }
+
+    /* Synced sessions list */
+    .session-list {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      max-height: 150px;
+      overflow-y: auto;
+    }
+    .session-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 6px 8px;
+      border-radius: var(--radius-sm);
+      background: var(--bg);
+      border: 1px solid var(--border);
+    }
+    .session-info { min-width: 0; flex: 1; }
+    .session-dom { font-weight: 600; font-size: 12.5px; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .session-counts { font-size: 11px; color: var(--subtle); font-variant-numeric: tabular-nums; }
+    .icon-btn {
+      width: 26px;
+      height: 26px;
+      display: grid;
+      place-items: center;
+      border-radius: 6px;
+      border: none;
+      background: transparent;
+      color: var(--subtle);
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: background 150ms var(--ease), color 150ms var(--ease);
+    }
+    .icon-btn:hover:not(:disabled) { background: var(--danger-soft); color: var(--danger); }
+
+    .code-box {
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: 11px;
       background: var(--bg);
       border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 6px 8px;
-      margin-top: 6px;
+      border-radius: var(--radius-sm);
+      padding: 7px 9px;
+      margin-top: 7px;
       word-break: break-all;
       user-select: all;
+      color: var(--fg);
     }
-    .muted { color: var(--muted); font-size: 11px; }
-    label.toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); margin-top: 6px; cursor: pointer; }
-    .hidden { display: none; }
+
+    .footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--subtle);
+      padding: 2px 2px 0;
+    }
+    .footer-shield {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .empty-hint {
+      font-size: 12px;
+      color: var(--subtle);
+      text-align: center;
+      padding: 8px 4px;
+    }
+
+    button:focus-visible, input:focus-visible {
+      outline: 2px solid var(--focus);
+      outline-offset: 2px;
+    }
+    .hidden { display: none !important; }
+    .spin { animation: sf-spin 800ms linear infinite; }
+    @keyframes sf-spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { transition: none !important; animation: none !important; }
+    }
   </style>
 </head>
 <body>
-  <div class="hdr">
-    <span class="title">sessfork</span>
-    <span id="hostBadge" class="badge">Checking host…</span>
-  </div>
+  <header class="topbar">
+    <div class="brand">
+      <img class="brand-icon" src="icons/icon48.png" alt="sessfork" width="24" height="24">
+      <span class="brand-name">sessfork</span>
+      <span id="verTag" class="ver-tag">v0.2.1</span>
+    </div>
+    <div class="topbar-right">
+      <button id="langBtn" class="lang-btn" type="button" aria-label="Switch language">中/EN</button>
+      <span id="hostBadge" class="status-pill" role="status" aria-live="polite">
+        <span class="dot" aria-hidden="true"></span>
+        <span id="hostBadgeText">Checking…</span>
+      </span>
+    </div>
+  </header>
 
-  <div class="card">
-    <div class="label">Active Site</div>
-    <div id="domainText" class="domain">—</div>
-    <label id="subToggleRow" class="toggle hidden">
+  <!-- Active Site Hero Card -->
+  <section class="card" aria-label="Active site">
+    <div class="card-hdr">
+      <span id="lblActiveSite" class="section-label">Active Site</span>
+      <span id="siteSyncedChip" class="synced-chip hidden"></span>
+    </div>
+    <div class="site-row">
+      <div class="site-icon" aria-hidden="true">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+        </svg>
+      </div>
+      <div class="site-meta">
+        <div id="domainText" class="domain-title">—</div>
+        <div id="siteSubText" class="site-sub"></div>
+      </div>
+    </div>
+
+    <label id="subToggleRow" class="toggle-row hidden">
       <input id="rootDomainToggle" type="checkbox">
-      <span id="rootDomainLabel">Include parent domain cookies</span>
+      <span id="rootDomainLabel">Also include parent domain</span>
     </label>
-    <div class="row">
-      <button id="syncBtn" class="primary" disabled>Fork This Site</button>
-      <button id="clearBtn" class="secondary" disabled>Clear</button>
-    </div>
-    <div id="statusMsg" class="msg"></div>
-  </div>
 
-  <div id="setupCard" class="card hidden">
-    <div class="label">One-Time Host Registration</div>
-    <div class="muted">Run this command once in your terminal (Windows / macOS / Linux) to connect Chrome to local <code>sessfork-mcp</code>:</div>
-    <div id="registerCmd" class="code"></div>
-    <div class="row">
-      <button id="copyCmdBtn" class="secondary" style="flex:1">Copy Registration Command</button>
+    <div class="btn-row">
+      <button id="syncBtn" class="btn btn-primary" type="button" disabled>
+        <svg id="syncIcon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>
+        </svg>
+        <span id="syncBtnText">Fork This Site</span>
+      </button>
+      <button id="clearBtn" class="btn btn-secondary hidden" type="button" disabled aria-label="Clear active site">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>
+        </svg>
+      </button>
     </div>
-  </div>
 
-  <div id="summaryText" class="muted">Local only · Zero cloud · Explicit per-click consent</div>
+    <div id="statusMsg" class="feedback hidden" role="status" aria-live="polite"></div>
+  </section>
+
+  <!-- Progressive Setup Card (only shown when native host is disconnected) -->
+  <section id="setupCard" class="card hidden" aria-label="Host registration">
+    <div class="card-hdr">
+      <span id="lblSetup" class="section-label">One-Time Host Registration</span>
+    </div>
+    <div id="setupHint" class="site-sub" style="margin-top:0"></div>
+    <div id="registerCmd" class="code-box"></div>
+    <div class="btn-row">
+      <button id="copyCmdBtn" class="btn btn-secondary" style="flex:1" type="button">Copy Command</button>
+      <button id="retryBtn" class="btn btn-primary" style="flex:0 0 auto" type="button">Retry</button>
+    </div>
+  </section>
+
+  <!-- Other Open Tabs Batch Fork Drawer -->
+  <section id="otherTabsCard" class="card hidden" aria-label="Batch sync open tabs">
+    <button id="otherTabsToggle" class="drawer-toggle" type="button" aria-expanded="false">
+      <span id="otherTabsTitle">Other Open Tabs (0)</span>
+      <svg class="chev" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <polyline points="6 9 12 15 18 9"/>
+      </svg>
+    </button>
+    <div id="otherTabsBody" class="hidden">
+      <div id="otherTabsList" class="tabs-list"></div>
+      <div class="btn-row">
+        <button id="batchSyncBtn" class="btn btn-primary" type="button" disabled>Fork Selected</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Synced Sessions List -->
+  <section id="sessionsCard" class="card hidden" aria-label="Synced sessions">
+    <div class="card-hdr">
+      <span id="lblSynced" class="section-label">Synced Sessions</span>
+      <button id="clearAllBtn" class="btn-danger-ghost hidden" type="button">Clear All</button>
+    </div>
+    <div id="sessionsList" class="session-list"></div>
+  </section>
+
+  <footer class="footer">
+    <span class="footer-shield">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+      </svg>
+      <span id="footerSecurity">Local only · Zero cloud · Per-click consent</span>
+    </span>
+    <span id="footerTotals" style="font-variant-numeric: tabular-nums;"></span>
+  </footer>
+
   <script src="popup.js"></script>
 </body>
 </html>

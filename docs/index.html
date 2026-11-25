@@ -992,7 +992,7 @@
       <p class="lead" data-i18n="heroLead"></p>
 
       <div class="install-bar">
-        <code class="install-code" id="hero-install-cmd"><span class="prompt-sign">$</span>curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.2.0/install.sh | bash</code>
+        <code class="install-code" id="hero-install-cmd"><span class="prompt-sign">$</span>curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.2.1/install.sh | bash</code>
         <button type="button" class="btn btn-primary" id="copy-install-btn" data-copy-target="heroInstall">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <rect x="9" y="9" width="13" height="13" rx="2"/>
@@ -1632,7 +1632,7 @@
         if (state.noCookies) flags.push("--no-cookies");
         const suffix = flags.length ? " " + flags.join(" ") : "";
         const cli = "sessfork " + doms.join(" ") + suffix;
-        const uvx = "uvx --from git+https://github.com/wasabihu/sessfork.git@v0.2.0 sessfork " + doms.join(" ") + suffix;
+        const uvx = "uvx --from git+https://github.com/wasabihu/sessfork.git@v0.2.1 sessfork " + doms.join(" ") + suffix;
 
         const browserCap = state.browser.charAt(0).toUpperCase() + state.browser.slice(1);
         const domList = doms.join(", ");
@@ -1815,7 +1815,7 @@
 
       document.getElementById("copy-install-btn").addEventListener("click", function () {
         const span = this.querySelector("span");
-        copyText("curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.2.0/install.sh | bash", this, span);
+        copyText("curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.2.1/install.sh | bash", this, span);
       });
 
       document.getElementById("copy-prompt-btn").addEventListener("click", function () {

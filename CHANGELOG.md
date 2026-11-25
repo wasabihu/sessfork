@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here. This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-11-25
+
+Real-machine Windows 10 QA bugfixes, zero-friction 1-command Windows installer (`install.ps1`), deterministic fixed Extension ID, and redesigned bilingual Companion Extension UI.
+
+### Fixed
+- **Windows `moli.exe` Auto-Discovery (`rust/sessfork-mcp/src/main.rs`)**: Added `%LOCALAPPDATA%\Moli\bin\moli.exe` (and `%LOCALAPPDATA%\Programs\Moli\bin\moli.exe`) ahead of legacy fallback paths in `find_moli_binary()`, matching `lexmount/moli`'s official `moli-installer.ps1` destination so `sessfork-mcp.exe` works out of the box with zero `--moli` flags.
+- **Chinese Windows `register-host` Mojibake (`rust/sessfork-mcp/src/native_host.rs`)**: Captured `reg.exe` stdout/stderr via `.output()` instead of inheriting console handles so localized GBK output (`操作成功完成。`) never prints as garbled bytes in UTF-8 terminals.
+- **`sessfork-mcp native-host --help` Blocking (`rust/sessfork-mcp/src/native_host.rs`)**: Handled `-h` / `--help` immediately with exit code `0` instead of blocking on stdin waiting for a Chrome Native Messaging frame.
+
+### Added & Improved
+- **Deterministic Fixed Extension ID (`eipgnmlpcpmadpbignmifidnbjfmlphm`) & Zero-Flag `register-host` (`extension/manifest.json`, `native_host.rs`)**: Embedded an RSA-2048 public key (`"key"`) and crisp vector-rendered brand icons (`extension/icons/{16,48,128}.png`) into the Manifest V3 Companion Extension, making `--extension-id` optional in `sessfork-mcp register-host`.
+- **True 1-Command Windows Installer (`install.ps1`)**: Automatically detects or installs `moli.exe`, adds both `sessfork-mcp` and `moli` to User PATH, pre-registers the fixed Native Messaging host (`register-host`), auto-wires detected AI coding clients (Antigravity / Cursor / Claude Code), and copies `%USERPROFILE%\.sessfork\extension` to the Windows clipboard for instant `Ctrl+V` loading.
+- **Redesigned Bilingual Companion Extension (`extension/popup.html`, `extension/popup.js`, `native_host.rs`)**: Minimalist Swiss UI with adaptive light/dark themes, auto-detected EN / 简体中文 switcher, per-domain `domainStats` (`cookies`, `httpOnlyCookies`, `origins`, `localStorageKeys`), collapsible multi-tab batch fork drawer, per-domain quick remove, 2-step safe Clear All, and progressive setup guidance.
+
 ## [0.2.0] - 2026-11-25
 
 Native Windows x64 support (zero Python, zero Node.js, zero Tokio), built-in Chrome/Edge Native Messaging host, and auditable Manifest V3 Companion Extension solving Chrome 127+ App-Bound Encryption (`v20`) without process injection.
@@ -88,6 +102,7 @@ First public release.
 - Bilingual documentation (English / 简体中文), SVG diagrams and an interactive guide on GitHub Pages.
 - `SECURITY.md` with threat model and private reporting channel.
 
+[0.2.1]: https://github.com/wasabihu/sessfork/releases/tag/v0.2.1
 [0.2.0]: https://github.com/wasabihu/sessfork/releases/tag/v0.2.0
 [0.1.6]: https://github.com/wasabihu/sessfork/releases/tag/v0.1.6
 [0.1.5]: https://github.com/wasabihu/sessfork/releases/tag/v0.1.5

@@ -1,8 +1,14 @@
 {
   "manifest_version": 3,
   "name": "sessfork — Local Session Bridge",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "User-consented 1-click Cookie & LocalStorage sync from Chrome/Edge to local sessfork-mcp (zero cloud, zero injection, native Windows Chrome v20 ABE support).",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAti6jmtaENyzYBbdhMh0R26odpwUw7TwC1hysJ8JACujoyd+r9T/+heWAvRAdWDi66Ntcdx/5vBcxhhv6Sj7Cdh+fzCJ/imQUjcft6UQLBTywgtttPWW6mIhLYnKsLrBG7SOVMW9KkON748BYBmOTMd58/i6CqVkzXlfozJT4km1/OjDmpi/FS/T8//SxBhF7sqH/KWWkOH/YAbbG8CEmNXgUWyXeWeNRw77rQANZgBxjO999MBpjepf8e9OIcx88GUJcN0bT1geDGwvDag46JgfBhzjOapkxGo+Nc5CWqsltCS0wFbaNTjXfjCD+QC3wyXv7o9rqASXHQb546oACcQIDAQAB",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "permissions": [
     "activeTab",
     "cookies",
@@ -15,6 +21,11 @@
   ],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "sessfork — Fork This Site"
+    "default_title": "sessfork — Fork This Site",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   }
 }

@@ -40,13 +40,12 @@ curl --proto '=https' --tlsv1.2 -fsSL \
   https://github.com/lexmount/moli/releases/latest/download/moli-installer.sh | sh
 
 # Install prebuilt ~784 KiB sessfork-mcp (macOS arm64/x64, Linux x64/arm64, SHA-256 verified)
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.2.0/install.sh | bash -s -- --rust-mcp-only
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.2.1/install.sh | bash -s -- --rust-mcp-only
 ```
 
-**Windows (PowerShell — zero Python / zero Node.js):**
+**Windows (PowerShell — 1 command, zero Python / zero Node.js; auto-installs `moli.exe`, registers fixed extension ID, wires AI clients):**
 
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://github.com/lexmount/moli/releases/latest/download/moli-installer.ps1 | iex"
 powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/wasabihu/sessfork/main/install.ps1 | iex"
 ```
 
@@ -92,7 +91,7 @@ Want your Moli MCP agent to browse **authenticated** sites (GitHub, Linear, Noti
 
 ```bash
 # Install full sessfork + sessfork-mcp together, then enable Dual mode (Rust Moli primary + lazy 0 MB Chrome fallback)
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.2.0/install.sh | bash -s -- --with-rust-mcp
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.2.1/install.sh | bash -s -- --with-rust-mcp
 sessfork --engine dual
 sessfork github.com linear.app
 ```
@@ -108,7 +107,7 @@ See the main [sessfork README](../../README.md) for full session-forking docs.
 | `--output-dir <PATH>` | `~/.sessfork/playwright-output` | Confined sandbox root for `browser_set_storage_state` hot-reload & screenshots |
 | `--layout` | off (DOM-first) | Enable Moli's on-demand layout engine (required for screenshots) |
 | `native-host` | auto-detected on Chrome launch | Run Chrome/Edge Native Messaging host (`com.wasabihu.sessfork`) for the [Companion Extension](../../extension/README.md) |
-| `register-host --extension-id <ID>` | `--browser all` | Register Native Messaging manifest in Chrome / Edge / Brave / Chromium (HKCU Registry on Windows, JSON manifest on macOS/Linux) |
+| `register-host [--extension-id <ID>]` | fixed ID + `--browser all` | Register Native Messaging manifest in Chrome / Edge / Brave / Chromium (HKCU Registry on Windows, JSON manifest on macOS/Linux; defaults to official fixed extension ID `eipgnmlpcpmadpbignmifidnbjfmlphm`) |
 | `setup --mcp-file <PATH>` | `--name sessfork-moli` | Atomically wire `sessfork-mcp` into an MCP JSON config (zero Python needed) |
 
 ## Native WebMCP & Structure-First Markdown (Zero Clicks, Zero Layout)

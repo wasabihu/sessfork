@@ -25,6 +25,8 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::io::AsRawFd;
 
 pub(crate) const NATIVE_HOST_NAME: &str = "com.wasabihu.sessfork";
+/// Deterministic Chrome/Edge extension ID derived from the public RSA key in `extension/manifest.json`.
+pub(crate) const DEFAULT_EXTENSION_ID: &str = "eipgnmlpcpmadpbignmifidnbjfmlphm";
 const MAX_INBOUND_MSG_BYTES: usize = 8 * 1024 * 1024;
 const MAX_OUTBOUND_MSG_BYTES: usize = 512 * 1024;
 const MAX_COOKIES_PER_SYNC: usize = 2_000;
@@ -571,6 +573,49 @@ fn summarize_domains(state: &StorageState) -> Vec<String> {
     set.into_iter().collect()
 }
 
+fn summarize_domain_stats(state: &StorageState) -> Vec<Value> {
+    use std::collections::BTreeMap;
+
+    #[derive(Default)]
+    struct Counts {
+        cookies: usize,
+        http_only: usize,
+        origins: usize,
+        ls_keys: usize,
+    }
+
+    let mut map: BTreeMap<String, Counts> = BTreeMap::new();
+    for c in &state.cookies {
+        let d = c.domain.trim().trim_start_matches('.').to_ascii_lowercase();
+        if !d.is_empty() {
+            let entry = map.entry(d).or_default();
+            entry.cookies += 1;
+            if c.http_only {
+                entry.http_only += 1;
+            }
+        }
+    }
+    for o in &state.origins {
+        if let Some(h) = origin_host(&o.origin) {
+            let entry = map.entry(h).or_default();
+            entry.origins += 1;
+            entry.ls_keys += o.local_storage.len();
+        }
+    }
+
+    map.into_iter()
+        .map(|(domain, c)| {
+            json!({
+                "domain": domain,
+                "cookies": c.cookies,
+                "httpOnlyCookies": c.http_only,
+                "origins": c.origins,
+                "localStorageKeys": c.ls_keys,
+            })
+        })
+        .collect()
+}
+
 /// Handle one decoded Chrome Native Messaging request JSON without ever echoing secret values.
 pub(crate) fn handle_native_message(
     msg: &Value,
@@ -589,11 +634,14 @@ pub(crate) fn handle_native_message(
         "status" => match load_existing_state_strict(state_path) {
             Ok(state) => {
                 let domains = summarize_domains(&state);
+                let domain_stats = summarize_domain_stats(&state);
                 json!({
                     "ok": true,
+                    "version": env!("CARGO_PKG_VERSION"),
                     "cookieCount": state.cookies.len(),
                     "originCount": state.origins.len(),
                     "domains": domains,
+                    "domainStats": domain_stats,
                     "statePath": state_path.display().to_string(),
                 })
             }
@@ -860,7 +908,14 @@ pub(crate) fn run_stdio_native_host(args: &[String]) -> i32 {
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
-        if let Some(val) = a.strip_prefix("--state-path=") {
+        if a == "-h" || a == "--help" {
+            println!(
+                "USAGE:\n  sessfork-mcp native-host [--state-path <PATH>] [--output-dir <PATH>]\n\n\
+                 Speaks Chrome/Edge Native Messaging (4-byte native-endian length-prefixed JSON on stdin/stdout).\n\
+                 Auto-activated when launched by Chrome/Edge with a `chrome-extension://<id>/` argument."
+            );
+            return 0;
+        } else if let Some(val) = a.strip_prefix("--state-path=") {
             state_path = PathBuf::from(val);
         } else if a == "--state-path" && i + 1 < args.len() {
             i += 1;
@@ -919,7 +974,8 @@ pub(crate) fn run_register_host(args: &[String]) -> i32 {
         let a = &args[i];
         if a == "-h" || a == "--help" {
             println!(
-                "USAGE:\n  sessfork-mcp register-host --extension-id <32-CHAR-ID> [--browser chrome|edge|brave|chromium|all] [--host-bin <PATH>]"
+                "USAGE:\n  sessfork-mcp register-host [--extension-id <32-CHAR-ID>] [--browser chrome|edge|brave|chromium|all] [--host-bin <PATH>]\n\n\
+                 Defaults --extension-id to the official sessfork companion extension ID ({DEFAULT_EXTENSION_ID})."
             );
             return 0;
         } else if let Some(val) = a.strip_prefix("--extension-id=") {
@@ -944,10 +1000,7 @@ pub(crate) fn run_register_host(args: &[String]) -> i32 {
         i += 1;
     }
 
-    let Some(raw_id) = ext_id else {
-        eprintln!("sessfork-mcp register-host: missing required --extension-id <32-char-id>");
-        return 2;
-    };
+    let raw_id = ext_id.unwrap_or_else(|| DEFAULT_EXTENSION_ID.to_string());
     let clean_id = match validate_chrome_extension_id(&raw_id) {
         Ok(id) => id,
         Err(e) => {
@@ -1102,13 +1155,18 @@ fn register_manifest_for_os(browser: &str, rendered: &str) -> Result<Vec<String>
         if browser != "all" && *name != browser {
             continue;
         }
-        let status = Command::new(&reg_exe)
+        let output = Command::new(&reg_exe)
             .args(["add", key, "/ve", "/t", "REG_SZ", "/d", &manifest_str, "/f"])
             .creation_flags(CREATE_NO_WINDOW)
-            .status()
+            .output()
             .map_err(|e| format!("Failed to run {} for {name}: {e}", reg_exe.display()))?;
-        if !status.success() {
-            return Err(format!("reg.exe failed for {key} with status {status}"));
+        if !output.status.success() {
+            let detail = String::from_utf8_lossy(&output.stderr);
+            return Err(format!(
+                "reg.exe failed for {key} with status {} ({})",
+                output.status,
+                detail.trim()
+            ));
         }
         written.push(format!("{key} -> {manifest_str}"));
     }
@@ -1297,6 +1355,7 @@ mod tests {
 
     #[test]
     fn validates_chrome_extension_ids_strictly() {
+        assert!(validate_chrome_extension_id(DEFAULT_EXTENSION_ID).is_ok());
         assert!(validate_chrome_extension_id("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").is_ok());
         assert!(validate_chrome_extension_id("abcdefghijklmnopabcdefghijklmnop").is_ok());
         assert!(validate_chrome_extension_id("short").is_err());
@@ -1363,6 +1422,23 @@ mod tests {
 
         assert_eq!(r3["ok"], true);
         assert_eq!(r3["originCount"], 2);
+        assert_eq!(r3["version"], env!("CARGO_PKG_VERSION"));
+        assert!(!r3.to_string().contains("gh_tok"));
+        assert!(!r3.to_string().contains("secret_app"));
+        let stats = r3["domainStats"]
+            .as_array()
+            .expect("domainStats array present");
+        let gh_stat = stats
+            .iter()
+            .find(|s| s["domain"] == "github.com")
+            .expect("github.com stats present");
+        assert_eq!(gh_stat["cookies"], 1);
+        let app_stat = stats
+            .iter()
+            .find(|s| s["domain"] == "app.github.com")
+            .expect("app.github.com stats present");
+        assert_eq!(app_stat["origins"], 1);
+        assert_eq!(app_stat["localStorageKeys"], 1);
 
         let saved = load_storage_state_file(&state_path).expect("load state");
         let mirrored = load_storage_state_file(&mirror_path).expect("load mirror");
@@ -1376,5 +1452,11 @@ mod tests {
         assert_eq!(fs::read_to_string(&state_path).unwrap(), "{corrupt json");
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn native_host_help_exits_zero_without_blocking_on_stdin() {
+        assert_eq!(run_stdio_native_host(&["--help".to_string()]), 0);
+        assert_eq!(run_stdio_native_host(&["-h".to_string()]), 0);
     }
 }

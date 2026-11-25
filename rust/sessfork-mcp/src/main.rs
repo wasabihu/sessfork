@@ -16,6 +16,24 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 
+#[cfg(any(windows, test))]
+fn local_app_data_moli_candidates(local_app_data: &Path) -> Vec<PathBuf> {
+    vec![
+        // Official `moli-installer.ps1` default location: `%LOCALAPPDATA%\Moli\bin\moli.exe`
+        local_app_data.join("Moli").join("bin").join("moli.exe"),
+        local_app_data.join("moli").join("moli.exe"),
+        local_app_data
+            .join("Programs")
+            .join("Moli")
+            .join("bin")
+            .join("moli.exe"),
+        local_app_data
+            .join("Programs")
+            .join("moli")
+            .join("moli.exe"),
+    ]
+}
+
 fn find_moli_binary(explicit: Option<&str>) -> Result<PathBuf, String> {
     if let Some(p) = explicit {
         let pb = PathBuf::from(p);
@@ -69,13 +87,7 @@ fn find_moli_binary(explicit: Option<&str>) -> Result<PathBuf, String> {
         if let Ok(local_app) = env::var("LOCALAPPDATA") {
             let trimmed = local_app.trim();
             if !trimmed.is_empty() {
-                candidates.push(Path::new(trimmed).join("moli").join("moli.exe"));
-                candidates.push(
-                    Path::new(trimmed)
-                        .join("Programs")
-                        .join("moli")
-                        .join("moli.exe"),
-                );
+                candidates.extend(local_app_data_moli_candidates(Path::new(trimmed)));
             }
         }
     }
@@ -244,4 +256,19 @@ fn main() {
         }
     }
     // Dropping `manager` closes FD 3 -> sends EOF to `moli serve --remote-debugging-pipe` -> clean exit.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn includes_official_windows_moli_installer_bin_path() {
+        let base = Path::new("/tmp/fake_local_app_data");
+        let cands = local_app_data_moli_candidates(base);
+        assert_eq!(
+            cands.first().cloned(),
+            Some(base.join("Moli").join("bin").join("moli.exe"))
+        );
+    }
 }

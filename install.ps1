@@ -1,14 +1,17 @@
-# One-line Windows installer for sessfork-mcp (zero Python, zero Node.js, SHA-256 verified).
+# One-line Windows installer for sessfork-mcp + Companion Extension + Moli (zero Python, zero Node.js, SHA-256 verified).
 #
 # Usage:
 #   powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/wasabihu/sessfork/main/install.ps1 | iex"
 #
 # Optional environment variables:
-#   $env:SESSFORK_VERSION = "v0.2.0"
-#   $env:SESSFORK_INSTALL_DIR = "$env:USERPROFILE\.local\bin"
+#   $env:SESSFORK_VERSION        = "v0.2.1"
+#   $env:SESSFORK_INSTALL_DIR    = "$env:USERPROFILE\.local\bin"
+#   $env:SESSFORK_SKIP_MOLI      = "1"   # Skip auto-installing lexmount/moli if missing
+#   $env:SESSFORK_SKIP_MCP_SETUP = "1"   # Skip auto-wiring detected AI client MCP configs
 
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { $null = $_ }
 
 $Repo = "wasabihu/sessfork"
 $InstallDir = if ($env:SESSFORK_INSTALL_DIR) { $env:SESSFORK_INSTALL_DIR.Trim() } else { Join-Path $env:USERPROFILE ".local\bin" }
@@ -27,7 +30,7 @@ if (-not $Version) {
     $Version = $Release.tag_name
 }
 if (-not $Version -or $Version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$') {
-    throw "Invalid release tag '$Version' (expected semantic version tag like v0.2.0)."
+    throw "Invalid release tag '$Version' (expected semantic version tag like v0.2.1)."
 }
 
 $Asset = "sessfork-mcp-windows-x64.zip"
@@ -44,11 +47,41 @@ function Get-ExpectedChecksum {
     return $null
 }
 
+function Add-UserPathDir {
+    param([string]$Dir)
+    if ([string]::IsNullOrWhiteSpace($Dir) -or $Dir.Contains(";") -or -not (Test-Path $Dir)) {
+        return
+    }
+    $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $PathParts = if ($UserPath) { $UserPath -split ";" | Where-Object { $_ } } else { @() }
+    if ($PathParts -notcontains $Dir) {
+        $NewPath = ($PathParts + $Dir) -join ";"
+        [Environment]::SetEnvironmentVariable("Path", $NewPath, "User")
+        $env:Path = "$Dir;$env:Path"
+        Write-Host "  + Added $Dir to User PATH"
+    }
+}
+
+function Find-LocalMoli {
+    $cmd = Get-Command "moli.exe" -ErrorAction SilentlyContinue
+    if ($cmd -and (Test-Path $cmd.Source)) { return $cmd.Source }
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA "Moli\bin\moli.exe"),
+        (Join-Path $env:USERPROFILE ".local\bin\moli.exe"),
+        (Join-Path $env:USERPROFILE ".cargo\bin\moli.exe"),
+        (Join-Path $env:LOCALAPPDATA "moli\moli.exe")
+    )
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path $c)) { return $c }
+    }
+    return $null
+}
+
 $TmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ("sessfork-install-" + [System.Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $TmpDir | Out-Null
 
 try {
-    Write-Host "Downloading sessfork-mcp $Version (windows-x64)..."
+    Write-Host "[1/4] Downloading sessfork-mcp $Version (windows-x64)..."
     $ZipPath = Join-Path $TmpDir $Asset
     $SumsPath = Join-Path $TmpDir "SHA256SUMS.txt"
     Invoke-WebRequest -Uri "$BaseUrl/$Asset" -OutFile $ZipPath -UseBasicParsing
@@ -68,9 +101,11 @@ try {
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     $DestBin = Join-Path $InstallDir "sessfork-mcp.exe"
     Copy-Item -Path (Join-Path $ExtractDir "sessfork-mcp.exe") -Destination $DestBin -Force
+    Add-UserPathDir -Dir $InstallDir
+    $VerOut = & $DestBin --version
+    Write-Host "  OK: $VerOut -> $DestBin"
 
-    # Download companion extension archive only if published in this release (HTTP 404 = not bundled).
-    # Once downloaded, SHA-256 verification is strictly fail-closed outside the download catch!
+    # Download companion extension archive (HTTP 404 = not bundled; any other failure or checksum mismatch aborts).
     $ExtZip = Join-Path $TmpDir $ExtAsset
     $ExtDownloaded = $false
     try {
@@ -82,7 +117,7 @@ try {
             $StatusCode = [int]$_.Exception.Response.StatusCode
         }
         if ($StatusCode -eq 404) {
-            Write-Host "Note: companion extension archive not bundled in $Version (clone extension/ from GitHub)."
+            Write-Host "  Note: companion extension archive not bundled in $Version."
         } else {
             throw
         }
@@ -100,29 +135,73 @@ try {
         if (Test-Path $ExtDir) { Remove-Item -Recurse -Force $ExtDir }
         New-Item -ItemType Directory -Force -Path $ExtDir | Out-Null
         Expand-Archive -Path $ExtZip -DestinationPath $ExtDir -Force
-        Write-Host "Installed verified companion extension -> $ExtDir"
+        Write-Host "  OK: Companion extension -> $ExtDir"
     }
 
-    # Add $InstallDir to current user's PATH if missing.
-    $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    $PathParts = if ($UserPath) { $UserPath -split ";" | Where-Object { $_ } } else { @() }
-    if ($PathParts -notcontains $InstallDir) {
-        $NewPath = ($PathParts + $InstallDir) -join ";"
-        [Environment]::SetEnvironmentVariable("Path", $NewPath, "User")
-        $env:Path = "$InstallDir;$env:Path"
-        Write-Host "Added $InstallDir to your User PATH."
+    Write-Host "[2/4] Checking Moli headless browser engine..."
+    $MoliPath = Find-LocalMoli
+    if (-not $MoliPath -and $env:SESSFORK_SKIP_MOLI -ne "1") {
+        Write-Host "  Installing lexmount/moli via official installer..."
+        $MoliInstaller = Join-Path $TmpDir "moli-installer.ps1"
+        Invoke-WebRequest -Uri "https://github.com/lexmount/moli/releases/latest/download/moli-installer.ps1" -OutFile $MoliInstaller -UseBasicParsing
+        & powershell -NoProfile -ExecutionPolicy ByPass -File $MoliInstaller
+        $MoliPath = Find-LocalMoli
+    }
+    if ($MoliPath) {
+        Add-UserPathDir -Dir (Split-Path -Parent $MoliPath)
+        $MoliVer = & $MoliPath --version
+        Write-Host "  OK: $MoliVer -> $MoliPath"
+    } else {
+        Write-Host "  Skipped Moli auto-install (run moli-installer.ps1 later if needed)."
     }
 
-    $VerOut = & $DestBin --version
-    Write-Host "Installed $VerOut -> $DestBin"
+    Write-Host "[3/4] Registering Chrome/Edge/Brave Native Messaging host (fixed extension ID)..."
+    & $DestBin register-host
+    if ($LASTEXITCODE -ne 0) {
+        throw "sessfork-mcp register-host exited with code $LASTEXITCODE"
+    }
+
+    Write-Host "[4/4] Auto-wiring detected AI coding clients..."
+    $Wired = @()
+    if ($env:SESSFORK_SKIP_MCP_SETUP -ne "1") {
+        $ClientTargets = @(
+            @{ Name = "Antigravity";        Path = (Join-Path $env:USERPROFILE ".gemini\config\mcp_config.json");      Dir = (Join-Path $env:USERPROFILE ".gemini\config") },
+            @{ Name = "Antigravity Legacy"; Path = (Join-Path $env:USERPROFILE ".gemini\antigravity\mcp_config.json"); Dir = $null },
+            @{ Name = "Cursor";             Path = (Join-Path $env:USERPROFILE ".cursor\mcp.json");                    Dir = (Join-Path $env:USERPROFILE ".cursor") },
+            @{ Name = "Claude Code";        Path = (Join-Path $env:USERPROFILE ".claude.json");                        Dir = $null }
+        )
+        foreach ($T in $ClientTargets) {
+            $Exists = (Test-Path $T.Path) -or ($T.Dir -and (Test-Path $T.Dir))
+            if ($Exists) {
+                & $DestBin setup --mcp-file $T.Path
+                if ($LASTEXITCODE -eq 0) {
+                    $Wired += "$($T.Name) ($($T.Path))"
+                } else {
+                    Write-Host "  Warning: skipped $($T.Name) ($($T.Path)) due to setup exit code $LASTEXITCODE"
+                }
+            }
+        }
+    }
+    if ($Wired.Count -eq 0) {
+        Write-Host '  No pre-existing MCP config detected. Wire manually anytime via:'
+        Write-Host '    sessfork-mcp setup --mcp-file "$env:USERPROFILE\.cursor\mcp.json"'
+    }
+
+    $ClipboardNote = ""
+    if ($ExtDownloaded) {
+        try {
+            Set-Clipboard -Value $ExtDir
+            $ClipboardNote = " (path copied to clipboard - just press Ctrl+V + Enter!)"
+        } catch {
+            $null = $_
+        }
+    }
+
     Write-Host ""
-    Write-Host "Next steps:"
-    Write-Host "  1. Install Moli headless engine (if not installed):"
-    Write-Host '     powershell -ExecutionPolicy ByPass -c "irm https://github.com/lexmount/moli/releases/latest/download/moli-installer.ps1 | iex"'
-    Write-Host "  2. Load unpacked Chrome/Edge extension from: $ExtDir"
-    Write-Host '  3. Click the sessfork extension icon and run: sessfork-mcp register-host --extension-id <ID>'
-    Write-Host "  4. Wire into your AI client, e.g.:"
-    Write-Host "     sessfork-mcp setup --mcp-file `"$env:USERPROFILE\.cursor\mcp.json`""
+    Write-Host "All set! Only 1 quick browser step left:"
+    Write-Host "  1. Open chrome://extensions (or edge://extensions), enable Developer mode,"
+    Write-Host "     click 'Load unpacked' and select: $ExtDir$ClipboardNote"
+    Write-Host "  2. Click the sessfork icon on any logged-in site (already Connected!) -> Fork This Site."
 } finally {
     if (Test-Path $TmpDir) { Remove-Item -Recurse -Force $TmpDir }
 }

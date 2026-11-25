@@ -20,7 +20,7 @@ When AI coding agents ([Google Antigravity](https://antigravity.google/docs/comm
 > **Looking for `sessfork-mcp` × [`lexmount/moli`](https://github.com/lexmount/moli) (605 KB zero-Node.js Rust MCP)?**
 > Independently verified by the Moli team at **`-90.7%` RAM (`226.3 MiB` vs `2,439.5 MiB`) and `2.76×` faster** than Chrome + Playwright MCP (Apple M4, 5-run medians — [Discussion #3465](https://github.com/lexmount/moli/discussions/3465#discussioncomment-19846839)).
 > - **Standalone Moli MCP (no Python or Chrome required):** see **[rust/sessfork-mcp/README.md](rust/sessfork-mcp/README.md)** (`install.sh --rust-mcp-only` + 1-line `claude mcp add`).
-> - **Chrome session forking + Dual Moli/Chrome engine:** run `curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.2.0/install.sh | bash -s -- --with-rust-mcp` and `sessfork --engine dual` (full breakdown in [docs/benchmarks.md](docs/benchmarks.md)).
+> - **Chrome session forking + Dual Moli/Chrome engine:** run `curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.2.1/install.sh | bash -s -- --with-rust-mcp` and `sessfork --engine dual` (full breakdown in [docs/benchmarks.md](docs/benchmarks.md)).
 
 ---
 
@@ -35,13 +35,13 @@ When AI coding agents ([Google Antigravity](https://antigravity.google/docs/comm
 Auto-detects installed AI tools (**Antigravity**, **Claude Code**, **Cursor**), registers the background `sessfork-browser` MCP server, and installs the global Agent `SKILL.md`:
 
 ```bash
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.2.0/install.sh | bash
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.2.1/install.sh | bash
 ```
 
 Want to fork your first domains in the very same command? Pass them right after `--`:
 
 ```bash
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.2.0/install.sh | bash -s -- github.com linear.app
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.2.1/install.sh | bash -s -- github.com linear.app
 ```
 
 *(Note: On each cookie fork, macOS asks to read `"Chrome Safe Storage"` from Keychain — click **Allow**. For pure LocalStorage JWT sites, pass `--no-cookies` for zero Keychain prompts. See the FAQ for the opt-in `--cache-key`.)*
@@ -157,7 +157,7 @@ Measured locally on Apple Silicon (`macOS 26.6.2 arm64`, M5 24 GB, Python 3.14.7
 
 ```bash
 # Optional: install the 605 KB prebuilt native Rust CDP MCP binary (SHA-256 verified, no Cargo needed)
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.2.0/install.sh | bash -s -- --rust-mcp-only
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.2.1/install.sh | bash -s -- --rust-mcp-only
 
 # Or build from source (Rust >=1.75; auto-used by --engine moli / dual)
 cargo install --git https://github.com/wasabihu/sessfork sessfork-mcp
@@ -232,10 +232,9 @@ By default `sessfork` does **not** store the derived decryption key anywhere, so
 
 - **macOS (`arm64` / `x64`)**: fully supported and tested on real Chrome profiles, with prebuilt `sessfork-mcp` binaries.
 - **Linux (`x64` / `arm64`)**: supported (in-memory OpenSSL `libcrypto` AES-128-CBC + Secret Service / `peanuts`, verified on Ubuntu CI, with prebuilt `sessfork-mcp` binaries for `x64` & `arm64`).
-- **Windows (`x64`, zero Python / zero Node.js)**: natively supported via the standalone Rust `sessfork-mcp.exe` (`~784 KiB`, loopback RFC 6455 WebSocket CDP on kernel-assigned `--port 0` + Win32 Job Object zero-orphan reaping + `CREATE_NO_WINDOW`) paired with Windows [`moli.exe`](https://github.com/lexmount/moli) and the ~200-line auditable [Companion Chrome/Edge Extension](extension/README.md). Instead of process injection or privilege escalation against Chrome 127+ App-Bound Encryption (`v20`), Chrome decrypts cookies itself upon explicit user click ("Fork This Site") and syncs over Native Messaging (`com.wasabihu.sessfork`). Install with:
+- **Windows (`x64`, zero Python / zero Node.js)**: natively supported via the standalone Rust `sessfork-mcp.exe` (`~784 KiB`, loopback RFC 6455 WebSocket CDP on kernel-assigned `--port 0` + Win32 Job Object zero-orphan reaping + `CREATE_NO_WINDOW`) paired with Windows [`moli.exe`](https://github.com/lexmount/moli) and the auditable bilingual [Companion Chrome/Edge Extension](extension/README.md). Instead of process injection or privilege escalation against Chrome 127+ App-Bound Encryption (`v20`), Chrome decrypts cookies itself upon explicit user click ("Fork This Site") and syncs over Native Messaging (`com.wasabihu.sessfork`). One-command install (auto-installs `moli.exe`, registers the fixed extension ID, wires detected AI clients, and copies the extension path to your clipboard):
   ```powershell
   powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/wasabihu/sessfork/main/install.ps1 | iex"
-  powershell -ExecutionPolicy ByPass -c "irm https://github.com/lexmount/moli/releases/latest/download/moli-installer.ps1 | iex"
   ```
 
 </details>
