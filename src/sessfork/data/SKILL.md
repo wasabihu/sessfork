@@ -34,7 +34,7 @@ sessfork --refresh                        # Refresh all existing saved domains i
 
 If `sessfork` is not yet on global `$PATH`, run via `uvx` or from a local source checkout:
 ```bash
-uvx --from git+https://github.com/wasabihu/sessfork.git@v0.1.5 sessfork <domain>
+uvx --from git+https://github.com/wasabihu/sessfork.git@v0.1.6 sessfork <domain>
 # Or from a local repo root: PYTHONPATH=src python3 -m sessfork <domain>
 ```
 

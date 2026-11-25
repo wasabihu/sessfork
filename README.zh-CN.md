@@ -20,7 +20,7 @@
 > **冲着 `sessfork-mcp` × [`lexmount/moli`](https://github.com/lexmount/moli)（605 KB 零 Node.js 纯 Rust MCP）来的？**
 > 经 Moli 团队在 Apple M4（24 GB）5 轮中位数独立复现：**总内存 `-90.7%`（`226.3 MiB` vs `2,439.5 MiB`）、速度快 `2.76×`**（[Discussion #3465](https://github.com/lexmount/moli/discussions/3465#discussioncomment-19846839)）。
 > - **纯 Moli 独立使用（无需 Python / Node.js / Chrome）：** 直达 **[rust/sessfork-mcp/README.md](rust/sessfork-mcp/README.md)**（`install.sh --rust-mcp-only` + 一行 `claude mcp add`）。
-> - **Chrome 登录态分叉 + Moli/Chrome 双通道引擎：** 执行 `curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.1.5/install.sh | bash -s -- --with-rust-mcp` 与 `sessfork --engine dual`（完整基准见 [docs/benchmarks.md](docs/benchmarks.md)）。
+> - **Chrome 登录态分叉 + Moli/Chrome 双通道引擎：** 执行 `curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.1.6/install.sh | bash -s -- --with-rust-mcp` 与 `sessfork --engine dual`（完整基准见 [docs/benchmarks.md](docs/benchmarks.md)）。
 
 ---
 
@@ -33,13 +33,13 @@
 自动检测本机已安装的 **Antigravity / Claude Code / Cursor**，自动注册 `sessfork-browser` 无头 MCP 服务并安装全局 Agent `SKILL.md`：
 
 ```bash
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.1.5/install.sh | bash
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.1.6/install.sh | bash
 ```
 
 如果你想顺手把常用网站登录态也一起同步好，直接把域名接在后面即可：
 
 ```bash
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.1.5/install.sh | bash -s -- github.com linear.app
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.1.6/install.sh | bash -s -- github.com linear.app
 ```
 
 *(提示：每次提取 Cookie 时，macOS 会弹窗请求读取钥匙串 `"Chrome Safe Storage"`，点击 **允许** 即可。如果目标网站只用 LocalStorage JWT 登录，加 `--no-cookies` 可做到全程零弹窗。想免弹窗可参考 FAQ 里的 `--cache-key`（需自行权衡）。)*
@@ -153,7 +153,7 @@ sessfork console.cloud.google.com --profile "Profile 1"
 
 ```bash
 # 可选：一键下载 605 KB 预编译纯 Rust 原生 CDP MCP（带 SHA-256 校验、免装 Cargo）
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.1.5/install.sh | bash -s -- --rust-mcp-only
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.1.6/install.sh | bash -s -- --rust-mcp-only
 
 # 或从源码安装（Rust >=1.75；装完后 --engine moli / dual 自动直连）
 cargo install --git https://github.com/wasabihu/sessfork sessfork-mcp

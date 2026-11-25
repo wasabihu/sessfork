@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here. This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.1.6] - 2026-11-25
+
+Auth-to-XERJ zero-dependency ingestion skill, Official MCP Registry manifest, and automated PyPI Trusted Publisher release pipeline.
+
+### Added
+- **Auth-to-XERJ Ingest Skill (`skills/xerj-auth-ingest/`)**: Added `SKILL.md` and zero-dependency stdlib cleaner `ingest_to_xerj.py` to convert authenticated HTML/Markdown/JSONL captures into UTF-8 Markdown with YAML frontmatter, built-in secret/JWT/Bearer/Cookie redaction (`<REDACTED>`), loopback-only XERJ URL validation, path-traversal guards, dry-run default, and safe `xerj autoindex` invocation, plus unit & isolated E2E tests (`tests/test_xerj_auth_ingest.py`) and XERJ ecosystem cross-links in `README.md` / `README.zh-CN.md`.
+- **Official MCP Registry & PyPI Publishing (`server.json`, `.github/workflows/release.yml`)**: Added `server.json` (`io.github.wasabihu/sessfork`) and automated PyPI Trusted Publisher (`uv build` + OIDC) and Official MCP Registry publishing jobs on `v*` tags.
+
 ## [0.1.5] - 2026-11-25
 
 Comprehensive security hardening release across the Python CLI, local Studio UI, installer/CI supply chain, and native Rust `sessfork-mcp` server, plus native Moli WebMCP bridge and structure-first Markdown extraction.
@@ -70,6 +78,7 @@ First public release.
 - Bilingual documentation (English / 简体中文), SVG diagrams and an interactive guide on GitHub Pages.
 - `SECURITY.md` with threat model and private reporting channel.
 
+[0.1.6]: https://github.com/wasabihu/sessfork/releases/tag/v0.1.6
 [0.1.5]: https://github.com/wasabihu/sessfork/releases/tag/v0.1.5
 [0.1.4]: https://github.com/wasabihu/sessfork/releases/tag/v0.1.4
 [0.1.3]: https://github.com/wasabihu/sessfork/releases/tag/v0.1.3
