@@ -271,6 +271,26 @@ sessfork --setup
 
 ---
 
+## 登录后页面静默入库 XERJ（`skills/xerj-auth-ingest`）
+
+想在不打断前台 Chrome 的前提下，把需要登录的 Notion、飞书、Confluence 或内部投研页面静默清洗并索引到本地全文检索引擎，同时严防 Cookie/Token 误入知识库？
+
+- 参见 **[`skills/xerj-auth-ingest/SKILL.md`](skills/xerj-auth-ingest/SKILL.md)** 与零依赖清洗脚本 [`skills/xerj-auth-ingest/ingest_to_xerj.py`](skills/xerj-auth-ingest/ingest_to_xerj.py)：
+  - 将抓取的 HTML / Markdown / JSONL 转为带 YAML Frontmatter（`source_url`、`captured_at`、`title`、`domain`）的纯净 UTF-8 Markdown，剥离 `<script>`/`<style>`/`<svg>` 与页面杂项并完整保留中文/CJK 内容。
+  - **落盘前密钥自动脱敏**：内置正则将误带入的 `Authorization: Bearer ...`、`ApiKey ...`、`Cookie: ...`、`hf_...`、`ghp_...`、`sk-...` 与 JWT（`eyJ...`）统一替换为 `<REDACTED>`，杜绝凭据进入索引。
+  - 默认 `--dry-run` 仅落盘预览不写索引，默认强制 XERJ 仅限本机回环地址（`127.0.0.1` / `::1` / `localhost`）并拦截 `..` 路径穿越；确认无误后加 `--index` 调用 `xerj autoindex`。
+
+### 已验证的 XERJ 开源生态闭环
+
+| 环节 | 项目 / 公开模型 | 在本地优先 AI 栈中的职责 |
+| :--- | :--- | :--- |
+| **1. 静默采集清洗** | **[`wasabihu/sessfork`](https://github.com/wasabihu/sessfork)**（`skills/xerj-auth-ingest/`） | 零抢焦点分叉登录态（`sessfork-moli` / `sessfork-browser`）+ 自动脱敏 HTML/Markdown/JSONL 清洗入库。 |
+| **2. 索引与双语语义检索** | **[`xerj-org/xerj`](https://github.com/xerj-org/xerj)** + HF **[`wasabihu/xerj-bilingual-fin-law-384`](https://huggingface.co/wasabihu/xerj-bilingual-fin-law-384)**（MIT）与 **[`wasabihu/VeriCorpus-Reranker-0.6B`](https://huggingface.co/wasabihu/VeriCorpus-Reranker-0.6B)**（Apache-2.0） | 单二进制 Rust 检索引擎（空载约 `9.9 MB` RSS），搭配中英金融/法律 384d 向量模型与 0.6B 重排模型。 |
+| **3. 只读断网 MCP 防火墙** | **[`wasabihu/kbwall`](https://github.com/wasabihu/kbwall)** | 约 `1 MB` 纯 Rust 只读回环 MCP 防火墙，内置离线全 BMP 汉字繁简/拼音/法条增强，输出 `xerj://` 证据 URI。 |
+| **4. 逐字引文核验与基准语料** | **[`wasabihu/claimcite`](https://github.com/wasabihu/claimcite)** + **[`wasabihu/vericorpus`](https://github.com/wasabihu/vericorpus)** | 对 DOI/PMID 及 `xerj://` 证据 URI 做逐字引文防篡改校验（`claimcite`），配合审计级中英金融/法条评测集（`vericorpus`）。 |
+
+---
+
 ## 安全设计与合规边界
 
 - **默认域名白名单最小化提取**：仅提取你显式指定的域名与 Origin，绝不顺带导出整个浏览器的无关网站凭证。

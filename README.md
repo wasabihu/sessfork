@@ -275,6 +275,26 @@ Check `sessfork --status` to confirm the detected binary and pinned config statu
 
 ---
 
+## Auth-to-XERJ Local Knowledge Ingest (`skills/xerj-auth-ingest`)
+
+Need to silently capture authenticated Notion, Feishu, Confluence, or internal research pages into a local searchable knowledge base without touching your foreground Chrome window or leaking tokens?
+
+- Read **[`skills/xerj-auth-ingest/SKILL.md`](skills/xerj-auth-ingest/SKILL.md)** and run the zero-dependency helper [`skills/xerj-auth-ingest/ingest_to_xerj.py`](skills/xerj-auth-ingest/ingest_to_xerj.py):
+  - Converts captured HTML / Markdown / JSONL into clean UTF-8 Markdown with YAML frontmatter (`source_url`, `captured_at`, `title`, `domain`), stripping `<script>`/`<style>`/`<svg>`/boilerplate while preserving CJK text.
+  - Scrubs accidental `Authorization: Bearer ...`, `ApiKey ...`, `Cookie: ...`, `hf_...`, `ghp_...`, `sk-...`, and JWT (`eyJ...`) secrets into `<REDACTED>` **before** writing Markdown.
+  - Defaults to `--dry-run` and enforces loopback-only XERJ URLs (`127.0.0.1` / `::1` / `localhost`) plus path-traversal rejection; pass `--index` to run `xerj autoindex`.
+
+### Verified XERJ Open Ecosystem
+
+| Stage | Project / Model | Role in the Local-First AI Stack |
+| :--- | :--- | :--- |
+| **1. Capture** | **[`wasabihu/sessfork`](https://github.com/wasabihu/sessfork)** (`skills/xerj-auth-ingest/`) | Zero-focus-theft Chrome auth fork (`sessfork-moli` / `sessfork-browser`) + secret-redacting HTML/Markdown/JSONL cleaner into local XERJ. |
+| **2. Index & Neural Retrieval** | **[`xerj-org/xerj`](https://github.com/xerj-org/xerj)** + HF **[`wasabihu/xerj-bilingual-fin-law-384`](https://huggingface.co/wasabihu/xerj-bilingual-fin-law-384)** *(MIT)* & **[`wasabihu/VeriCorpus-Reranker-0.6B`](https://huggingface.co/wasabihu/VeriCorpus-Reranker-0.6B)** *(Apache-2.0)* | Single-binary Rust ES-compatible search engine (`~9.9 MB` idle RSS) paired with compact bilingual CJK/EN financial & legal embedding and reranker models. |
+| **3. Read-Only Agent Firewall** | **[`wasabihu/kbwall`](https://github.com/wasabihu/kbwall)** | `~1 MB` air-gapped, loopback-only read-only Rust MCP firewall for XERJ with offline BMP CJK enhancement and `xerj://` evidence URIs. |
+| **4. Citation & Corpus Verification** | **[`wasabihu/claimcite`](https://github.com/wasabihu/claimcite)** + **[`wasabihu/vericorpus`](https://github.com/wasabihu/vericorpus)** | Verifies verbatim quotes against DOIs/PMIDs and `xerj://` evidence URIs (`claimcite`), backed by audit-grade CJK/fin/law benchmarks (`vericorpus`). |
+
+---
+
 ## Security & Responsible Use
 
 - **Domain Allowlist by Default**: Only the domains/origins you explicitly name are extracted.
