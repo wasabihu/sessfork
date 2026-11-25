@@ -148,11 +148,13 @@ def build_edge_zip() -> tuple[pathlib.Path, str]:
                 raise FileNotFoundError(f"Missing required extension file: {src}")
             zf.write(src, rel)
 
-    # Verify the generated archive has no "key" field and valid JSON.
+    # Verify the generated archive meets Microsoft Partner Center manifest limits.
     with zipfile.ZipFile(zip_path, "r") as zf:
         check = json.loads(zf.read("manifest.json").decode("utf-8"))
         assert "key" not in check, "manifest.json in Edge Store ZIP must NOT contain 'key'"
         assert check["manifest_version"] == 3
+        assert len(check["name"]) <= 45, f"name exceeds 45 chars: {len(check['name'])}"
+        assert len(check["description"]) <= 132, f"description exceeds 132 chars: {len(check['description'])}"
     return zip_path, version
 
 
