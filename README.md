@@ -320,3 +320,5 @@ See [docs/benchmarks.md](docs/benchmarks.md) for measured macOS ARM64 results (1
 ## License
 
 [MIT](LICENSE)
+
+<!-- mcp-name: io.github.wasabihu/sessfork -->

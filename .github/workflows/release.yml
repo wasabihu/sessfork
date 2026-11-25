@@ -109,3 +109,87 @@ jobs:
               dist/sessfork-mcp-*.tar.gz \
               dist/SHA256SUMS.txt
           fi
+
+  build-pypi:
+    name: Build Python sdist & wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          python-version: "3.12"
+      - name: Verify tag matches pyproject.toml and server.json
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import json, os, tomllib
+          tag = os.environ["RELEASE_TAG"]
+          py_ver = tomllib.load(open("pyproject.toml", "rb"))["project"]["version"]
+          srv = json.load(open("server.json", encoding="utf-8"))
+          assert f"v{py_ver}" == tag, f"pyproject.toml {py_ver} != {tag}"
+          assert f"v{srv['version']}" == tag, f"server.json {srv['version']} != {tag}"
+          assert f"v{srv['packages'][0]['version']}" == tag, f"server.json pkg != {tag}"
+          PY
+      - name: Build distributions
+        run: uv build --out-dir dist-pypi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pypi-dist
+          path: dist-pypi/
+          if-no-files-found: error
+
+  publish-pypi:
+    name: Publish to PyPI (Trusted Publisher)
+    needs: [build-pypi, publish-release]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: pypi-dist
+          path: dist-pypi/
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
+        with:
+          packages-dir: dist-pypi/
+
+  publish-mcp-registry:
+    name: Publish to Official MCP Registry
+    needs: [publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - name: Wait for PyPI release visibility
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          ver="${RELEASE_TAG#v}"
+          for i in $(seq 1 12); do
+            if curl -fsSL "https://pypi.org/pypi/sessfork/${ver}/json" >/dev/null 2>&1; then
+              echo "PyPI sessfork ${ver} is live"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Timed out waiting for PyPI sessfork ${ver}" >&2
+          exit 1
+      - name: Install verified mcp-publisher v1.8.16
+        run: |
+          curl -fsSLO "https://github.com/modelcontextprotocol/registry/releases/download/v1.8.16/mcp-publisher_linux_amd64.tar.gz"
+          echo "6e2f799550cf843c6fd3350498d56cc49be3dc0af1e6237eb0e6435c7a9d5c05  mcp-publisher_linux_amd64.tar.gz" | sha256sum -c -
+          tar -xzf mcp-publisher_linux_amd64.tar.gz mcp-publisher
+          chmod +x mcp-publisher
+      - name: Validate and publish server.json via GitHub OIDC
+        run: |
+          ./mcp-publisher validate server.json
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish server.json
