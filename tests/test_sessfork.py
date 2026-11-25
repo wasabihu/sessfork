@@ -1511,6 +1511,119 @@ class SessforkTestSuite(unittest.TestCase):
                     servers_fb = json.loads(cfg_path.read_text(encoding="utf-8"))["mcpServers"]
                     self.assertIn("--mcp-bridge", servers_fb[MCP_SERVER_NAME]["args"])
 
+    def test_network_cookies_preferred_over_stale_root_cookies(self) -> None:
+        from sessfork.chrome import _candidate_cookie_files, resolve_cookie_db
+
+        with tempfile.TemporaryDirectory() as tmp:
+            chrome_base = Path(tmp) / "Library" / "Application Support" / "Google" / "Chrome"
+            prof = chrome_base / "Profile 4"
+            (prof / "Network").mkdir(parents=True)
+            stale_root = prof / "Cookies"
+            live_net = prof / "Network" / "Cookies"
+            stale_root.write_bytes(b"stale")
+            live_net.write_bytes(b"live")
+            # Even if stale root file has a newer mtime, Network/Cookies must win.
+            os.utime(live_net, (1_700_000_000, 1_700_000_000))
+            os.utime(stale_root, (1_800_000_000, 1_800_000_000))
+
+            self.assertEqual(_candidate_cookie_files(prof)[0], live_net)
+            with mock.patch("sessfork.chrome._browser_base_dirs", return_value=[chrome_base]):
+                self.assertEqual(resolve_cookie_db(browser="chrome", profile="Profile 4"), live_net)
+                self.assertEqual(resolve_cookie_db(browser="chrome"), live_net)
+
+    def test_chips_partitioned_cookie_filtered_and_primary_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "Network" / "Cookies"
+            db_path.parent.mkdir(parents=True)
+            conn = sqlite3.connect(str(db_path))
+            try:
+                conn.execute("PRAGMA journal_mode=WAL;")
+                conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);")
+                conn.execute("INSERT INTO meta VALUES ('version', '24');")
+                conn.execute(
+                    """
+                    CREATE TABLE cookies (
+                        host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB,
+                        path TEXT, expires_utc INTEGER, is_secure INTEGER,
+                        is_httponly INTEGER, has_expires INTEGER, samesite INTEGER,
+                        top_frame_site_key TEXT, has_cross_site_ancestor INTEGER
+                    );
+                    """
+                )
+                future_exp = _unix_to_chromium_us(time.time() + 7200)
+                conn.executemany(
+                    "INSERT INTO cookies VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                    [
+                        # Primary unpartitioned session cookie comes first
+                        (
+                            ".x.com", "auth_token", "",
+                            _encrypt_cookie_blob("primary_live_token", ".x.com", self.aes_key),
+                            "/", future_exp, 1, 1, 1, 0, "", 0,
+                        ),
+                        # CHIPS partitioned third-party iframe cookie comes later with identical key
+                        (
+                            ".x.com", "auth_token", "",
+                            _encrypt_cookie_blob("iframe_partitioned_token", ".x.com", self.aes_key),
+                            "/", future_exp + 1_000_000, 1, 1, 1, 0, "https://embed.example.org", 1,
+                        ),
+                        # Partitioned-only cookie should be excluded by default
+                        (
+                            ".x.com", "embed_only", "",
+                            _encrypt_cookie_blob("embed_val", ".x.com", self.aes_key),
+                            "/", future_exp, 1, 0, 1, 0, "https://embed.example.org", 1,
+                        ),
+                    ],
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            cookies, _ = extract_cookies(domains=["x.com"], db_path=db_path, aes_key=self.aes_key)
+            by_name = {c["name"]: c for c in cookies}
+            self.assertEqual(set(by_name.keys()), {"auth_token"})
+            self.assertEqual(by_name["auth_token"]["value"], "primary_live_token")
+
+            # Even with include_partitioned=True, primary unpartitioned cookie must still win.
+            cookies_all, _ = extract_cookies(
+                domains=["x.com"], db_path=db_path, aes_key=self.aes_key, include_partitioned=True
+            )
+            by_name_all = {c["name"]: c for c in cookies_all}
+            self.assertEqual(by_name_all["auth_token"]["value"], "primary_live_token")
+            self.assertEqual(by_name_all["embed_only"]["value"], "embed_val")
+
+    def test_snapshot_preserves_permission_error_and_reads_live_wal(self) -> None:
+        from sessfork.chrome import _snapshot_cookie_db
+
+        with tempfile.TemporaryDirectory() as tmp:
+            locked = Path(tmp) / "unreadable.db"
+            locked.write_bytes(b"secret")
+            os.chmod(locked, 0o000)
+            try:
+                if os.geteuid() != 0:
+                    with self.assertRaises(PermissionError):
+                        _snapshot_cookie_db(locked, Path(tmp) / "snap.db")
+            finally:
+                os.chmod(locked, 0o600)
+
+            wal_db = Path(tmp) / "wal_live.db"
+            conn = sqlite3.connect(str(wal_db))
+            try:
+                conn.execute("PRAGMA journal_mode=WAL;")
+                conn.execute("PRAGMA wal_autocheckpoint=0;")
+                conn.execute("CREATE TABLE t (v TEXT);")
+                conn.execute("INSERT INTO t VALUES ('in_wal_frame');")
+                conn.commit()
+                snap = Path(tmp) / "wal_snap.db"
+                _snapshot_cookie_db(wal_db, snap)
+                self.assertEqual(stat.S_IMODE(os.stat(snap).st_mode), 0o600)
+                check = sqlite3.connect(str(snap))
+                try:
+                    self.assertEqual(check.execute("SELECT v FROM t").fetchall(), [("in_wal_frame",)])
+                finally:
+                    check.close()
+            finally:
+                conn.close()
+
 
 if __name__ == "__main__":
     unittest.main()

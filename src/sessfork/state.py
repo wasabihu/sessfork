@@ -6,6 +6,7 @@ import contextlib
 import fcntl
 import json
 import os
+import stat
 import tempfile
 import time
 from pathlib import Path
@@ -89,13 +90,25 @@ def _exclusive_state_lock(state_path: Path) -> Iterator[None]:
     """Serialize read-modify-write cycles across concurrent processes and threads."""
     target = state_path.expanduser().resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
+    if target.parent.is_symlink():
+        raise BrowserProfileError(f"Refusing to use symlinked state directory: {target.parent}")
     os.chmod(target.parent, 0o700)
+    dir_st = os.lstat(target.parent)
+    if hasattr(os, "getuid") and dir_st.st_uid != os.getuid():
+        raise BrowserProfileError(f"State directory is not owned by current user: {target.parent}")
+    if stat.S_IMODE(dir_st.st_mode) & 0o022:
+        raise BrowserProfileError(f"State directory has unsafe group/other write bits: {target.parent}")
     lock_path = _state_lock_path(target)
     if lock_path.is_symlink():
         raise BrowserProfileError(f"Refusing to use symlinked state lock file: {lock_path}")
     flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(str(lock_path), flags, 0o600)
     try:
+        lock_st = os.fstat(fd)
+        if not stat.S_ISREG(lock_st.st_mode):
+            raise BrowserProfileError(f"Refusing non-regular state lock file: {lock_path}")
+        if hasattr(os, "getuid") and lock_st.st_uid != os.getuid():
+            raise BrowserProfileError(f"State lock file is not owned by current user: {lock_path}")
         os.fchmod(fd, 0o600)
         fcntl.flock(fd, fcntl.LOCK_EX)
         try:

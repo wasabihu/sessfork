@@ -52,6 +52,8 @@ def _browser_base_dirs(browser: str) -> List[Path]:
             "brave": [app_support / "BraveSoftware" / "Brave-Browser"],
             "edge": [app_support / "Microsoft Edge"],
             "arc": [app_support / "Arc" / "User Data"],
+            "vivaldi": [app_support / "Vivaldi"],
+            "chromium": [app_support / "Chromium"],
         }
     else:
         cfg = Path(os.environ.get("XDG_CONFIG_HOME", home / ".config"))
@@ -61,14 +63,18 @@ def _browser_base_dirs(browser: str) -> List[Path]:
             "brave": [cfg / "BraveSoftware" / "Brave-Browser"],
             "edge": [cfg / "microsoft-edge"],
             "arc": [],
+            "vivaldi": [cfg / "vivaldi"],
+            "chromium": [cfg / "chromium"],
         }
     return mapping.get(browser, [])
 
 
 def _candidate_cookie_files(profile_dir: Path) -> List[Path]:
+    # Modern Chromium (96+) stores active cookies under Network/Cookies; check it first
+    # so stale pre-upgrade root Cookies files never shadow live sessions.
     return [
-        profile_dir / "Cookies",
         profile_dir / "Network" / "Cookies",
+        profile_dir / "Cookies",
     ]
 
 
@@ -119,6 +125,7 @@ def resolve_cookie_db(
             for cand in _candidate_cookie_files(pdir):
                 if cand.is_file() and not cand.is_symlink():
                     found.append(cand)
+                    break
 
     if not found:
         raise BrowserProfileError(
@@ -246,6 +253,82 @@ def _convert_samesite(raw_samesite: int, is_secure: bool) -> str:
     return "Lax"
 
 
+def _copy_file_0600(src: Path, dst: Path) -> None:
+    flags = os.O_CREAT | os.O_TRUNC | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(str(dst), flags, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        with src.open("rb") as rfh, os.fdopen(fd, "wb") as wfh:
+            shutil.copyfileobj(rfh, wfh)
+    except Exception:
+        if dst.exists():
+            try:
+                dst.unlink()
+            except OSError:
+                pass
+        raise
+
+
+def _snapshot_cookie_db(source_db: Path, tmp_db: Path, timeout_seconds: float = 2.0) -> None:
+    """Create a consistent 0600 SQLite snapshot using sqlite3.backup(), with 0600 file fallback.
+
+    Probes read permissions with `open("rb")` first so macOS TCC PermissionError is preserved
+    instead of being flattened into a generic sqlite3.OperationalError.
+    """
+    with source_db.open("rb"):
+        pass
+
+    flags = os.O_CREAT | os.O_EXCL | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(str(tmp_db), flags, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+    finally:
+        os.close(fd)
+
+    deadline = time.monotonic() + max(0.2, timeout_seconds)
+
+    def _check_deadline(_status: int, _remaining: int, _total: int) -> None:
+        if time.monotonic() > deadline:
+            raise TimeoutError("SQLite snapshot backup exceeded deadline")
+
+    reader: Optional[sqlite3.Connection] = None
+    writer: Optional[sqlite3.Connection] = None
+    try:
+        reader = sqlite3.connect(f"{source_db.as_uri()}?mode=ro", uri=True, timeout=0)
+        writer = sqlite3.connect(str(tmp_db))
+        reader.backup(writer, pages=128, progress=_check_deadline, sleep=0.01)
+        writer.commit()
+        return
+    except (sqlite3.Error, TimeoutError):
+        # Fallback for read-only directories or exotic filesystems where WAL SHM cannot be opened.
+        pass
+    finally:
+        if writer is not None:
+            writer.close()
+        if reader is not None:
+            reader.close()
+
+    _copy_file_0600(source_db, tmp_db)
+    for suffix in ("-wal", "-shm", "-journal"):
+        sidecar = Path(str(source_db) + suffix)
+        if sidecar.is_file() and not sidecar.is_symlink():
+            _copy_file_0600(sidecar, Path(str(tmp_db) + suffix))
+
+
+def _cookie_priority_key(
+    is_partitioned: bool,
+    is_secure: int,
+    is_httponly: int,
+    expires: float,
+) -> tuple[int, int, int, float]:
+    return (
+        0 if is_partitioned else 1,
+        1 if is_secure else 0,
+        1 if is_httponly else 0,
+        float("inf") if expires == -1 else expires,
+    )
+
+
 def extract_cookies(
     domains: Iterable[str],
     browser: str = "chrome",
@@ -255,8 +338,9 @@ def extract_cookies(
     include_expired: bool = False,
     refresh_key: bool = False,
     cache_key: bool = False,
+    include_partitioned: bool = False,
 ) -> tuple[List[CookieDict], Path]:
-    """Copy Chromium SQLite DB (+ WAL/SHM) to an isolated 0700 temp dir and extract Playwright cookies."""
+    """Snapshot Chromium SQLite DB to an isolated 0700 temp dir and extract Playwright cookies."""
     source_db = resolve_cookie_db(browser=browser, profile=profile, db_path=db_path)
     if source_db.is_symlink():
         raise BrowserProfileError(f"Refusing to read symlinked Cookie DB: {source_db}")
@@ -267,21 +351,21 @@ def extract_cookies(
         tmp_dir = Path(tmp_dir_str)
         os.chmod(tmp_dir, 0o700)
         tmp_db = tmp_dir / "Cookies"
-        shutil.copy2(source_db, tmp_db)
-
-        for suffix in ("-wal", "-shm"):
-            sidecar = Path(str(source_db) + suffix)
-            if sidecar.is_file() and not sidecar.is_symlink():
-                shutil.copy2(sidecar, Path(str(tmp_db) + suffix))
+        _snapshot_cookie_db(source_db, tmp_db)
 
         conn = sqlite3.connect(str(tmp_db))
         try:
             cur = conn.cursor()
             db_version = _read_meta_version(cur)
+            cur.execute("PRAGMA table_info(cookies)")
+            columns = {str(row[1]) for row in cur.fetchall() if len(row) > 1}
+            top_frame_col = "top_frame_site_key" if "top_frame_site_key" in columns else "''"
+            cross_site_col = "has_cross_site_ancestor" if "has_cross_site_ancestor" in columns else "0"
             cur.execute(
-                """
+                f"""
                 SELECT host_key, name, value, encrypted_value, path,
-                       expires_utc, is_secure, is_httponly, has_expires, samesite
+                       expires_utc, is_secure, is_httponly, has_expires, samesite,
+                       {top_frame_col}, {cross_site_col}
                 FROM cookies
                 """
             )
@@ -289,7 +373,9 @@ def extract_cookies(
         finally:
             conn.close()
 
-    matched_rows: List[tuple[str, str, str, bytes, str, float, int, int, int]] = []
+    # Deduplicate by (host_key, path, name) with deterministic priority so third-party
+    # CHIPS partitioned rows never overwrite primary unpartitioned session cookies.
+    best_by_key: Dict[tuple[str, str, str], tuple[tuple[int, int, int, float], tuple[str, str, str, bytes, str, float, int, int, int]]] = {}
     for (
         host_key,
         name,
@@ -301,27 +387,41 @@ def extract_cookies(
         is_httponly,
         has_expires,
         samesite,
+        top_frame_site_key,
+        has_cross_site_ancestor,
     ) in raw_rows:
         if not _domain_matches(host_key, normalized_domains):
+            continue
+
+        is_partitioned = bool(str(top_frame_site_key or "").strip()) or bool(int(has_cross_site_ancestor or 0))
+        if is_partitioned and not include_partitioned:
             continue
 
         expires = _convert_expires(int(expires_utc or 0), int(has_expires or 0))
         if not include_expired and expires != -1 and expires <= now:
             continue
 
-        matched_rows.append(
-            (
-                host_key,
-                name,
-                plain_val or "",
-                bytes(enc_val) if enc_val else b"",
-                path or "/",
-                expires,
-                int(is_secure or 0),
-                int(is_httponly or 0),
-                int(samesite) if samesite is not None else -1,
-            )
+        norm_path = path or "/"
+        sec_int = int(is_secure or 0)
+        http_int = int(is_httponly or 0)
+        prio = _cookie_priority_key(is_partitioned, sec_int, http_int, expires)
+        row_tuple = (
+            host_key,
+            name,
+            plain_val or "",
+            bytes(enc_val) if enc_val else b"",
+            norm_path,
+            expires,
+            sec_int,
+            http_int,
+            int(samesite) if samesite is not None else -1,
         )
+        ident = (host_key, norm_path, name)
+        prev = best_by_key.get(ident)
+        if prev is None or prio > prev[0]:
+            best_by_key[ident] = (prio, row_tuple)
+
+    matched_rows = [entry[1] for entry in best_by_key.values()]
 
     def _decrypt_rows(active_key: bytes) -> tuple[List[CookieDict], int, int]:
         cookies_out: List[CookieDict] = []

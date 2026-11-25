@@ -444,8 +444,15 @@ impl CdpPipeClient {
 
         // Move pipe ends safely onto FD 3 (read by moli) and FD 4 (written by moli).
         // First relocate above FD 4 if either happened to land on 3 or 4, avoiding dup2 clobbering.
+        // Also place the child into its own process group so timeout teardown reaps grandchildren.
         unsafe {
             cmd.pre_exec(move || {
+                // SAFETY: `setpgid(0, 0)` is async-signal-safe per POSIX.1-2008 and pins the
+                // child as process-group leader (`pgid == pid`) before exec.
+                if libc::setpgid(0, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+
                 let mut src_in = r_in;
                 let mut src_out = w_out;
 
@@ -811,6 +818,29 @@ fn dispatch_cdp_message(msg: Value, shared: &Arc<SharedState>) {
     }
 }
 
+#[cfg(unix)]
+fn terminate_child_process_group(child: &mut Child, term_grace: Duration) {
+    let pgid = child.id() as libc::pid_t;
+    if pgid > 0 {
+        // SAFETY: Caller verified `child` is still unreaped (`try_wait()` returned `Ok(None)`),
+        // so its PID/PGID is pinned by the kernel and cannot have been recycled.
+        let _ = unsafe { libc::killpg(pgid, libc::SIGTERM) };
+        let term_deadline = Instant::now() + term_grace;
+        while Instant::now() < term_deadline {
+            match child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => thread::sleep(Duration::from_millis(10)),
+                Err(_) => break,
+            }
+        }
+        // SAFETY: `child` is still unreaped (still pinned as process-group leader); escalate
+        // to SIGKILL across the entire group before reaping so grandchildren cannot survive.
+        let _ = unsafe { libc::killpg(pgid, libc::SIGKILL) };
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 impl Drop for CdpPipeClient {
     fn drop(&mut self) {
         // Closing FD 3 sends EOF to `moli serve --remote-debugging-pipe`, prompting clean shutdown.
@@ -823,8 +853,13 @@ impl Drop for CdpPipeClient {
                 Ok(Some(_)) => break,
                 Ok(None) => {
                     if Instant::now() >= deadline {
-                        let _ = self.child.kill();
-                        let _ = self.child.wait();
+                        #[cfg(unix)]
+                        terminate_child_process_group(&mut self.child, Duration::from_millis(200));
+                        #[cfg(not(unix))]
+                        {
+                            let _ = self.child.kill();
+                            let _ = self.child.wait();
+                        }
                         break;
                     }
                     thread::sleep(Duration::from_millis(15));
@@ -1059,6 +1094,54 @@ mod tests {
         assert_eq!(
             shared.wait_for_webmcp_invoked_or_responded(sid, "never", gen0, Duration::from_secs(1)),
             WebMcpInvokeWait::Closed
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminate_child_process_group_reaps_leader_and_grandchild() {
+        use std::io::BufRead;
+
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg("sleep 30 & echo $!; trap '' TERM; sleep 30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setpgid(0, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut child = cmd.spawn().expect("spawn shell test group");
+        let stdout = child.stdout.take().expect("stdout pipe");
+        let mut line = String::new();
+        std::io::BufReader::new(stdout)
+            .read_line(&mut line)
+            .expect("read grandchild pid");
+        let grandchild_pid: libc::pid_t = line.trim().parse().expect("valid grandchild pid");
+        assert!(grandchild_pid > 0);
+        // Verify grandchild is alive before teardown.
+        assert_eq!(unsafe { libc::kill(grandchild_pid, 0) }, 0);
+
+        terminate_child_process_group(&mut child, Duration::from_millis(80));
+
+        // Give the kernel a brief window to reap the killed grandchild.
+        let wait_dead = Instant::now() + Duration::from_millis(500);
+        let mut grandchild_alive = true;
+        while Instant::now() < wait_dead {
+            if unsafe { libc::kill(grandchild_pid, 0) } != 0 {
+                grandchild_alive = false;
+                break;
+            }
+            thread::sleep(Duration::from_millis(15));
+        }
+        assert!(
+            !grandchild_alive,
+            "grandchild process {grandchild_pid} leaked after process-group teardown"
         );
     }
 }
