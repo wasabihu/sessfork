@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "sessfork — Local Session Bridge",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "description": "User-consented 1-click Cookie & LocalStorage sync from Chrome/Edge to local sessfork-mcp (zero cloud, zero injection, native Windows Chrome v20 ABE support).",
   "permissions": [
     "activeTab",

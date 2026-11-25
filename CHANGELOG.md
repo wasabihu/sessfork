@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here. This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-11-25
+
+Native Windows x64 support (zero Python, zero Node.js, zero Tokio), built-in Chrome/Edge Native Messaging host, and auditable Manifest V3 Companion Extension solving Chrome 127+ App-Bound Encryption (`v20`) without process injection.
+
+### Added
+- **Native Windows CDP WebSocket Transport & Win32 Job Object (`rust/sessfork-mcp/src/ws_cdp.rs`, `cdp.rs`)**: Launches `moli.exe serve --host 127.0.0.1 --port 0` (kernel-assigned port read directly from child stderr, eliminating port TOCTOU) with `CREATE_NO_WINDOW` and a Win32 Job Object (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) for guaranteed zero-orphan teardown, speaking pure-std RFC 6455 WebSocket (`34.2 ms` cold spawn, `0.086 ms/call` vs `23.2 ms` / `0.042 ms/call` on Unix pipe; `~784 KiB` stripped binary).
+- **Built-in Native Messaging Host, Auto-Registrar & Zero-Python MCP Setup (`rust/sessfork-mcp/src/native_host.rs`, `main.rs`)**: Added `native-host` (auto-detected when launched by Chrome/Edge with `chrome-extension://` or `--parent-window=`), `register-host --extension-id <ID>` (Windows `HKCU` Registry via qualified `System32\reg.exe` + macOS/Linux JSON manifests with `\\?\` prefix stripping), and `setup --mcp-file <PATH>` atomic MCP config wiring.
+- **Auditable Manifest V3 Companion Extension (`extension/`) & Windows Installer (`install.ps1`)**: ~200-line zero-dependency Chrome/Edge/Brave extension with default exact-host scoping, tab navigation origin verification, and per-click user consent so Chrome natively decrypts `v20` cookies without file locks or antivirus false positives; added PowerShell one-line installer (`install.ps1`) with TLS 1.2 enforcement and fail-closed SHA-256 verification.
+- **Windows CI & Release Packaging (`.github/workflows/ci.yml`, `.github/workflows/release.yml`)**: Added `windows-latest` CI (Rust locked test/clippy/release + PowerShell AST syntax check) and automated `sessfork-mcp-windows-x64.zip` + `sessfork-extension.zip` Release assets with unified 4-manifest version checks.
+
 ## [0.1.6] - 2026-11-25
 
 Auth-to-XERJ zero-dependency ingestion skill, Official MCP Registry manifest, and automated PyPI Trusted Publisher release pipeline.
@@ -78,6 +88,7 @@ First public release.
 - Bilingual documentation (English / 简体中文), SVG diagrams and an interactive guide on GitHub Pages.
 - `SECURITY.md` with threat model and private reporting channel.
 
+[0.2.0]: https://github.com/wasabihu/sessfork/releases/tag/v0.2.0
 [0.1.6]: https://github.com/wasabihu/sessfork/releases/tag/v0.1.6
 [0.1.5]: https://github.com/wasabihu/sessfork/releases/tag/v0.1.5
 [0.1.4]: https://github.com/wasabihu/sessfork/releases/tag/v0.1.4

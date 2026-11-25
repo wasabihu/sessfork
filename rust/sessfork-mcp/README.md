@@ -40,7 +40,7 @@ curl --proto '=https' --tlsv1.2 -fsSL \
   https://github.com/lexmount/moli/releases/latest/download/moli-installer.sh | sh
 
 # Install prebuilt ~784 KiB sessfork-mcp (macOS arm64/x64, Linux x64/arm64, SHA-256 verified)
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.1.6/install.sh | bash -s -- --rust-mcp-only
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.2.0/install.sh | bash -s -- --rust-mcp-only
 ```
 
 **Windows (PowerShell — zero Python / zero Node.js):**
@@ -92,7 +92,7 @@ Want your Moli MCP agent to browse **authenticated** sites (GitHub, Linear, Noti
 
 ```bash
 # Install full sessfork + sessfork-mcp together, then enable Dual mode (Rust Moli primary + lazy 0 MB Chrome fallback)
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.1.6/install.sh | bash -s -- --with-rust-mcp
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.2.0/install.sh | bash -s -- --with-rust-mcp
 sessfork --engine dual
 sessfork github.com linear.app
 ```

@@ -3,7 +3,7 @@
   "name": "io.github.wasabihu/sessfork",
   "title": "sessfork — Headless Chrome Session MCP Bridge",
   "description": "Fork live Chrome cookies & LocalStorage into headless AI agent MCP browsers without focus theft.",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "websiteUrl": "https://wasabihu.github.io/sessfork/",
   "repository": {
     "url": "https://github.com/wasabihu/sessfork",
@@ -14,7 +14,7 @@
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "sessfork",
-      "version": "0.1.6",
+      "version": "0.2.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
