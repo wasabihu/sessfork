@@ -28,8 +28,9 @@ HOT_RELOAD_STATE_FILENAME = ".sessfork-state.json"
 
 def hot_reload_state_path(state_path: Path = DEFAULT_STATE_PATH) -> Path:
     """Return mirror path inside Playwright MCP `--output-dir` for zero-restart hot reload."""
-    resolved = state_path.expanduser().resolve()
-    return resolved.parent / PLAYWRIGHT_OUTPUT_DIRNAME / HOT_RELOAD_STATE_FILENAME
+    raw = state_path.expanduser()
+    parent = raw.parent.resolve() if not raw.parent.is_symlink() and raw.parent.exists() else raw.parent
+    return parent / PLAYWRIGHT_OUTPUT_DIRNAME / HOT_RELOAD_STATE_FILENAME
 
 
 def _cookie_identity(cookie: CookieDict) -> Tuple[str, str, str]:
@@ -45,9 +46,31 @@ def _origin_matches_filters(origin_url: str, filters: Sequence[str]) -> bool:
     return any(host == f or host.endswith("." + f) for f in filters)
 
 
+def _ensure_private_target(raw_path: Path, label: str = "state") -> Path:
+    """Reject symlinks BEFORE `.resolve()`, enforce user ownership and strict 0700 parent dir."""
+    raw = raw_path.expanduser()
+    if raw.is_symlink():
+        raise BrowserProfileError(f"Refusing to use symlinked {label} file: {raw}")
+    if raw.parent.is_symlink():
+        raise BrowserProfileError(f"Refusing to use symlinked {label} directory: {raw.parent}")
+    raw.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    dir_st = os.lstat(raw.parent)
+    if stat.S_ISLNK(dir_st.st_mode) or not stat.S_ISDIR(dir_st.st_mode):
+        raise BrowserProfileError(f"{label.capitalize()} parent is not a regular directory: {raw.parent}")
+    if hasattr(os, "getuid") and dir_st.st_uid != os.getuid():
+        raise BrowserProfileError(f"{label.capitalize()} directory is not owned by current user: {raw.parent}")
+    os.chmod(raw.parent, 0o700)
+    dir_st = os.lstat(raw.parent)
+    if stat.S_IMODE(dir_st.st_mode) & 0o077:
+        raise BrowserProfileError(f"{label.capitalize()} directory has unsafe group/other permissions: {raw.parent}")
+    return raw.parent.resolve() / raw.name
+
+
 def load_storage_state(state_path: Path = DEFAULT_STATE_PATH) -> Dict[str, Any]:
     """Load an existing Playwright storageState JSON or return an empty skeleton."""
     path = state_path.expanduser()
+    if path.is_symlink() or path.parent.is_symlink():
+        raise BrowserProfileError(f"Refusing to read symlinked state file: {path}")
     if not path.is_file():
         return {"cookies": [], "origins": []}
     try:
@@ -64,21 +87,30 @@ def load_storage_state(state_path: Path = DEFAULT_STATE_PATH) -> Dict[str, Any]:
     return {"cookies": [], "origins": []}
 
 
-def _write_json_0600(payload: str, target: Path) -> Path:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    os.chmod(target.parent, 0o700)
+def _write_json_0600(payload: str, target: Path, label: str = "state") -> Path:
+    safe_target = _ensure_private_target(target, label=label)
 
-    fd, tmp_name = tempfile.mkstemp(prefix=".state_", suffix=".tmp", dir=str(target.parent))
+    fd, tmp_name = tempfile.mkstemp(prefix=".state_", suffix=".tmp", dir=str(safe_target.parent))
+    fd_owned = True
     try:
         os.fchmod(fd, 0o600)
+        fd_owned = False
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(payload)
-        os.replace(tmp_name, target)
-    except Exception:
+        os.replace(tmp_name, safe_target)
+    except BaseException:
+        if fd_owned:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         if os.path.exists(tmp_name):
-            os.unlink(tmp_name)
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
         raise
-    return target
+    return safe_target
 
 
 def _state_lock_path(target: Path) -> Path:
@@ -88,16 +120,7 @@ def _state_lock_path(target: Path) -> Path:
 @contextlib.contextmanager
 def _exclusive_state_lock(state_path: Path) -> Iterator[None]:
     """Serialize read-modify-write cycles across concurrent processes and threads."""
-    target = state_path.expanduser().resolve()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.parent.is_symlink():
-        raise BrowserProfileError(f"Refusing to use symlinked state directory: {target.parent}")
-    os.chmod(target.parent, 0o700)
-    dir_st = os.lstat(target.parent)
-    if hasattr(os, "getuid") and dir_st.st_uid != os.getuid():
-        raise BrowserProfileError(f"State directory is not owned by current user: {target.parent}")
-    if stat.S_IMODE(dir_st.st_mode) & 0o022:
-        raise BrowserProfileError(f"State directory has unsafe group/other write bits: {target.parent}")
+    target = _ensure_private_target(state_path, label="state")
     lock_path = _state_lock_path(target)
     if lock_path.is_symlink():
         raise BrowserProfileError(f"Refusing to use symlinked state lock file: {lock_path}")
@@ -120,12 +143,11 @@ def _exclusive_state_lock(state_path: Path) -> Iterator[None]:
 
 
 def _save_storage_state_unlocked(state: Dict[str, Any], state_path: Path = DEFAULT_STATE_PATH) -> Path:
-    target = state_path.expanduser().resolve()
     payload = json.dumps(state, indent=2, ensure_ascii=False) + "\n"
-    saved = _write_json_0600(payload, target)
-    mirror = hot_reload_state_path(saved)
+    saved = _write_json_0600(payload, state_path, label="state")
+    mirror = saved.parent / PLAYWRIGHT_OUTPUT_DIRNAME / HOT_RELOAD_STATE_FILENAME
     if mirror != saved:
-        _write_json_0600(payload, mirror)
+        _write_json_0600(payload, mirror, label="hot-reload mirror")
     return saved
 
 
@@ -136,7 +158,7 @@ def save_storage_state_atomic(state: Dict[str, Any], state_path: Path = DEFAULT_
 
 
 def upsert_session_state(
-    new_cookies: Iterable[CookieDict],
+    new_cookies: Optional[Iterable[CookieDict]],
     new_origins: Optional[Iterable[OriginEntry]] = None,
     refreshed_domains: Optional[Iterable[str]] = None,
     state_path: Path = DEFAULT_STATE_PATH,
@@ -144,31 +166,38 @@ def upsert_session_state(
 ) -> tuple[Path, int, int, int, int]:
     """Merge cookies and LocalStorage origins into Playwright storageState.
 
-    For `refreshed_domains`, any previously saved origin matching those domains whose
-    LocalStorage was completely cleared in Chrome is pruned so removed JWTs never linger.
+    For `refreshed_domains`, any previously saved cookie or LocalStorage origin matching those
+    domains is replaced with the fresh snapshot so logged-out sessions never linger.
 
     Returns `(saved_path, upserted_cookies, total_cookies, upserted_ls_keys, total_origins)`.
     """
-    new_cookies_list = list(new_cookies)
+    new_cookies_list = None if new_cookies is None else list(new_cookies)
     new_origins_list = None if new_origins is None else list(new_origins)
-    norm_refreshed = [normalize_domain_filter(d) for d in (refreshed_domains or []) if d.strip()]
+    norm_refreshed = [normalize_domain_filter(d) for d in (refreshed_domains or [])]
 
     with _exclusive_state_lock(state_path):
         now = time.time()
         existing = {"cookies": [], "origins": []} if replace_all else load_storage_state(state_path)
 
-        # 1. Merge & prune expired cookies
+        # 1. Merge & prune expired or logged-out cookies for refreshed domains
         merged_cookies: Dict[Tuple[str, str, str], CookieDict] = {}
         for item in existing["cookies"]:
             exp = item.get("expires", -1)
             if isinstance(exp, (int, float)) and exp != -1 and exp <= now:
                 continue
+            if (
+                new_cookies_list is not None
+                and norm_refreshed
+                and _origin_matches_filters(str(item.get("domain", "")), norm_refreshed)
+            ):
+                continue
             merged_cookies[_cookie_identity(item)] = item
 
         upserted_cookies = 0
-        for item in new_cookies_list:
-            merged_cookies[_cookie_identity(item)] = item
-            upserted_cookies += 1
+        if new_cookies_list is not None:
+            for item in new_cookies_list:
+                merged_cookies[_cookie_identity(item)] = item
+                upserted_cookies += 1
 
         sorted_cookies = sorted(
             merged_cookies.values(),
@@ -237,11 +266,13 @@ def clear_state(
     domains: Optional[Iterable[str]] = None,
     state_path: Path = DEFAULT_STATE_PATH,
 ) -> tuple[int, int, int, int]:
-    """Remove cookies AND LocalStorage origins matching `domains` (or all if empty).
+    """Remove cookies AND LocalStorage origins matching `domains` (or all if `domains` is None/empty).
 
+    Rejects empty/whitespace strings inside `domains` so `sessfork --clear ""` never wipes all state.
     Returns `(removed_cookies, remaining_cookies, removed_origins, remaining_origins)`.
     """
-    filters = [normalize_domain_filter(d) for d in (domains or []) if d.strip()]
+    raw_domains = None if domains is None else list(domains)
+    filters = [] if raw_domains is None else [normalize_domain_filter(d) for d in raw_domains]
     with _exclusive_state_lock(state_path):
         state = load_storage_state(state_path)
         before_cookies = len(state["cookies"])

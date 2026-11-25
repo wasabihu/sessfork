@@ -992,7 +992,7 @@
       <p class="lead" data-i18n="heroLead"></p>
 
       <div class="install-bar">
-        <code class="install-code" id="hero-install-cmd"><span class="prompt-sign">$</span>curl -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/main/install.sh | bash</code>
+        <code class="install-code" id="hero-install-cmd"><span class="prompt-sign">$</span>curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.1.5/install.sh | bash</code>
         <button type="button" class="btn btn-primary" id="copy-install-btn" data-copy-target="heroInstall">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <rect x="9" y="9" width="13" height="13" rx="2"/>
@@ -1549,10 +1549,18 @@
         "co.kr", "com.br", "com.hk", "com.tw", "com.sg", "co.in",
         "github.io", "gitlab.io", "vercel.app", "netlify.app",
         "pages.dev", "workers.dev", "web.app", "firebaseapp.com",
-        "herokuapp.com", "onrender.com", "fly.dev", "railway.app"
+        "herokuapp.com", "onrender.com", "fly.dev", "railway.app",
+        "appspot.com", "run.app", "azurewebsites.net", "cloudfront.net",
+        "amazonaws.com", "s3.amazonaws.com", "googleusercontent.com",
+        "myshopify.com", "notion.site", "hf.space", "streamlit.app",
+        "supabase.co", "ngrok.io", "ngrok-free.app", "trycloudflare.com",
+        "deno.dev", "replit.app", "replit.dev", "glitch.me",
+        "surge.sh", "bitbucket.io", "azurestaticapps.net"
       ]);
       const VALID_HOSTNAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+      const GENERIC_SECOND_LEVEL_CCTLD_RE = /^(?:co|com|net|org|gov|edu|ac|go|or|ne|mil|sch|ltd|plc|me)\.[a-z]{2}$/;
       const VALID_IPV4_RE = /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/;
+      const VALID_PORT_RE = /^\d{1,5}$/;
 
       function normalizeDomain(raw) {
         const text = raw.trim();
@@ -1571,13 +1579,26 @@
         }
         hostWithPort = hostWithPort.replace(/^\.+/, "").toLowerCase();
         if (!hostWithPort) return "";
-        const hostOnly = hostWithPort.split(":")[0];
+        const parts = hostWithPort.split(":");
+        if (parts.length > 2) return "";
+        const hostOnly = parts[0];
         if (!hostOnly) return "";
+        if (parts.length === 2) {
+          const portStr = parts[1];
+          if (!VALID_PORT_RE.test(portStr)) return "";
+          const portNum = Number(portStr);
+          if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) return "";
+        }
         const isLocalOrIp = hostOnly === "localhost" || VALID_IPV4_RE.test(hostOnly);
-        if (!isLocalOrIp && (!VALID_HOSTNAME_RE.test(hostOnly) || UNSAFE_PUBLIC_SUFFIXES.has(hostOnly))) {
+        if (
+          !isLocalOrIp &&
+          (!VALID_HOSTNAME_RE.test(hostOnly) ||
+            UNSAFE_PUBLIC_SUFFIXES.has(hostOnly) ||
+            GENERIC_SECOND_LEVEL_CCTLD_RE.test(hostOnly))
+        ) {
           return "";
         }
-        return hostWithPort;
+        return parts.length === 2 ? hostOnly + ":" + parts[1] : hostOnly;
       }
 
       async function copyText(text, btn, labelEl) {
@@ -1611,7 +1632,7 @@
         if (state.noCookies) flags.push("--no-cookies");
         const suffix = flags.length ? " " + flags.join(" ") : "";
         const cli = "sessfork " + doms.join(" ") + suffix;
-        const uvx = "uvx --from git+https://github.com/wasabihu/sessfork sessfork " + doms.join(" ") + suffix;
+        const uvx = "uvx --from git+https://github.com/wasabihu/sessfork.git@v0.1.5 sessfork " + doms.join(" ") + suffix;
 
         const browserCap = state.browser.charAt(0).toUpperCase() + state.browser.slice(1);
         const domList = doms.join(", ");
@@ -1794,7 +1815,7 @@
 
       document.getElementById("copy-install-btn").addEventListener("click", function () {
         const span = this.querySelector("span");
-        copyText("curl -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/main/install.sh | bash", this, span);
+        copyText("curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.1.5/install.sh | bash", this, span);
       });
 
       document.getElementById("copy-prompt-btn").addEventListener("click", function () {

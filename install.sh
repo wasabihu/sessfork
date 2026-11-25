@@ -3,7 +3,7 @@ set -euo pipefail
 
 REPO_URL="https://github.com/wasabihu/sessfork"
 # Pinned release by default; override with SESSFORK_REF=main (or another tag) for bleeding edge
-SESSFORK_REF="${SESSFORK_REF:-v0.1.4}"
+SESSFORK_REF="${SESSFORK_REF:-v0.1.5}"
 TARBALL_URL="${REPO_URL}/archive/${SESSFORK_REF}.tar.gz"
 RUNTIME_DIR="${HOME}/.sessfork/runtime"
 BIN_DIR="${HOME}/.local/bin"
@@ -62,8 +62,15 @@ install_rust_mcp_binary() {
     base_url="${SESSFORK_RELEASE_BASE_URL%/}"
   elif [ -n "${SESSFORK_RUST_MCP_TAG:-}" ]; then
     base_url="${REPO_URL}/releases/download/${SESSFORK_RUST_MCP_TAG}"
+  elif [[ "${SESSFORK_REF}" == v* ]]; then
+    base_url="${REPO_URL}/releases/download/${SESSFORK_REF}"
   else
     base_url="${REPO_URL}/releases/latest/download"
+  fi
+
+  local curl_opts=(-fsSL)
+  if [[ "${base_url}" == https://* ]]; then
+    curl_opts+=(--proto '=https' --tlsv1.2)
   fi
 
   mkdir -p "${BIN_DIR}"
@@ -71,8 +78,8 @@ install_rust_mcp_binary() {
   _SESSFORK_CLEANUP_PATHS+=("${tmp_dir}")
 
   echo "-> Downloading prebuilt ${asset} + SHA256SUMS.txt..."
-  curl -fsSL "${base_url}/${asset}" -o "${tmp_dir}/${asset}"
-  curl -fsSL "${base_url}/SHA256SUMS.txt" -o "${tmp_dir}/SHA256SUMS.txt"
+  curl "${curl_opts[@]}" "${base_url}/${asset}" -o "${tmp_dir}/${asset}"
+  curl "${curl_opts[@]}" "${base_url}/SHA256SUMS.txt" -o "${tmp_dir}/SHA256SUMS.txt"
 
   expected="$(awk -v f="${asset}" '$2 == f || $2 == ("*" f) { print $1; exit }' "${tmp_dir}/SHA256SUMS.txt")"
   if [ -z "${expected}" ]; then
@@ -98,7 +105,11 @@ install_rust_mcp_binary() {
     exit 1
   fi
 
-  tar -xzf "${tmp_dir}/${asset}" -C "${tmp_dir}"
+  tar -xzf "${tmp_dir}/${asset}" -C "${tmp_dir}" sessfork-mcp
+  if [ ! -f "${tmp_dir}/sessfork-mcp" ] || [ -L "${tmp_dir}/sessfork-mcp" ]; then
+    echo "Error: Extracted sessfork-mcp binary is missing or is a symlink." >&2
+    exit 1
+  fi
   # Atomic install onto a fresh inode (prevents Apple Silicon code-sign invalidation if running)
   install -m 755 "${tmp_dir}/sessfork-mcp" "${BIN_DIR}/sessfork-mcp"
   echo "-> Installed verified sessfork-mcp -> ${BIN_DIR}/sessfork-mcp"
@@ -146,19 +157,28 @@ if [ -z "${SESSFORK_BIN}" ]; then
     exit 1
   fi
   echo "-> Installing zero-dependency standalone runtime (${SESSFORK_REF}) into ${RUNTIME_DIR}..."
-  mkdir -p "${HOME}/.sessfork" "${RUNTIME_DIR}" "${BIN_DIR}"
-  chmod 700 "${HOME}/.sessfork"
+  if [ -L "${HOME}/.sessfork" ] || [ -L "${RUNTIME_DIR}" ]; then
+    echo "Error: Refusing to install into symlinked directory under ${HOME}/.sessfork." >&2
+    exit 1
+  fi
+  install -d -m 700 "${HOME}/.sessfork"
+  mkdir -p "${BIN_DIR}"
   TMP_TAR="$(mktemp "${TMPDIR:-/tmp}/sessfork_src.XXXXXX")"
-  _SESSFORK_CLEANUP_PATHS+=("${TMP_TAR}")
-  curl -fsSL "${TARBALL_URL}" -o "${TMP_TAR}"
-  rm -rf "${RUNTIME_DIR:?}"/*
-  tar -xzf "${TMP_TAR}" -C "${RUNTIME_DIR}" --strip-components=1
-  cat > "${BIN_DIR}/sessfork" <<'EOF'
+  TMP_STAGE="$(mktemp -d "${HOME}/.sessfork/runtime_stage.XXXXXX")"
+  TMP_WRAPPER="$(mktemp "${TMPDIR:-/tmp}/sessfork_bin.XXXXXX")"
+  _SESSFORK_CLEANUP_PATHS+=("${TMP_TAR}" "${TMP_STAGE}" "${TMP_WRAPPER}")
+  curl --proto '=https' --tlsv1.2 -fsSL "${TARBALL_URL}" -o "${TMP_TAR}"
+  tar -xzf "${TMP_TAR}" -C "${TMP_STAGE}" --strip-components=1
+  if [ -e "${RUNTIME_DIR}" ]; then
+    rm -rf "${RUNTIME_DIR}"
+  fi
+  mv "${TMP_STAGE}" "${RUNTIME_DIR}"
+  cat > "${TMP_WRAPPER}" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 PYTHONPATH="${HOME}/.sessfork/runtime/src${PYTHONPATH:+:${PYTHONPATH}}" exec python3 -m sessfork "$@"
 EOF
-  chmod +x "${BIN_DIR}/sessfork"
+  install -m 755 "${TMP_WRAPPER}" "${BIN_DIR}/sessfork"
   SESSFORK_BIN="${BIN_DIR}/sessfork"
 fi
 

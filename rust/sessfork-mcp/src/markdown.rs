@@ -16,7 +16,7 @@ pub fn build_markdown_extract_expression(selector: Option<&str>) -> Result<Strin
   const sel = {sel_json};
   const root = sel ? document.querySelector(sel) : (document.body || document.documentElement);
   if (!root) {{
-    return JSON.stringify({{ ok: false, error: sel ? ("No element matched CSS selector: " + sel) : "Document has no body" }});
+    return {{ ok: false, error: sel ? ("No element matched CSS selector: " + sel) : "Document has no body" }};
   }}
 
   const MAX_DEPTH = 64;
@@ -228,20 +228,24 @@ pub fn build_markdown_extract_expression(selector: Option<&str>) -> Result<Strin
     .replace(/\n{{3,}}/g, "\n\n")
     .trim();
 
-  return JSON.stringify({{
+  return {{
     ok: true,
-    url: String(location.href || ""),
     title: String(document.title || ""),
     markdown: normalized
-  }});
+  }};
 }})()"##,
         sel_json = sel_json
     ))
 }
 
-pub fn format_markdown_response(raw_json: &str, max_chars: usize) -> Result<String, String> {
-    let parsed: Value = serde_json::from_str(raw_json)
-        .map_err(|e| format!("Failed to parse markdown extractor output: {}", e))?;
+pub fn format_markdown_response(
+    authoritative_url: &str,
+    parsed: &Value,
+    max_chars: usize,
+) -> Result<String, String> {
+    if !parsed.is_object() {
+        return Err("Failed to parse markdown extractor output: expected JSON object".to_string());
+    }
 
     if parsed.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         let err_msg = parsed
@@ -251,7 +255,6 @@ pub fn format_markdown_response(raw_json: &str, max_chars: usize) -> Result<Stri
         return Err(err_msg.to_string());
     }
 
-    let url = parsed.get("url").and_then(|v| v.as_str()).unwrap_or("");
     let title = parsed.get("title").and_then(|v| v.as_str()).unwrap_or("");
     let md = parsed
         .get("markdown")
@@ -261,7 +264,7 @@ pub fn format_markdown_response(raw_json: &str, max_chars: usize) -> Result<Stri
     let body = truncate_chars(md, max_chars);
     let mut out = format!(
         "### Page\n- Page URL: {}\n- Page Title: {}\n\n### Markdown\n",
-        url, title
+        authoritative_url, title
     );
     if body.is_empty() {
         out.push_str("(empty page content)\n");
@@ -274,7 +277,7 @@ pub fn format_markdown_response(raw_json: &str, max_chars: usize) -> Result<Stri
     Ok(out)
 }
 
-fn truncate_chars(input: &str, max_chars: usize) -> String {
+pub fn truncate_chars(input: &str, max_chars: usize) -> String {
     let count = input.chars().count();
     if count <= max_chars {
         return input.to_string();
@@ -296,30 +299,31 @@ mod tests {
     fn formats_empty_and_truncates_utf8_markdown_safely() {
         let payload = serde_json::json!({
             "ok": true,
-            "url": "https://example.com/post",
             "title": "Demo Post",
             "markdown": "# 你好世界\n\n这是一段包含中文字符的测试文本。"
-        })
-        .to_string();
+        });
 
-        let full = format_markdown_response(&payload, 1000).expect("full format");
+        let full =
+            format_markdown_response("https://example.com/post", &payload, 1000).expect("full");
         assert!(full.contains("- Page URL: https://example.com/post"));
         assert!(full.contains("# 你好世界"));
 
-        let cut = format_markdown_response(&payload, 6).expect("utf8 safe truncation");
+        let cut = format_markdown_response("https://example.com/post", &payload, 6)
+            .expect("utf8 safe truncation");
         assert!(cut.contains("[truncated at 6 chars"));
         assert!(cut.contains("# 你好世界"));
 
         let exact = format_markdown_response(
-            &serde_json::json!({"ok": true, "url": "https://a.test", "title": "T", "markdown": "123456"}).to_string(),
+            "https://a.test",
+            &serde_json::json!({"ok": true, "title": "T", "markdown": "123456"}),
             6,
         )
         .expect("exact boundary");
         assert!(!exact.contains("truncated"));
 
         let empty = format_markdown_response(
-            &serde_json::json!({"ok": true, "url": "https://a.test", "title": "T", "markdown": ""})
-                .to_string(),
+            "https://a.test",
+            &serde_json::json!({"ok": true, "title": "T", "markdown": ""}),
             100,
         )
         .expect("empty page");
@@ -327,17 +331,18 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_selector_miss_and_malformed_json_errors() {
+    fn surfaces_selector_miss_and_non_object_errors() {
         let payload = serde_json::json!({
             "ok": false,
             "error": "No element matched CSS selector: article.missing"
-        })
-        .to_string();
-        let err = format_markdown_response(&payload, 1000).expect_err("must fail closed");
+        });
+        let err =
+            format_markdown_response("https://a.test", &payload, 1000).expect_err("must fail");
         assert!(err.contains("article.missing"));
 
-        let bad_json = format_markdown_response("{not-json", 1000).expect_err("invalid json");
-        assert!(bad_json.contains("Failed to parse markdown extractor output"));
+        let bad_val =
+            format_markdown_response("https://a.test", &Value::Null, 1000).expect_err("non-object");
+        assert!(bad_val.contains("Failed to parse markdown extractor output"));
     }
 
     #[test]
@@ -347,5 +352,6 @@ mod tests {
         assert!(expr.contains(r#"const sel = "main[data-id=\"a'b\"]";"#));
         assert!(expr.contains("grid.reduce("));
         assert!(!expr.contains("Math.max(..."));
+        assert!(!expr.contains("JSON.stringify"));
     }
 }

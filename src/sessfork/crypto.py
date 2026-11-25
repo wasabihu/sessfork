@@ -12,9 +12,11 @@ import ctypes
 import ctypes.util
 import fcntl
 import hashlib
+import hmac
 import json
 import os
 import pwd
+import stat
 import subprocess
 import sys
 import tempfile
@@ -34,6 +36,8 @@ BROWSER_KEYRING_MAP: dict[str, Tuple[str, str, str]] = {
     "brave": ("Brave Safe Storage", "Brave", "brave"),
     "edge": ("Microsoft Edge Safe Storage", "Microsoft Edge", "chromium"),
     "arc": ("Arc Safe Storage", "Arc", "chromium"),
+    "vivaldi": ("Vivaldi Safe Storage", "Vivaldi", "vivaldi"),
+    "chromium": ("Chromium Safe Storage", "Chromium", "chromium"),
 }
 
 
@@ -86,22 +90,50 @@ def _load_key_cache_dict(target: Path) -> Dict[str, str]:
     }
 
 
-def _write_key_cache_atomic(keys: Dict[str, str], target: Path) -> Path:
-    resolved = target.expanduser().resolve()
-    resolved.parent.mkdir(parents=True, exist_ok=True)
+def _ensure_private_key_target(target: Path) -> Path:
+    """Validate that `target` and its parent are non-symlink, user-owned, and strictly 0700."""
+    raw = target.expanduser()
+    if raw.is_symlink():
+        raise CryptoError(f"Refusing to use symlinked key cache file: {raw}")
+    if raw.parent.is_symlink():
+        raise CryptoError(f"Refusing to use symlinked key cache directory: {raw.parent}")
     try:
-        os.chmod(resolved.parent, 0o700)
-    except OSError:
-        pass
+        raw.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        dir_st = os.lstat(raw.parent)
+    except OSError as exc:
+        raise CryptoError(f"Failed to prepare private key cache directory {raw.parent}: {exc}") from exc
+    if stat.S_ISLNK(dir_st.st_mode) or not stat.S_ISDIR(dir_st.st_mode):
+        raise CryptoError(f"Key cache parent is not a regular directory: {raw.parent}")
+    if hasattr(os, "getuid") and dir_st.st_uid != os.getuid():
+        raise CryptoError(f"Key cache directory is not owned by current user: {raw.parent}")
+    try:
+        os.chmod(raw.parent, 0o700)
+        dir_st = os.lstat(raw.parent)
+    except OSError as exc:
+        raise CryptoError(f"Failed to enforce 0700 permissions on {raw.parent}: {exc}") from exc
+    if stat.S_IMODE(dir_st.st_mode) & 0o077:
+        raise CryptoError(f"Key cache directory has unsafe group/other permissions: {raw.parent}")
+    return raw.parent.resolve() / raw.name
+
+
+def _write_key_cache_atomic(keys: Dict[str, str], target: Path) -> Path:
+    resolved = _ensure_private_key_target(target)
 
     fd, tmp_name = tempfile.mkstemp(dir=str(resolved.parent), prefix=".keys_", suffix=".tmp")
+    fd_owned = True
     try:
-        os.chmod(fd, 0o600)
+        os.fchmod(fd, 0o600)
+        fd_owned = False
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump({"keys": dict(sorted(keys.items()))}, fh, indent=2)
             fh.write("\n")
         os.replace(tmp_name, resolved)
     except BaseException:
+        if fd_owned:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         try:
             os.unlink(tmp_name)
         except OSError:
@@ -113,6 +145,8 @@ def _write_key_cache_atomic(keys: Dict[str, str], target: Path) -> Path:
 def load_cached_aes_key(browser: str, cache_path: Optional[Path] = None) -> Optional[bytes]:
     """Load cached PBKDF2-derived 16-byte AES key from 0600 keys.json if present."""
     target = (cache_path or _default_key_cache_path()).expanduser()
+    if target.is_symlink() or target.parent.is_symlink():
+        raise CryptoError(f"Refusing to read symlinked key cache: {target}")
     keys = _load_key_cache_dict(target)
     return _decode_aes_hex(keys.get(browser))
 
@@ -120,18 +154,18 @@ def load_cached_aes_key(browser: str, cache_path: Optional[Path] = None) -> Opti
 @contextlib.contextmanager
 def _exclusive_key_cache_lock(target: Path) -> Iterator[None]:
     """Serialize concurrent read-modify-write operations on the derived key cache."""
-    resolved = target.expanduser().resolve()
-    resolved.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(resolved.parent, 0o700)
-    except OSError:
-        pass
+    resolved = _ensure_private_key_target(target)
     lock_path = resolved.parent / f".{resolved.name}.lock"
     if lock_path.is_symlink():
         raise CryptoError(f"Refusing to use symlinked key cache lock file: {lock_path}")
     flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(str(lock_path), flags, 0o600)
     try:
+        lock_st = os.fstat(fd)
+        if not stat.S_ISREG(lock_st.st_mode):
+            raise CryptoError(f"Refusing non-regular key cache lock file: {lock_path}")
+        if hasattr(os, "getuid") and lock_st.st_uid != os.getuid():
+            raise CryptoError(f"Key cache lock file is not owned by current user: {lock_path}")
         os.fchmod(fd, 0o600)
         fcntl.flock(fd, fcntl.LOCK_EX)
         try:
@@ -150,7 +184,7 @@ def save_cached_aes_key_atomic(
     """Persist PBKDF2-derived 16-byte AES key atomically with 0600 permissions."""
     if len(key) != AES_BLOCK_SIZE:
         raise CryptoError(f"Derived AES key must be {AES_BLOCK_SIZE} bytes, got {len(key)}")
-    target = (cache_path or _default_key_cache_path()).expanduser().resolve()
+    target = (cache_path or _default_key_cache_path()).expanduser()
     with _exclusive_key_cache_lock(target):
         keys = _load_key_cache_dict(target)
         keys[browser] = key.hex()
@@ -192,6 +226,8 @@ def clear_cached_aes_keys(
 def list_cached_key_browsers(cache_path: Optional[Path] = None) -> List[str]:
     """Return sorted browser names present in the derived-key cache (never exposes key bytes)."""
     target = (cache_path or _default_key_cache_path()).expanduser()
+    if target.is_symlink() or target.parent.is_symlink():
+        raise CryptoError(f"Refusing to read symlinked key cache: {target}")
     return sorted(_load_key_cache_dict(target).keys())
 
 
@@ -344,6 +380,10 @@ def _get_macos_common_crypto() -> ctypes.CDLL:
 
 
 def _macos_cc_crypt(op: int, data: bytes, key: bytes, iv: bytes) -> bytes:
+    if len(key) != AES_BLOCK_SIZE:
+        raise CryptoError(f"AES-128 key must be {AES_BLOCK_SIZE} bytes, got {len(key)}")
+    if len(iv) != AES_BLOCK_SIZE:
+        raise CryptoError(f"AES-128 IV must be {AES_BLOCK_SIZE} bytes, got {len(iv)}")
     lib = _get_macos_common_crypto()
     out_buf = ctypes.create_string_buffer(len(data) + AES_BLOCK_SIZE)
     moved = ctypes.c_size_t(0)
@@ -426,6 +466,10 @@ def _get_linux_libcrypto() -> ctypes.CDLL:
 
 
 def _linux_libcrypto_crypt(encrypt: bool, data: bytes, key: bytes, iv: bytes) -> bytes:
+    if len(key) != AES_BLOCK_SIZE:
+        raise CryptoError(f"AES-128 key must be {AES_BLOCK_SIZE} bytes, got {len(key)}")
+    if len(iv) != AES_BLOCK_SIZE:
+        raise CryptoError(f"AES-128 IV must be {AES_BLOCK_SIZE} bytes, got {len(iv)}")
     lib = _get_linux_libcrypto()
     ctx = lib.EVP_CIPHER_CTX_new()
     if not ctx:
@@ -451,8 +495,10 @@ def _linux_libcrypto_crypt(encrypt: bool, data: bytes, key: bytes, iv: bytes) ->
 
 def aes_128_cbc_decrypt_raw(ciphertext: bytes, key: bytes, iv: bytes = CHROMIUM_CBC_IV) -> bytes:
     """Decrypt raw AES-128-CBC blocks without stripping PKCS#7 padding."""
-    if len(key) != 16:
-        raise CryptoError(f"AES-128 key must be 16 bytes, got {len(key)}")
+    if len(key) != AES_BLOCK_SIZE:
+        raise CryptoError(f"AES-128 key must be {AES_BLOCK_SIZE} bytes, got {len(key)}")
+    if len(iv) != AES_BLOCK_SIZE:
+        raise CryptoError(f"AES-128 IV must be {AES_BLOCK_SIZE} bytes, got {len(iv)}")
     if not ciphertext or len(ciphertext) % AES_BLOCK_SIZE != 0:
         raise CryptoError("Ciphertext length must be a positive multiple of 16 bytes")
 
@@ -463,6 +509,10 @@ def aes_128_cbc_decrypt_raw(ciphertext: bytes, key: bytes, iv: bytes = CHROMIUM_
 
 def aes_128_cbc_encrypt_pkcs7(plaintext: bytes, key: bytes, iv: bytes = CHROMIUM_CBC_IV) -> bytes:
     """Encrypt plaintext with AES-128-CBC + PKCS#7 padding (used in self-tests)."""
+    if len(key) != AES_BLOCK_SIZE:
+        raise CryptoError(f"AES-128 key must be {AES_BLOCK_SIZE} bytes, got {len(key)}")
+    if len(iv) != AES_BLOCK_SIZE:
+        raise CryptoError(f"AES-128 IV must be {AES_BLOCK_SIZE} bytes, got {len(iv)}")
     pad_len = AES_BLOCK_SIZE - (len(plaintext) % AES_BLOCK_SIZE)
     padded = plaintext + bytes([pad_len]) * pad_len
     if sys.platform == "darwin":
@@ -487,7 +537,7 @@ def decrypt_chromium_cookie(
     plain_value: str,
     host_key: str,
     aes_key: bytes,
-    db_version: int = 24,
+    db_version: Optional[int] = 24,
 ) -> Optional[str]:
     """Decrypt a Chromium cookie row, handling v10/v11 envelopes and DB v24+ SHA256 prefixes."""
     if plain_value:
@@ -511,9 +561,15 @@ def decrypt_chromium_cookie(
     except CryptoError:
         return None
 
-    # Chrome 130+ (cookie DB meta.version >= 24) prepends SHA256(host_key) (32 bytes)
+    # Chrome 130+ (cookie DB meta.version >= 24) prepends SHA256(host_key) (32 bytes).
+    # Enforce exact digest verification on v24+ DBs so wrong cached keys or cross-domain
+    # ciphertext swaps are rejected instead of producing corrupted values.
     host_digest = hashlib.sha256(host_key.encode("utf-8")).digest()
-    if len(unpadded) >= 32 and (unpadded[:32] == host_digest or db_version >= 24):
+    if db_version is not None and db_version >= 24:
+        if len(unpadded) < 32 or not hmac.compare_digest(unpadded[:32], host_digest):
+            return None
+        unpadded = unpadded[32:]
+    elif db_version is None and len(unpadded) >= 32 and hmac.compare_digest(unpadded[:32], host_digest):
         unpadded = unpadded[32:]
 
     try:

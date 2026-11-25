@@ -246,53 +246,77 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         effective_engine = "dual"
 
     if args.clear:
-        rem_c, left_c, rem_o, left_o = clear_state(args.domains, state_path=state_path)
-        payload = {
-            "action": "clear",
-            "removed_cookies": rem_c,
-            "remaining_cookies": left_c,
-            "removed_origins": rem_o,
-            "remaining_origins": left_o,
-            "state_file": str(state_path),
-        }
-        msg = (
-            f"Cleared {rem_c} cookie(s) and {rem_o} LocalStorage origin(s); "
-            f"{left_c} cookie(s) and {left_o} origin(s) remaining in {state_path}"
-        )
-        if args.purge_keys:
-            purged = clear_cached_aes_keys()
-            payload["purged_keys"] = purged
-            msg += f"; purged {purged} cached Safe Storage key(s)"
-        _emit(payload, args.as_json, msg)
-        return 0
+        try:
+            rem_c, left_c, rem_o, left_o = clear_state(
+                args.domains if args.domains else None,
+                state_path=state_path,
+            )
+            payload = {
+                "action": "clear",
+                "removed_cookies": rem_c,
+                "remaining_cookies": left_c,
+                "removed_origins": rem_o,
+                "remaining_origins": left_o,
+                "state_file": str(state_path),
+            }
+            msg = (
+                f"Cleared {rem_c} cookie(s) and {rem_o} LocalStorage origin(s); "
+                f"{left_c} cookie(s) and {left_o} origin(s) remaining in {state_path}"
+            )
+            if args.purge_keys:
+                purged = clear_cached_aes_keys()
+                payload["purged_keys"] = purged
+                msg += f"; purged {purged} cached Safe Storage key(s)"
+            _emit(payload, args.as_json, msg)
+            return 0
+        except (CryptoError, BrowserProfileError, LevelDBFormatError, OSError) as exc:
+            if args.as_json:
+                print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+            else:
+                print(f"sessfork error: {exc}", file=sys.stderr)
+            return 1
 
     if args.purge_keys:
-        purged = clear_cached_aes_keys()
-        payload = {"action": "purge_keys", "purged_keys": purged}
-        _emit(payload, args.as_json, f"Purged {purged} cached Safe Storage key(s).")
-        return 0
+        try:
+            purged = clear_cached_aes_keys()
+            payload = {"action": "purge_keys", "purged_keys": purged}
+            _emit(payload, args.as_json, f"Purged {purged} cached Safe Storage key(s).")
+            return 0
+        except (CryptoError, BrowserProfileError, OSError) as exc:
+            if args.as_json:
+                print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+            else:
+                print(f"sessfork error: {exc}", file=sys.stderr)
+            return 1
 
     if args.status:
-        info = summarize_state(state_path)
-        config_paths = target_mcp_config_paths(args.target)
-        wired = [str(p) for p in config_paths if p.is_file()]
-        info["wired_mcp_configs"] = wired
-        info["cached_key_browsers"] = list_cached_key_browsers()
-        shell_info = inspect_mcp_headless_shell(config_paths=config_paths)
-        info["playwright_headless_shell"] = shell_info["playwright_headless_shell"]
-        info["auto_pin_disabled"] = shell_info["auto_pin_disabled"]
-        info["pinned_mcp_configs"] = shell_info["pinned_mcp_configs"]
-        info["unpinned_mcp_configs"] = shell_info["unpinned_mcp_configs"]
-        info["stale_mcp_configs"] = shell_info["stale_mcp_configs"]
-        info["cdp_mcp_configs"] = shell_info["cdp_mcp_configs"]
-        info["engine_modes"] = shell_info["engine_modes"]
-        info["moli_binary"] = shell_info["moli_binary"]
-        info["moli_version"] = shell_info["moli_version"]
-        info["rust_mcp_binary"] = shell_info["rust_mcp_binary"]
-        info["rust_mcp_version"] = shell_info["rust_mcp_version"]
-        info["warning"] = shell_info["warning"]
-        _emit_status(info, args.as_json)
-        return 0
+        try:
+            info = summarize_state(state_path)
+            config_paths = target_mcp_config_paths(args.target)
+            wired = [str(p) for p in config_paths if p.is_file()]
+            info["wired_mcp_configs"] = wired
+            info["cached_key_browsers"] = list_cached_key_browsers()
+            shell_info = inspect_mcp_headless_shell(config_paths=config_paths)
+            info["playwright_headless_shell"] = shell_info["playwright_headless_shell"]
+            info["auto_pin_disabled"] = shell_info["auto_pin_disabled"]
+            info["pinned_mcp_configs"] = shell_info["pinned_mcp_configs"]
+            info["unpinned_mcp_configs"] = shell_info["unpinned_mcp_configs"]
+            info["stale_mcp_configs"] = shell_info["stale_mcp_configs"]
+            info["cdp_mcp_configs"] = shell_info["cdp_mcp_configs"]
+            info["engine_modes"] = shell_info["engine_modes"]
+            info["moli_binary"] = shell_info["moli_binary"]
+            info["moli_version"] = shell_info["moli_version"]
+            info["rust_mcp_binary"] = shell_info["rust_mcp_binary"]
+            info["rust_mcp_version"] = shell_info["rust_mcp_version"]
+            info["warning"] = shell_info["warning"]
+            _emit_status(info, args.as_json)
+            return 0
+        except (CryptoError, BrowserProfileError, OSError) as exc:
+            if args.as_json:
+                print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+            else:
+                print(f"sessfork error: {exc}", file=sys.stderr)
+            return 1
 
     if args.no_cookies and args.no_local_storage:
         print("sessfork error: cannot pass both --no-cookies and --no-local-storage", file=sys.stderr)
@@ -304,7 +328,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         has_fork_request = True
         domains = []
     elif args.refresh:
-        saved_domains = list_state_domains(state_path)
+        try:
+            saved_domains = list_state_domains(state_path)
+        except (BrowserProfileError, OSError) as exc:
+            if args.as_json:
+                print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+            else:
+                print(f"sessfork error: {exc}", file=sys.stderr)
+            return 1
         combined: List[str] = []
         for dom in saved_domains + list(args.domains):
             if dom not in combined:
@@ -348,9 +379,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 include_local_storage=not args.no_local_storage,
                 refresh_key=args.refresh_key,
                 cache_key=args.cache_key,
+                all_domains=args.all_domains,
             )
             saved_path, up_cookies, tot_cookies, up_ls_keys, tot_origins = upsert_session_state(
-                new_cookies=cookies,
+                new_cookies=None if args.no_cookies else cookies,
                 new_origins=None if args.no_local_storage else origins,
                 refreshed_domains=domains,
                 state_path=state_path,

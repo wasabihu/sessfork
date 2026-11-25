@@ -1387,13 +1387,84 @@ class SessforkTestSuite(unittest.TestCase):
                 t = threading.Thread(target=server.serve_forever, daemon=True)
                 t.start()
                 try:
-                    # 1. GET / serves HTML and never leaks raw secret cookie values
-                    html = urllib.request.urlopen(url, timeout=5).read().decode("utf-8")
+                    # 0. Unauthenticated GET / and GET /api/status are rejected (blocks cross-user & DNS rebinding)
+                    for unauth_path in ("", "api/status"):
+                        with self.assertRaises(urllib.error.HTTPError) as unauth_err:
+                            urllib.request.urlopen(url + unauth_path, timeout=5)
+                        self.assertEqual(unauth_err.exception.code, 403)
+                        self.assertEqual(unauth_err.exception.headers.get("X-Frame-Options"), "DENY")
+                        self.assertIn(
+                            "frame-ancestors 'none'",
+                            unauth_err.exception.headers.get("Content-Security-Policy", ""),
+                        )
+                        body_txt = unauth_err.exception.read().decode("utf-8")
+                        self.assertNotIn(token, body_txt)
+                        unauth_err.exception.close()
+
+                    # 0b. DNS-rebinding Host header is rejected on GET even with token
+                    rebind_req = urllib.request.Request(
+                        url + "api/status",
+                        headers={"Host": "evil.example:9999", "X-Sessfork-Token": token},
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as rb_err:
+                        urllib.request.urlopen(rebind_req, timeout=5)
+                    self.assertEqual(rb_err.exception.code, 403)
+                    rb_err.exception.close()
+
+                    # 0c. Cross-site Sec-Fetch-Site is rejected on GET
+                    xs_req = urllib.request.Request(
+                        url + "api/status",
+                        headers={"Sec-Fetch-Site": "cross-site", "X-Sessfork-Token": token},
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as xs_err:
+                        urllib.request.urlopen(xs_req, timeout=5)
+                    self.assertEqual(xs_err.exception.code, 403)
+                    xs_err.exception.close()
+
+                    # 1. Authenticated GET /?token=... and POST /auth (file:// launcher) both set
+                    #    HttpOnly SameSite=Strict cookie and return a same-origin bootstrap page
+                    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor())
+                    with opener.open(f"{url}?token={token}", timeout=5) as boot_resp:
+                        boot_html = boot_resp.read().decode("utf-8")
+                        self.assertIn('window.location.replace("/")', boot_html)
+                        self.assertEqual(boot_resp.headers.get("X-Frame-Options"), "DENY")
+                    with opener.open(url, timeout=5) as resp:
+                        html = resp.read().decode("utf-8")
+                        self.assertEqual(resp.headers.get("X-Frame-Options"), "DENY")
                     self.assertIn("sessfork Studio", html)
                     self.assertNotIn("SUPER_SECRET_COOKIE_VALUE_DO_NOT_LEAK", html)
 
-                    # 2. GET /api/status is redacted
-                    status_raw = urllib.request.urlopen(url + "api/status", timeout=5).read().decode("utf-8")
+                    # 1b. POST /auth from file:// launcher (Origin: null, Sec-Fetch-Site: cross-site)
+                    #     and Cookie header containing unrelated localhost brackets (`foo[bar]=1`)
+                    auth_req = urllib.request.Request(
+                        url + "auth",
+                        data=f"token={token}".encode("utf-8"),
+                        headers={
+                            "Content-Type": "application/x-www-form-urlencoded",
+                            "Origin": "null",
+                            "Sec-Fetch-Site": "cross-site",
+                        },
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(auth_req, timeout=5) as auth_resp:
+                        self.assertEqual(auth_resp.status, 200)
+                        set_cookie = auth_resp.headers.get("Set-Cookie", "")
+                        self.assertIn("HttpOnly", set_cookie)
+                        self.assertIn("SameSite=Strict", set_cookie)
+                        session_pair = set_cookie.split(";", 1)[0]
+                    dirty_cookie_req = urllib.request.Request(
+                        url + "api/status",
+                        headers={
+                            "Cookie": f"foo[bar]=1; other cookie=abc; {session_pair}",
+                            "Sec-Fetch-Site": "same-origin",
+                        },
+                    )
+                    with urllib.request.urlopen(dirty_cookie_req, timeout=5) as dirty_resp:
+                        self.assertEqual(dirty_resp.status, 200)
+                        self.assertTrue(json.loads(dirty_resp.read().decode("utf-8"))["ok"])
+
+                    # 2. Authenticated GET /api/status (via session cookie) is redacted
+                    status_raw = opener.open(url + "api/status", timeout=5).read().decode("utf-8")
                     self.assertNotIn("SUPER_SECRET_COOKIE_VALUE_DO_NOT_LEAK", status_raw)
                     status = json.loads(status_raw)
                     self.assertTrue(status["ok"])
@@ -1411,6 +1482,44 @@ class SessforkTestSuite(unittest.TestCase):
                     self.assertEqual(ctx_err.exception.code, 403)
                     ctx_err.exception.close()
 
+                    # 3b. POST /api/fork rejects path-traversal profile parameter
+                    trav_req = urllib.request.Request(
+                        url + "api/fork",
+                        data=json.dumps({"domain": "github.com", "profile": "/tmp/attacker"}).encode("utf-8"),
+                        headers={"Content-Type": "application/json", "X-Sessfork-Token": token},
+                        method="POST",
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as trav_err:
+                        urllib.request.urlopen(trav_req, timeout=5)
+                    self.assertEqual(trav_err.exception.code, 400)
+                    trav_err.exception.close()
+
+                    # 3c. POST /api/clear with empty {} or >64 KiB body fails closed (never wipes all!)
+                    empty_clr = urllib.request.Request(
+                        url + "api/clear",
+                        data=b"{}",
+                        headers={"Content-Type": "application/json", "X-Sessfork-Token": token},
+                        method="POST",
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as empty_err:
+                        urllib.request.urlopen(empty_clr, timeout=5)
+                    self.assertEqual(empty_err.exception.code, 400)
+                    empty_err.exception.close()
+
+                    huge_clr = urllib.request.Request(
+                        url + "api/clear",
+                        data=(b'{"domain":"' + b"a" * 70000 + b'"}'),
+                        headers={"Content-Type": "application/json", "X-Sessfork-Token": token},
+                        method="POST",
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as huge_err:
+                        urllib.request.urlopen(huge_clr, timeout=5)
+                    self.assertEqual(huge_err.exception.code, 413)
+                    huge_err.exception.close()
+
+                    still_there = json.loads(opener.open(url + "api/status", timeout=5).read().decode("utf-8"))
+                    self.assertEqual(still_there["data"]["state"]["total_cookies"], 1)
+
                     # 4. POST with valid CSRF token switches engine to dual
                     ok_req = urllib.request.Request(
                         url + "api/engine",
@@ -1422,7 +1531,7 @@ class SessforkTestSuite(unittest.TestCase):
                     self.assertTrue(res["ok"])
                     self.assertEqual(res["data"]["active_engine"], "dual")
 
-                    # 5. POST /api/clear removes github.com cleanly
+                    # 5. POST /api/clear removes github.com cleanly; explicit clear_all=True also works
                     clr_req = urllib.request.Request(
                         url + "api/clear",
                         data=json.dumps({"domain": "github.com"}).encode("utf-8"),
@@ -1433,6 +1542,16 @@ class SessforkTestSuite(unittest.TestCase):
                     self.assertTrue(clr["ok"])
                     self.assertEqual(clr["removed_cookies"], 1)
                     self.assertEqual(clr["remaining_cookies"], 0)
+
+                    clr_all_req = urllib.request.Request(
+                        url + "api/clear",
+                        data=json.dumps({"clear_all": True}).encode("utf-8"),
+                        headers={"Content-Type": "application/json", "X-Sessfork-Token": token},
+                        method="POST",
+                    )
+                    clr_all = json.loads(urllib.request.urlopen(clr_all_req, timeout=5).read().decode("utf-8"))
+                    self.assertTrue(clr_all["ok"])
+                    self.assertEqual(clr_all["remaining_cookies"], 0)
                 finally:
                     server.shutdown()
                     server.server_close()
@@ -1554,11 +1673,12 @@ class SessforkTestSuite(unittest.TestCase):
                 conn.executemany(
                     "INSERT INTO cookies VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
                     [
-                        # Primary unpartitioned session cookie comes first
+                        # Primary unpartitioned session cookie comes first (real Chrome sets
+                        # has_cross_site_ancestor=1 on unpartitioned rows with empty top_frame_site_key)
                         (
                             ".x.com", "auth_token", "",
                             _encrypt_cookie_blob("primary_live_token", ".x.com", self.aes_key),
-                            "/", future_exp, 1, 1, 1, 0, "", 0,
+                            "/", future_exp, 1, 1, 1, 0, "", 1,
                         ),
                         # CHIPS partitioned third-party iframe cookie comes later with identical key
                         (
@@ -1623,6 +1743,196 @@ class SessforkTestSuite(unittest.TestCase):
                     check.close()
             finally:
                 conn.close()
+
+    def test_security_audit_v015_python_guards(self) -> None:
+        from sessfork.chrome import _convert_expires, _snapshot_cookie_db, validate_profile_name
+        from sessfork.crypto import (
+            CryptoError,
+            aes_128_cbc_decrypt_raw,
+            aes_128_cbc_encrypt_pkcs7,
+            list_cached_key_browsers,
+            save_cached_aes_key_atomic,
+        )
+        from sessfork.localstorage import _iter_block_entries
+        from sessfork.state import save_storage_state_atomic
+
+        # 1. P0-2: Empty/whitespace domains must NEVER degrade into --all-domains or clear-all
+        for blank in ("", "   ", "\t"):
+            with self.assertRaises(BrowserProfileError):
+                normalize_domain_filter(blank)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "Cookies"
+            conn = sqlite3.connect(str(db_path))
+            try:
+                conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);")
+                conn.execute("INSERT INTO meta VALUES ('version', '24');")
+                conn.execute(
+                    "CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB, "
+                    "path TEXT, expires_utc INTEGER, is_secure INTEGER, is_httponly INTEGER, has_expires INTEGER, samesite INTEGER);"
+                )
+                conn.execute(
+                    "INSERT INTO cookies VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                    (".bank.example", "sid", "top_secret", b"", "/", 0, 1, 1, 0, 1),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            state_file = tmp_path / "store" / "state.json"
+
+            with self.assertRaises(BrowserProfileError):
+                extract_cookies([""], db_path=db_path, aes_key=self.aes_key)
+            with self.assertRaises(BrowserProfileError):
+                extract_cookies([], db_path=db_path, aes_key=self.aes_key)
+            rc_blank = main(["", "--db-path", str(db_path), "--state-file", str(state_file), "--target", "none"])
+            self.assertNotEqual(rc_blank, 0)
+            self.assertFalse(state_file.exists())
+
+            # Seed one domain, then verify `sessfork --clear ""` fails closed and preserves it
+            upsert_session_state(
+                new_cookies=[{"name": "sid", "value": "v", "domain": ".github.com", "path": "/", "expires": -1}],
+                state_path=state_file,
+            )
+            rc_clr_blank = main(["--clear", "", "--state-file", str(state_file)])
+            self.assertNotEqual(rc_clr_blank, 0)
+            self.assertEqual(len(load_storage_state(state_file)["cookies"]), 1)
+
+            # 2. P1-3: Symlinked state dir, state file, mirror dir, and keys.json rejected BEFORE .resolve()
+            outside_dir = tmp_path / "outside"
+            outside_dir.mkdir(mode=0o700)
+            sym_state_dir = tmp_path / "sym_store"
+            os.symlink(outside_dir, sym_state_dir)
+            with self.assertRaises(BrowserProfileError):
+                save_storage_state_atomic({"cookies": [], "origins": []}, state_path=sym_state_dir / "state.json")
+
+            real_victim = outside_dir / "victim.txt"
+            real_victim.write_text("KEEP_ME", encoding="utf-8")
+            sym_state_file = tmp_path / "store" / "sym_state.json"
+            os.symlink(real_victim, sym_state_file)
+            with self.assertRaises(BrowserProfileError):
+                save_storage_state_atomic({"cookies": [], "origins": []}, state_path=sym_state_file)
+            self.assertEqual(real_victim.read_text(encoding="utf-8"), "KEEP_ME")
+
+            mirror_parent = tmp_path / "mirror_test"
+            mirror_parent.mkdir(mode=0o700)
+            os.symlink(outside_dir, mirror_parent / "playwright-output")
+            with self.assertRaises(BrowserProfileError):
+                save_storage_state_atomic({"cookies": [], "origins": []}, state_path=mirror_parent / "state.json")
+
+            sym_keys = tmp_path / "store" / "sym_keys.json"
+            os.symlink(real_victim, sym_keys)
+            with self.assertRaises(CryptoError):
+                save_cached_aes_key_atomic("chrome", self.aes_key, cache_path=sym_keys)
+            with self.assertRaises(CryptoError):
+                list_cached_key_browsers(cache_path=sym_keys)
+            self.assertEqual(real_victim.read_text(encoding="utf-8"), "KEEP_ME")
+
+            # 2b. ensure_mcp_configured rejects symlinked state.json / playwright-output BEFORE .resolve()
+            with self.assertRaises(BrowserProfileError):
+                ensure_mcp_configured(
+                    ["claude"],
+                    state_path=sym_state_file,
+                    home=tmp_path / "mcp_home",
+                    npx_cmd="/opt/homebrew/bin/npx",
+                )
+            with self.assertRaises(BrowserProfileError):
+                ensure_mcp_configured(
+                    ["claude"],
+                    state_path=mirror_parent / "state.json",
+                    home=tmp_path / "mcp_home2",
+                    npx_cmd="/opt/homebrew/bin/npx",
+                )
+            self.assertEqual(real_victim.read_text(encoding="utf-8"), "KEEP_ME")
+
+            # 3. P1-4: Symlinked WAL/SHM sidecar rejected BEFORE sqlite3.connect
+            shm_target = outside_dir / "shm_victim"
+            shm_target.write_bytes(b"UNCHANGED")
+            os.symlink(shm_target, Path(str(db_path) + "-shm"))
+            with self.assertRaises(BrowserProfileError):
+                _snapshot_cookie_db(db_path, tmp_path / "snap.db")
+            self.assertEqual(shm_target.read_bytes(), b"UNCHANGED")
+
+            # 4. P1-2: Profile path traversal blocked
+            for bad_prof in ("/tmp/evil", "../outside", "a/b", "..", "."):
+                with self.assertRaises(BrowserProfileError):
+                    validate_profile_name(bad_prof)
+
+            # 5. P1-5: Chrome v24+ rejects wrong host_key SHA-256 prefix (no blind 32-byte strip)
+            v24_blob = _encrypt_cookie_blob("secret_for_a", ".a.example", self.aes_key)
+            self.assertEqual(
+                decrypt_chromium_cookie(v24_blob, "", ".a.example", self.aes_key, db_version=24),
+                "secret_for_a",
+            )
+            self.assertIsNone(
+                decrypt_chromium_cookie(v24_blob, "", ".b.example", self.aes_key, db_version=24)
+            )
+            wrong_key = derive_aes_key(b"totally-wrong-password", MACOS_ITERATIONS)
+            self.assertIsNone(
+                decrypt_chromium_cookie(v24_blob, "", ".a.example", wrong_key, db_version=24)
+            )
+
+            # 6. P2-1: Re-forking a domain prunes cookies that were logged out / deleted in Chrome
+            prune_state = tmp_path / "prune_store" / "state.json"
+            upsert_session_state(
+                new_cookies=[
+                    {"name": "old_gh", "value": "gone", "domain": ".github.com", "path": "/", "expires": -1},
+                    {"name": "keep_lin", "value": "ok", "domain": ".linear.app", "path": "/", "expires": -1},
+                ],
+                state_path=prune_state,
+            )
+            upsert_session_state(
+                new_cookies=[
+                    {"name": "new_gh", "value": "fresh", "domain": ".github.com", "path": "/", "expires": -1},
+                ],
+                refreshed_domains=["github.com"],
+                state_path=prune_state,
+            )
+            names_after = {c["name"] for c in load_storage_state(prune_state)["cookies"]}
+            self.assertEqual(names_after, {"new_gh", "keep_lin"})
+
+            # --no-cookies refresh (new_cookies=None) must preserve existing cookies for that domain
+            upsert_session_state(
+                new_cookies=None,
+                new_origins=[{"origin": "https://github.com", "localStorage": [{"name": "k", "value": "v"}]}],
+                refreshed_domains=["github.com"],
+                state_path=prune_state,
+            )
+            names_preserved = {c["name"] for c in load_storage_state(prune_state)["cookies"]}
+            self.assertEqual(names_preserved, {"new_gh", "keep_lin"})
+
+            # 7. P2-2: Expanded public suffixes + generic second-level ccTLDs rejected; concrete subdomains ok
+            for bad_dom in ("appspot.com", "azurewebsites.net", "co.nz", "edu.cn", "trycloudflare.com", "com.mx"):
+                with self.assertRaises(BrowserProfileError, msg=f"Expected rejection for {bad_dom}"):
+                    normalize_domain_filter(bad_dom)
+            self.assertEqual(normalize_domain_filter("my-app.appspot.com"), "my-app.appspot.com")
+            self.assertEqual(normalize_domain_filter("shop.co.nz"), "shop.co.nz")
+
+            # 8. P2-3: Pre-1970 expired cookie returns 0.0 (expired), NOT -1 (session forever)
+            self.assertEqual(_convert_expires(1, 1), 0.0)
+            self.assertEqual(_convert_expires(0, 0), -1)
+
+            # 9. P2-4: crypto.py enforces 16-byte key/IV before C calls; LevelDB handles truncated varint
+            with self.assertRaises(CryptoError):
+                aes_128_cbc_encrypt_pkcs7(b"hi", self.aes_key, iv=b"short")
+            with self.assertRaises(CryptoError):
+                aes_128_cbc_decrypt_raw(b"0" * 16, self.aes_key, iv=b"short")
+            self.assertEqual(list(_iter_block_entries(b"\x80\x80\x00\x00\x00\x00")), [])
+
+            # 10. P2-6: Canonical SKILL.md and packaged data/SKILL.md stay in sync with complete tool bans
+            repo_root = Path(__file__).resolve().parents[1]
+            repo_skill = (repo_root / "skills" / "sessfork" / "SKILL.md").read_text(encoding="utf-8")
+            pkg_skill = (repo_root / "src" / "sessfork" / "data" / "SKILL.md").read_text(encoding="utf-8")
+            self.assertEqual(repo_skill, pkg_skill)
+            for forbidden_tool in (
+                "browser_storage_state",
+                "browser_cookie_list",
+                "browser_cookie_get",
+                "browser_localstorage_list",
+                "browser_localstorage_get",
+                "browser_sessionstorage_list",
+                "browser_sessionstorage_get",
+            ):
+                self.assertIn(forbidden_tool, pkg_skill)
 
 
 if __name__ == "__main__":

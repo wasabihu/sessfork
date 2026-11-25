@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import struct
 import tempfile
 from pathlib import Path
@@ -139,9 +140,12 @@ def _iter_block_entries(block: bytes) -> Iterator[Tuple[bytes, bytes]]:
     pos = 0
     prev_key = b""
     while pos < entries_end:
-        shared, pos = read_varint(block, pos)
-        non_shared, pos = read_varint(block, pos)
-        val_len, pos = read_varint(block, pos)
+        try:
+            shared, pos = read_varint(block, pos)
+            non_shared, pos = read_varint(block, pos)
+            val_len, pos = read_varint(block, pos)
+        except LevelDBFormatError:
+            break
         if pos + non_shared + val_len > entries_end:
             break
         key = prev_key[:shared] + block[pos : pos + non_shared]
@@ -305,9 +309,16 @@ def _parse_localstorage_user_key(user_key: bytes) -> Optional[Tuple[str, str]]:
     return f"{parsed.scheme}://{parsed.netloc.lower()}", js_key
 
 
-def _origin_matches_domains(origin: str, normalized_domains: Sequence[str]) -> bool:
-    if not normalized_domains:
+def _origin_matches_domains(
+    origin: str,
+    normalized_domains: Optional[Sequence[str]],
+    *,
+    all_domains: bool = False,
+) -> bool:
+    if all_domains or normalized_domains is None:
         return True
+    if not normalized_domains:
+        return False
     host = (urlparse(origin).hostname or "").lstrip(".").lower()
     for dom in normalized_domains:
         if host == dom or host.endswith("." + dom):
@@ -315,12 +326,59 @@ def _origin_matches_domains(origin: str, normalized_domains: Sequence[str]) -> b
     return False
 
 
+def _copy_regular_file_0600(src: Path, dst: Path) -> bool:
+    """Copy a regular non-symlink file using O_NOFOLLOW into a 0600 destination."""
+    read_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        src_fd = os.open(str(src), read_flags)
+    except OSError:
+        return False
+    src_owned = True
+    try:
+        src_st = os.fstat(src_fd)
+        if not stat.S_ISREG(src_st.st_mode):
+            return False
+        write_flags = os.O_CREAT | os.O_TRUNC | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+        dst_fd = os.open(str(dst), write_flags, 0o600)
+        dst_owned = True
+        try:
+            os.fchmod(dst_fd, 0o600)
+            src_owned = False
+            dst_owned = False
+            with os.fdopen(src_fd, "rb") as rfh, os.fdopen(dst_fd, "wb") as wfh:
+                shutil.copyfileobj(rfh, wfh)
+            return True
+        except OSError:
+            if dst_owned:
+                try:
+                    os.close(dst_fd)
+                except OSError:
+                    pass
+            try:
+                dst.unlink()
+            except OSError:
+                pass
+            return False
+    finally:
+        if src_owned:
+            try:
+                os.close(src_fd)
+            except OSError:
+                pass
+
+
 def extract_local_storage(
     leveldb_dir: Path,
-    normalized_domains: Sequence[str],
+    normalized_domains: Optional[Sequence[str]],
+    *,
+    all_domains: bool = False,
 ) -> List[OriginEntry]:
     """Snapshot `<Profile>/Local Storage/leveldb` into an isolated 0700 temp dir and extract Playwright origins."""
+    if leveldb_dir.is_symlink():
+        raise LevelDBFormatError(f"Refusing to read symlinked LevelDB directory: {leveldb_dir}")
     if not leveldb_dir.is_dir():
+        return []
+    if not all_domains and normalized_domains is not None and len(normalized_domains) == 0:
         return []
 
     # Map user_key -> (highest_seq, vtype, raw_value)
@@ -332,13 +390,11 @@ def extract_local_storage(
 
         copied_files: List[Path] = []
         for entry in sorted(leveldb_dir.iterdir()):
-            if entry.is_file() and not entry.is_symlink() and entry.suffix.lower() in (".ldb", ".sst", ".log"):
-                dest = tmp_dir / entry.name
-                try:
-                    shutil.copy2(entry, dest)
-                    copied_files.append(dest)
-                except OSError:
-                    continue
+            if entry.is_symlink() or not entry.is_file() or entry.suffix.lower() not in (".ldb", ".sst", ".log"):
+                continue
+            dest = tmp_dir / entry.name
+            if _copy_regular_file_0600(entry, dest):
+                copied_files.append(dest)
 
         for fpath in copied_files:
             try:
@@ -366,7 +422,7 @@ def extract_local_storage(
         if parsed_key is None:
             continue
         origin, js_key = parsed_key
-        if not _origin_matches_domains(origin, normalized_domains):
+        if not _origin_matches_domains(origin, normalized_domains, all_domains=all_domains):
             continue
         js_val = decode_chromium_dom_string(raw_val)
         if js_val is None:

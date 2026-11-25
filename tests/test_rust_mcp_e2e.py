@@ -13,6 +13,7 @@ import os
 import re
 import select
 import signal
+import stat
 import subprocess
 import tempfile
 import threading
@@ -132,6 +133,20 @@ if (mc) {
     })
   });
 }
+</script></body></html>"""
+        elif parsed.path == "/evil_proto":
+            html = """<!doctype html><html><head><title>UntrustedSite</title></head><body>
+<h1>Untrusted Attacker Page</h1>
+<script>
+window.__stolen = null;
+Object.defineProperty(Object.prototype, location.origin, {
+  configurable: true,
+  get() {
+    try { window.__stolen = Object.keys(this); } catch (_) { window.__stolen = 'ERR'; }
+    return undefined;
+  }
+});
+JSON.stringify = () => '{"url":"https://github.com/settings/tokens","title":"Spoofed","readyState":"complete"}';
 </script></body></html>"""
         else:
             html = "<!doctype html><html><head><title>Home</title></head><body><p>Hello</p></body></html>"
@@ -319,10 +334,15 @@ class RustMcpE2ETestSuite(unittest.TestCase):
                 ):
                     self.assertNotIn(forbidden, names)
 
-                # Direct outside path blocked
+                # Direct outside path blocked (and identical opaque error for nonexistent path)
                 is_err, txt = client.call_tool("browser_set_storage_state", {"filename": str(outside)})
                 self.assertTrue(is_err)
                 self.assertIn("outside allowed roots", txt)
+                is_err_missing, txt_missing = client.call_tool(
+                    "browser_set_storage_state", {"filename": str(tmp_dir / "definitely_missing.json")}
+                )
+                self.assertTrue(is_err_missing)
+                self.assertEqual(txt, txt_missing)
 
                 # Path traversal blocked
                 is_err, txt = client.call_tool(
@@ -342,8 +362,13 @@ class RustMcpE2ETestSuite(unittest.TestCase):
                 self.assertNotIn("SUPER_SECRET_COOKIE_999", txt)
                 self.assertNotIn("SUPER_SECRET_JWT_888", txt)
 
-                # Dangerous URL schemes rejected
-                for bad_url in ("file:///etc/passwd", "javascript:alert(1)"):
+                # Dangerous URL schemes rejected (including about:* other than about:blank and data:)
+                for bad_url in (
+                    "file:///etc/passwd",
+                    "javascript:alert(1)",
+                    "about:settings",
+                    "data:text/html,<h1>hi</h1>",
+                ):
                     is_err, txt = client.call_tool("browser_navigate", {"url": bad_url})
                     self.assertTrue(is_err, f"Expected {bad_url} to be blocked")
                     self.assertIn("Blocked URL", txt)
@@ -570,16 +595,28 @@ class RustMcpE2ETestSuite(unittest.TestCase):
             finally:
                 c_no.close()
 
-            # With --layout: writes valid PNG strictly inside out_dir (strips ../../ traversal!)
+            # With --layout: fails closed on traversal/hidden/non-png/symlink; writes 0600 PNG on valid filename
             c_yes = _MCPClient(RUST_MCP_BIN, [f"--moli={MOLI_BIN}", f"--output-dir={out_dir}", "--layout"])
             try:
                 c_yes.initialize()
                 c_yes.call_tool("browser_navigate", {"url": f"{self.origin}/"})
-                is_err, txt = c_yes.call_tool("browser_take_screenshot", {"filename": "../../safe_shot.png"})
+                for bad_shot in ("../../safe_shot.png", ".sessfork-state.json", "evil.txt", "sub/shot.png"):
+                    is_err, txt = c_yes.call_tool("browser_take_screenshot", {"filename": bad_shot})
+                    self.assertTrue(is_err, f"Expected {bad_shot!r} to be rejected, got: {txt}")
+
+                victim = Path(tmp) / "victim.png"
+                victim.write_bytes(b"KEEP_VICTIM")
+                os.symlink(victim, out_dir / "sym_shot.png")
+                is_err, txt = c_yes.call_tool("browser_take_screenshot", {"filename": "sym_shot.png"})
+                self.assertTrue(is_err, f"Expected symlink screenshot target to be rejected: {txt}")
+                self.assertEqual(victim.read_bytes(), b"KEEP_VICTIM")
+
+                is_err, txt = c_yes.call_tool("browser_take_screenshot", {"filename": "safe_shot.png"})
                 self.assertFalse(is_err, txt)
                 saved = out_dir / "safe_shot.png"
                 self.assertTrue(saved.is_file(), f"PNG missing at {saved}: {txt}")
                 self.assertTrue(saved.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
+                self.assertEqual(stat.S_IMODE(os.stat(saved).st_mode), 0o600)
                 self.assertFalse((Path(tmp) / "safe_shot.png").exists())
             finally:
                 c_yes.close()
@@ -751,6 +788,68 @@ class RustMcpE2ETestSuite(unittest.TestCase):
                 is_err, empty_cat = client.call_tool("browser_webmcp_list", {})
                 self.assertFalse(is_err, empty_cat)
                 self.assertIn("WebMCP Tools (0)", empty_cat)
+            finally:
+                client.close()
+
+    def test_09_cross_origin_ls_isolation_and_authoritative_url(self) -> None:
+        """Regression guard for SMCP-01 (P0 cross-origin LS leak) and SMCP-02 (P1 URL spoof)."""
+        assert RUST_MCP_BIN is not None and MOLI_BIN is not None
+        attacker_origin = f"http://localhost:{self.port}"
+        with tempfile.TemporaryDirectory(prefix="sf_e2e_sop_") as tmp:
+            out_dir = Path(tmp) / "out"
+            out_dir.mkdir(mode=0o700)
+            state_file = out_dir / "state.json"
+            state_file.write_text(
+                json.dumps(
+                    {
+                        "cookies": [],
+                        "origins": [
+                            {
+                                "origin": self.origin,
+                                "localStorage": [
+                                    {"name": "jwt", "value": "TRUSTED_ONLY_JWT_SECRET_999"},
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            client = _MCPClient(RUST_MCP_BIN, [f"--moli={MOLI_BIN}", f"--output-dir={out_dir}"])
+            try:
+                client.initialize()
+                # 1. Open untrusted attacker page (localhost != 127.0.0.1 origin) that poisons
+                #    Object.prototype[location.origin] and window.JSON.stringify
+                is_err, nav_txt = client.call_tool("browser_navigate", {"url": f"{attacker_origin}/evil_proto"})
+                self.assertFalse(is_err, nav_txt)
+                # Authoritative CDP URL must NOT be spoofed by poisoned window.JSON.stringify
+                self.assertIn(f"- Page URL: {attacker_origin}/evil_proto", nav_txt)
+                self.assertNotIn("https://github.com/settings/tokens", nav_txt)
+
+                # Markdown extractor must also use authoritative CDP URL and ignore JSON.stringify hijack
+                is_err, md_txt = client.call_tool("browser_extract_markdown", {})
+                self.assertFalse(is_err, md_txt)
+                self.assertIn(f"- Page URL: {attacker_origin}/evil_proto", md_txt)
+                self.assertNotIn("https://github.com/settings/tokens", md_txt)
+                self.assertIn("Untrusted Attacker Page", md_txt)
+
+                # 2. Hot-reload storage state while attacker tab is open: attacker must steal NOTHING
+                is_err, load_txt = client.call_tool("browser_set_storage_state", {"filename": str(state_file)})
+                self.assertFalse(is_err, load_txt)
+
+                is_err, ev_txt = client.call_tool(
+                    "browser_evaluate",
+                    {"function": "() => ({ stolen: window.__stolen, jwt: localStorage.getItem('jwt') })"},
+                )
+                self.assertFalse(is_err, ev_txt)
+                parsed = json.loads(ev_txt)
+                self.assertIsNone(parsed["stolen"])
+                self.assertIsNone(parsed["jwt"])
+
+                # 3. Navigating to the legitimate trusted origin still hydrates its LocalStorage cleanly
+                is_err, who_txt = client.call_tool("browser_navigate", {"url": f"{self.origin}/whoami"})
+                self.assertFalse(is_err, who_txt)
+                self.assertIn("TRUSTED_ONLY_JWT_SECRET_999", _page_title(who_txt))
             finally:
                 client.close()
 

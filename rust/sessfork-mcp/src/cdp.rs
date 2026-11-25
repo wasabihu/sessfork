@@ -1,3 +1,4 @@
+use crate::markdown::truncate_chars;
 use crate::webmcp::WebMcpTool;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -16,8 +17,11 @@ use std::os::unix::io::{FromRawFd, RawFd};
 use std::os::unix::process::CommandExt;
 
 const MAX_CONSOLE_ENTRIES_PER_SESSION: usize = 200;
+const MAX_CONSOLE_LINE_CHARS: usize = 4_096;
+const MAX_WEBMCP_TOOLS_PER_SESSION: usize = 128;
 const MAX_WEBMCP_INVOKED_PER_SESSION: usize = 64;
 const MAX_WEBMCP_RESPONSES_PER_SESSION: usize = 64;
+const MAX_CDP_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Default)]
 struct WebMcpSessionState {
@@ -129,12 +133,13 @@ impl SharedState {
     }
 
     fn push_console(&self, session_id: &str, line: String) {
+        let bounded = truncate_chars(&line, MAX_CONSOLE_LINE_CHARS);
         if let Ok(mut map) = self.console_logs.lock() {
             let q = map.entry(session_id.to_string()).or_default();
             if q.len() >= MAX_CONSOLE_ENTRIES_PER_SESSION {
                 q.pop_front();
             }
-            q.push_back(line);
+            q.push_back(bounded);
         }
     }
 
@@ -153,8 +158,10 @@ impl SharedState {
         if let Ok(mut map) = self.webmcp.lock() {
             let st = map.entry(session_id.to_string()).or_default();
             for tool in tools {
-                st.tools
-                    .insert((tool.frame_id.clone(), tool.name.clone()), tool);
+                let key = (tool.frame_id.clone(), tool.name.clone());
+                if st.tools.contains_key(&key) || st.tools.len() < MAX_WEBMCP_TOOLS_PER_SESSION {
+                    st.tools.insert(key, tool);
+                }
             }
             self.webmcp_cv.notify_all();
         }
@@ -690,24 +697,52 @@ impl CdpPipeClient {
 fn reader_loop(mut reader: File, shared: Arc<SharedState>) {
     let mut buf = Vec::<u8>::with_capacity(65536);
     let mut chunk = [0u8; 65536];
+    let mut dropping_oversized = false;
     loop {
         match reader.read(&mut chunk) {
             Ok(0) => break,
             Ok(n) => {
-                buf.extend_from_slice(&chunk[..n]);
-                let mut start = 0usize;
-                for i in 0..buf.len() {
-                    if buf[i] == 0 {
-                        if i > start {
-                            if let Ok(msg) = serde_json::from_slice::<Value>(&buf[start..i]) {
-                                dispatch_cdp_message(msg, &shared);
+                let slice = &chunk[..n];
+                let mut offset = 0usize;
+                while offset < slice.len() {
+                    if dropping_oversized {
+                        if let Some(rel) = slice[offset..].iter().position(|&b| b == 0) {
+                            dropping_oversized = false;
+                            offset += rel + 1;
+                            continue;
+                        }
+                        break;
+                    }
+                    if let Some(rel) = slice[offset..].iter().position(|&b| b == 0) {
+                        let end = offset + rel;
+                        if buf.len().saturating_add(end - offset) <= MAX_CDP_FRAME_BYTES {
+                            buf.extend_from_slice(&slice[offset..end]);
+                            if !buf.is_empty() {
+                                if let Ok(msg) = serde_json::from_slice::<Value>(&buf) {
+                                    dispatch_cdp_message(msg, &shared);
+                                }
+                                buf.clear();
+                                if buf.capacity() > 1024 * 1024 {
+                                    buf.shrink_to(65536);
+                                }
+                            }
+                        } else {
+                            buf.clear();
+                            if buf.capacity() > 1024 * 1024 {
+                                buf.shrink_to(65536);
                             }
                         }
-                        start = i + 1;
+                        offset = end + 1;
+                    } else {
+                        let remaining = &slice[offset..];
+                        if buf.len().saturating_add(remaining.len()) > MAX_CDP_FRAME_BYTES {
+                            buf.clear();
+                            dropping_oversized = true;
+                        } else {
+                            buf.extend_from_slice(remaining);
+                        }
+                        break;
                     }
-                }
-                if start > 0 {
-                    buf.drain(..start);
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -819,19 +854,27 @@ fn dispatch_cdp_message(msg: Value, shared: &Arc<SharedState>) {
 }
 
 #[cfg(unix)]
-fn terminate_child_process_group(child: &mut Child, term_grace: Duration) {
+fn terminate_child_process_group_with_eof(
+    child: &mut Child,
+    term_grace: Duration,
+    pipe_closed: Option<&AtomicBool>,
+) {
     let pgid = child.id() as libc::pid_t;
     if pgid > 0 {
-        // SAFETY: Caller verified `child` is still unreaped (`try_wait()` returned `Ok(None)`),
-        // so its PID/PGID is pinned by the kernel and cannot have been recycled.
+        // SAFETY: Caller verified `child` is still unreaped, so its PID/PGID is pinned by
+        // the kernel and cannot have been recycled.
         let _ = unsafe { libc::killpg(pgid, libc::SIGTERM) };
         let term_deadline = Instant::now() + term_grace;
         while Instant::now() < term_deadline {
-            match child.try_wait() {
-                Ok(Some(_)) => return,
-                Ok(None) => thread::sleep(Duration::from_millis(10)),
-                Err(_) => break,
+            let eof_ready = pipe_closed.is_none_or(|flag| flag.load(Ordering::Acquire));
+            if eof_ready {
+                match child.try_wait() {
+                    Ok(Some(_)) => return,
+                    Ok(None) => {}
+                    Err(_) => break,
+                }
             }
+            thread::sleep(Duration::from_millis(10));
         }
         // SAFETY: `child` is still unreaped (still pinned as process-group leader); escalate
         // to SIGKILL across the entire group before reaping so grandchildren cannot survive.
@@ -841,34 +884,57 @@ fn terminate_child_process_group(child: &mut Child, term_grace: Duration) {
     let _ = child.wait();
 }
 
+#[cfg(unix)]
+#[cfg(test)]
+fn terminate_child_process_group(child: &mut Child, term_grace: Duration) {
+    terminate_child_process_group_with_eof(child, term_grace, None);
+}
+
 impl Drop for CdpPipeClient {
     fn drop(&mut self) {
         // Closing FD 3 sends EOF to `moli serve --remote-debugging-pipe`, prompting clean shutdown.
         if let Ok(mut guard) = self.writer.lock() {
             guard.take();
         }
+        // Wait for FD 4 EOF (all processes in the child group closed FD 4) before reaping the
+        // leader; keeping the leader unreaped until EOF pins its PGID so timeout teardown can
+        // safely `killpg` any surviving grandchildren.
         let deadline = Instant::now() + Duration::from_millis(1500);
         loop {
-            match self.child.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) => {
-                    if Instant::now() >= deadline {
-                        #[cfg(unix)]
-                        terminate_child_process_group(&mut self.child, Duration::from_millis(200));
-                        #[cfg(not(unix))]
-                        {
-                            let _ = self.child.kill();
-                            let _ = self.child.wait();
-                        }
-                        break;
+            if self.shared.is_closed() {
+                match self.child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) if Instant::now() < deadline => {
+                        thread::sleep(Duration::from_millis(15));
+                        continue;
                     }
-                    thread::sleep(Duration::from_millis(15));
+                    _ => {}
                 }
-                Err(_) => break,
+            } else if Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(15));
+                continue;
             }
+            #[cfg(unix)]
+            terminate_child_process_group_with_eof(
+                &mut self.child,
+                Duration::from_millis(200),
+                Some(&self.shared.closed),
+            );
+            #[cfg(not(unix))]
+            {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+            }
+            break;
         }
         if let Some(handle) = self.reader_thread.take() {
-            let _ = handle.join();
+            let join_deadline = Instant::now() + Duration::from_millis(500);
+            while !self.shared.is_closed() && Instant::now() < join_deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            if self.shared.is_closed() {
+                let _ = handle.join();
+            }
         }
     }
 }
@@ -1143,5 +1209,67 @@ mod tests {
             !grandchild_alive,
             "grandchild process {grandchild_pid} leaked after process-group teardown"
         );
+    }
+
+    #[test]
+    fn bounds_console_line_length_and_webmcp_tool_count() {
+        let shared = Arc::new(SharedState::new());
+        let huge_line = "x".repeat(12_000);
+        shared.push_console("SID-B", huge_line);
+        let logs = shared.get_console("SID-B");
+        assert_eq!(logs.len(), 1);
+        assert!(logs[0].contains("[truncated at 4096 chars"));
+
+        let many: Vec<WebMcpTool> = (0..200)
+            .filter_map(|i| {
+                WebMcpTool::from_cdp_value(&json!({
+                    "name": format!("tool_{}", i),
+                    "frameId": "F1",
+                    "description": "d"
+                }))
+            })
+            .collect();
+        shared.webmcp_add_tools("SID-B", many);
+        let stored = shared.wait_for_webmcp_tools("SID-B", None, Duration::ZERO);
+        assert_eq!(stored.len(), MAX_WEBMCP_TOOLS_PER_SESSION);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reader_loop_handles_split_chunks_and_recovers_after_oversized_frame() {
+        let mut fds = [0 as libc::c_int; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        // SAFETY: `pipe()` succeeded and returned two owned, distinct file descriptors.
+        let reader = unsafe { File::from_raw_fd(fds[0]) };
+        let mut writer = unsafe { File::from_raw_fd(fds[1]) };
+
+        let shared = Arc::new(SharedState::new());
+        let shared_bg = Arc::clone(&shared);
+        let handle = thread::spawn(move || reader_loop(reader, shared_bg));
+
+        // 1. Split a valid CDP console event across two writes.
+        let msg1 = br#"{"method":"Runtime.consoleAPICalled","sessionId":"S1","params":{"type":"log","args":[{"value":"split_ok"}]}}"#;
+        writer.write_all(&msg1[..20]).expect("write part 1");
+        writer.flush().expect("flush part 1");
+        thread::sleep(Duration::from_millis(10));
+        writer.write_all(&msg1[20..]).expect("write part 2");
+        writer.write_all(&[0]).expect("write nul 1");
+
+        // 2. Write a frame larger than MAX_CDP_FRAME_BYTES (64 MiB + 1 KiB) followed by NUL,
+        //    then a valid second message; reader_loop must drop the giant frame and dispatch msg2.
+        let zeros = vec![b'a'; 1024 * 1024];
+        for _ in 0..65 {
+            writer.write_all(&zeros).expect("write oversized chunk");
+        }
+        writer.write_all(&[0]).expect("terminate oversized");
+
+        let msg2 = br#"{"method":"Runtime.consoleAPICalled","sessionId":"S1","params":{"type":"log","args":[{"value":"after_giant_ok"}]}}"#;
+        writer.write_all(msg2).expect("write msg2");
+        writer.write_all(&[0]).expect("write nul 2");
+        drop(writer);
+
+        handle.join().expect("reader thread join");
+        let logs = shared.get_console("S1");
+        assert_eq!(logs, vec!["[log] split_ok", "[log] after_giant_ok"]);
     }
 }

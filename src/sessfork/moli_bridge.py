@@ -169,12 +169,14 @@ def _pick_free_loopback_port() -> int:
 
 def _wait_for_cdp_ready(port: int, proc: subprocess.Popen[bytes], timeout_sec: float = 10.0) -> bool:
     url = f"http://127.0.0.1:{port}/json/version"
+    # Bypass HTTP_PROXY/ALL_PROXY so local loopback readiness checks are never routed externally.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             return False
         try:
-            with urllib.request.urlopen(url, timeout=0.5) as resp:
+            with opener.open(url, timeout=0.5) as resp:
                 if resp.status == 200:
                     return True
         except Exception:
@@ -215,15 +217,23 @@ def run_managed_moli_mcp(
             f"Or set {MOLI_PATH_ENV}=/path/to/moli."
         )
 
-    resolved_state = state_path.expanduser().resolve()
+    raw_state = state_path.expanduser()
+    if raw_state.is_symlink() or raw_state.parent.is_symlink():
+        raise BrowserProfileError(f"Refusing to use symlinked state path: {raw_state}")
+    resolved_state = raw_state.parent.resolve() / raw_state.name
     output_dir = resolved_state.parent / PLAYWRIGHT_OUTPUT_DIRNAME
+    if output_dir.is_symlink():
+        raise BrowserProfileError(f"Refusing to use symlinked output directory: {output_dir}")
     output_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    try:
-        os.chmod(output_dir, 0o700)
-    except OSError:
-        pass
+    os.chmod(output_dir, 0o700)
 
     port = _pick_free_loopback_port()
+    print(
+        "sessfork warning: running legacy TCP CDP fallback on 127.0.0.1 "
+        "(install native Rust `sessfork-mcp` for zero-port anonymous pipe isolation on multi-user hosts).",
+        file=sys.stderr,
+        flush=True,
+    )
     moli_cmd = [str(binary), "serve", "--host", "127.0.0.1", "--port", str(port)]
     if os.environ.get(MOLI_LAYOUT_ENV, "").strip().lower() in ("1", "true", "yes"):
         moli_cmd.append("--layout")

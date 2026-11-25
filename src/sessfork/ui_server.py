@@ -9,19 +9,29 @@ Security guarantees:
 
 from __future__ import annotations
 
+import html
 import http.server
 import json
+import os
 import secrets
 import socketserver
+import sqlite3
+import stat
+import tempfile
 import threading
 import webbrowser
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from sessfork import __version__
-from sessfork.chrome import BrowserProfileError, extract_browser_session, normalize_domain_filter
-from sessfork.crypto import CryptoError
+from sessfork.chrome import (
+    BrowserProfileError,
+    extract_browser_session,
+    normalize_domain_filter,
+    validate_profile_name,
+)
+from sessfork.crypto import BROWSER_KEYRING_MAP, CryptoError
 from sessfork.localstorage import LevelDBFormatError
 from sessfork.mcp_setup import (
     VALID_ENGINES,
@@ -127,16 +137,43 @@ def render_ui_html(csrf_token: str) -> str:
     return _UI_HTML_TEMPLATE.replace("__CSRF_TOKEN__", csrf_token).replace("__VERSION__", __version__)
 
 
+class _PayloadTooLargeError(ValueError):
+    """Raised when an HTTP JSON request body exceeds the allowed byte budget."""
+
+
 class _ReusableLoopbackServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     allow_reuse_address = True
     daemon_threads = True
 
 
-def _is_loopback_host(header_val: str) -> bool:
-    if not header_val:
-        return True
-    parsed = urlparse(header_val if "://" in header_val else f"http://{header_val}")
-    return parsed.hostname in ("127.0.0.1", "localhost")
+def _is_valid_host(host_header: str, bound_port: int) -> bool:
+    """Strictly require exact loopback Host matching the bound port (blocks DNS rebinding)."""
+    cleaned = host_header.strip().lower()
+    if not cleaned or "://" in cleaned:
+        return False
+    return cleaned in (f"127.0.0.1:{bound_port}", f"localhost:{bound_port}")
+
+
+def _is_valid_origin(origin_header: str, bound_port: int) -> bool:
+    """Strictly require exact same-origin http loopback Origin matching the bound port."""
+    cleaned = origin_header.strip().lower()
+    return cleaned in (f"http://127.0.0.1:{bound_port}", f"http://localhost:{bound_port}")
+
+
+def _is_allowed_fetch_site(header_val: str) -> bool:
+    cleaned = header_val.strip().lower()
+    return cleaned in ("", "same-origin", "none")
+
+
+_UI_CSP = (
+    "default-src 'none'; "
+    "style-src 'unsafe-inline'; "
+    "script-src 'unsafe-inline'; "
+    "connect-src 'self'; "
+    "frame-ancestors 'none'; "
+    "base-uri 'none'; "
+    "form-action 'self'"
+)
 
 
 def create_ui_server(
@@ -146,67 +183,182 @@ def create_ui_server(
 ) -> tuple[_ReusableLoopbackServer, str, str]:
     """Create a loopback-only HTTP control server and return `(server, url, csrf_token)`."""
     csrf_token = secrets.token_urlsafe(32)
+    session_cookie = secrets.token_urlsafe(32)
     html_bytes = render_ui_html(csrf_token).encode("utf-8")
+    bound_port_box: List[int] = [0]
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: Any) -> None:
             return
 
+        def _send_security_headers(self) -> None:
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Security-Policy", _UI_CSP)
+
         def _send_json(self, code: int, payload: Dict[str, Any]) -> None:
             body = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
+            self._send_security_headers()
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
 
-        def _check_csrf_and_origin(self) -> bool:
-            if not _is_loopback_host(self.headers.get("Host", "")):
+        def _send_session_bootstrap(self) -> None:
+            # Return 200 + Set-Cookie + same-origin JS/meta redirect instead of HTTP 303 so
+            # navigating from a local `file://` launcher commits an http://127.0.0.1 document
+            # first; the subsequent navigation to `/` is strictly same-origin (`Sec-Fetch-Site:
+            # same-origin` and `SameSite=Strict` cookie attached).
+            body = (
+                b'<!doctype html><html><head><meta charset="utf-8">'
+                b'<meta http-equiv="refresh" content="0;url=/">'
+                b'<title>Opening sessfork Studio...</title></head><body>'
+                b'<script>window.location.replace("/");</script>'
+                b'</body></html>\n'
+            )
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header(
+                "Set-Cookie",
+                f"sessfork_session={session_cookie}; HttpOnly; SameSite=Strict; Path=/",
+            )
+            self._send_security_headers()
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _check_host_and_fetch_site(self, *, allow_cross_site_form: bool = False) -> bool:
+            if not _is_valid_host(self.headers.get("Host", ""), bound_port_box[0]):
                 return False
-            origin = self.headers.get("Origin", "")
-            if origin and not _is_loopback_host(origin):
+            if not allow_cross_site_form and not _is_allowed_fetch_site(self.headers.get("Sec-Fetch-Site", "")):
                 return False
+            return True
+
+        def _has_valid_session_cookie(self) -> bool:
+            raw_cookie = self.headers.get("Cookie", "")
+            if not raw_cookie:
+                return False
+            # Parse semicolon-delimited pairs directly instead of SimpleCookie.load(), which
+            # aborts on unrelated localhost dev cookies containing brackets or spaces.
+            for part in raw_cookie.split(";"):
+                name, sep, val = part.partition("=")
+                if sep and name.strip() == "sessfork_session":
+                    if secrets.compare_digest(val.strip().strip('"'), session_cookie):
+                        return True
+            return False
+
+        def _has_valid_header_token(self) -> bool:
             supplied = self.headers.get("X-Sessfork-Token", "")
             return bool(supplied) and secrets.compare_digest(supplied, csrf_token)
 
+        def _has_valid_read_auth(self) -> bool:
+            return self._has_valid_header_token() or self._has_valid_session_cookie()
+
+        def _check_csrf_and_origin(self) -> bool:
+            if not self._check_host_and_fetch_site():
+                return False
+            origin = self.headers.get("Origin", "")
+            if origin and not _is_valid_origin(origin, bound_port_box[0]):
+                return False
+            return self._has_valid_header_token()
+
         def _read_json_body(self) -> Dict[str, Any]:
-            length = int(self.headers.get("Content-Length", "0") or "0")
-            if length <= 0 or length > 65536:
+            raw_len = self.headers.get("Content-Length", "0").strip()
+            length = int(raw_len or "0")
+            if length < 0:
+                raise ValueError("Invalid Content-Length")
+            if length > 65536:
+                raise _PayloadTooLargeError("Request body exceeds 64 KiB limit")
+            if length == 0:
                 return {}
+            ctype = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+            if ctype != "application/json":
+                raise ValueError("Content-Type must be application/json")
             raw = self.rfile.read(length)
             data = json.loads(raw.decode("utf-8"))
-            return data if isinstance(data, dict) else {}
+            if not isinstance(data, dict):
+                raise ValueError("JSON body must be an object")
+            return data
 
         def do_GET(self) -> None:
+            if not self._check_host_and_fetch_site():
+                self._send_json(403, {"ok": False, "error": "Forbidden: invalid Host or cross-site request"})
+                return
             parsed = urlparse(self.path)
             if parsed.path in ("/", "/index.html"):
+                qs = parse_qs(parsed.query, keep_blank_values=False)
+                q_tokens = qs.get("token")
+                if q_tokens:
+                    if secrets.compare_digest(q_tokens[0], csrf_token):
+                        self._send_session_bootstrap()
+                        return
+                    self._send_json(403, {"ok": False, "error": "Forbidden: invalid session token"})
+                    return
+                if not self._has_valid_read_auth():
+                    self._send_json(403, {"ok": False, "error": "Forbidden: authentication required"})
+                    return
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Cache-Control", "no-store")
+                self._send_security_headers()
                 self.send_header("Content-Length", str(len(html_bytes)))
                 self.end_headers()
                 self.wfile.write(html_bytes)
                 return
             if parsed.path == "/api/status":
+                if not self._has_valid_read_auth():
+                    self._send_json(403, {"ok": False, "error": "Forbidden: authentication required"})
+                    return
                 self._send_json(200, {"ok": True, "data": collect_ui_status(state_path, target)})
                 return
             self._send_json(404, {"ok": False, "error": "Not found"})
 
         def do_POST(self) -> None:
+            parsed = urlparse(self.path)
+            if parsed.path == "/auth":
+                # Local 0600 launcher HTML submits POST /auth with the one-session token so the
+                # secret never appears in OS process arguments (`ps aux`).
+                if not self._check_host_and_fetch_site(allow_cross_site_form=True):
+                    self._send_json(403, {"ok": False, "error": "Forbidden: invalid Host"})
+                    return
+                origin = self.headers.get("Origin", "").strip().lower()
+                if origin and origin != "null" and not _is_valid_origin(origin, bound_port_box[0]):
+                    self._send_json(403, {"ok": False, "error": "Forbidden: invalid Origin"})
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", "0").strip() or "0")
+                    if length <= 0 or length > 1024:
+                        raise ValueError("Invalid auth payload size")
+                    raw = self.rfile.read(length).decode("utf-8")
+                    form = parse_qs(raw, keep_blank_values=False)
+                    tok = (form.get("token") or [""])[0]
+                except (ValueError, UnicodeDecodeError):
+                    self._send_json(400, {"ok": False, "error": "Invalid auth form body"})
+                    return
+                if not tok or not secrets.compare_digest(tok, csrf_token):
+                    self._send_json(403, {"ok": False, "error": "Forbidden: invalid session token"})
+                    return
+                self._send_session_bootstrap()
+                return
+
             if not self._check_csrf_and_origin():
                 self._send_json(403, {"ok": False, "error": "Forbidden: invalid CSRF token or origin"})
                 return
-            parsed = urlparse(self.path)
             try:
                 body = self._read_json_body()
-            except (ValueError, UnicodeDecodeError):
-                self._send_json(400, {"ok": False, "error": "Invalid JSON body"})
+            except _PayloadTooLargeError as exc:
+                self._send_json(413, {"ok": False, "error": str(exc)})
+                return
+            except (ValueError, UnicodeDecodeError) as exc:
+                self._send_json(400, {"ok": False, "error": f"Invalid JSON body: {exc}"})
                 return
 
             try:
                 if parsed.path == "/api/engine":
-                    engine = str(body.get("engine", "")).strip().lower()
+                    raw_engine = body.get("engine")
+                    engine = raw_engine.strip().lower() if isinstance(raw_engine, str) else ""
                     if engine not in VALID_ENGINES:
                         self._send_json(400, {"ok": False, "error": f"Invalid engine: {engine!r}"})
                         return
@@ -223,8 +375,18 @@ def create_ui_server(
                     return
 
                 if parsed.path == "/api/clear":
-                    domain = str(body.get("domain", "")).strip()
-                    domains = [normalize_domain_filter(domain)] if domain else []
+                    clear_all = body.get("clear_all") is True
+                    raw_domain = body.get("domain")
+                    if clear_all:
+                        domains: Optional[List[str]] = None
+                    elif isinstance(raw_domain, str) and raw_domain.strip():
+                        domains = [normalize_domain_filter(raw_domain)]
+                    else:
+                        self._send_json(
+                            400,
+                            {"ok": False, "error": "Specify a non-empty 'domain' or pass 'clear_all': true"},
+                        )
+                        return
                     rem_c, left_c, rem_o, left_o = clear_state(domains, state_path=state_path)
                     self._send_json(
                         200,
@@ -240,14 +402,28 @@ def create_ui_server(
                     return
 
                 if parsed.path == "/api/fork":
-                    raw_domain = str(body.get("domain", "")).strip()
-                    if not raw_domain:
+                    raw_domain = body.get("domain")
+                    if not isinstance(raw_domain, str) or not raw_domain.strip():
                         self._send_json(400, {"ok": False, "error": "Please enter a domain (e.g. github.com)"})
                         return
                     domain = normalize_domain_filter(raw_domain)
                     no_cookies = bool(body.get("no_cookies", False))
-                    profile = str(body.get("profile", "")).strip() or None
-                    browser = str(body.get("browser", "chrome")).strip() or "chrome"
+                    raw_profile = body.get("profile")
+                    if raw_profile is None or (isinstance(raw_profile, str) and not raw_profile.strip()):
+                        profile: Optional[str] = None
+                    elif isinstance(raw_profile, str):
+                        profile = validate_profile_name(raw_profile)
+                    else:
+                        self._send_json(400, {"ok": False, "error": "Invalid profile parameter"})
+                        return
+                    raw_browser = body.get("browser", "chrome")
+                    if not isinstance(raw_browser, str):
+                        self._send_json(400, {"ok": False, "error": "Invalid browser parameter"})
+                        return
+                    browser = raw_browser.strip().lower() or "chrome"
+                    if browser not in BROWSER_KEYRING_MAP:
+                        self._send_json(400, {"ok": False, "error": f"Unsupported browser: {browser!r}"})
+                        return
                     cookies, origins, profile_label = extract_browser_session(
                         domains=[domain],
                         browser=browser,
@@ -256,7 +432,7 @@ def create_ui_server(
                         include_local_storage=True,
                     )
                     _, up_c, _, up_ls, _ = upsert_session_state(
-                        new_cookies=cookies,
+                        new_cookies=None if no_cookies else cookies,
                         new_origins=origins,
                         refreshed_domains=[domain],
                         state_path=state_path,
@@ -280,13 +456,52 @@ def create_ui_server(
                     return
 
                 self._send_json(404, {"ok": False, "error": "Not found"})
-            except (BrowserProfileError, CryptoError, LevelDBFormatError, OSError) as exc:
+            except (BrowserProfileError, CryptoError, LevelDBFormatError, sqlite3.Error, OSError) as exc:
                 self._send_json(400, {"ok": False, "error": str(exc)})
 
     server = _ReusableLoopbackServer(("127.0.0.1", port), Handler)
     bound_port = int(server.server_address[1])
+    bound_port_box[0] = bound_port
     url = f"http://127.0.0.1:{bound_port}/"
     return server, url, csrf_token
+
+
+def _write_ui_launcher_html(parent_dir: Path, auth_url: str, token: str) -> Path:
+    """Create a 0600 local HTML auto-POST launcher so the token never appears in OS argv."""
+    parent_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    dir_st = os.lstat(parent_dir)
+    if stat.S_ISLNK(dir_st.st_mode) or not stat.S_ISDIR(dir_st.st_mode):
+        raise BrowserProfileError(f"Unsafe launcher directory: {parent_dir}")
+    os.chmod(parent_dir, 0o700)
+    fd, tmp_name = tempfile.mkstemp(prefix=".ui_launch_", suffix=".html", dir=str(parent_dir))
+    fd_owned = True
+    try:
+        os.fchmod(fd, 0o600)
+        fd_owned = False
+        safe_url = html.escape(auth_url, quote=True)
+        safe_tok = html.escape(token, quote=True)
+        doc = (
+            "<!doctype html><html><head><meta charset=\"utf-8\">"
+            "<title>Opening sessfork Studio...</title></head><body>"
+            f"<form id=\"f\" method=\"POST\" action=\"{safe_url}\">"
+            f"<input type=\"hidden\" name=\"token\" value=\"{safe_tok}\">"
+            "</form><script>document.getElementById('f').submit();</script>"
+            "</body></html>\n"
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(doc)
+    except BaseException:
+        if fd_owned:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    return Path(tmp_name)
 
 
 def serve_ui(
@@ -296,16 +511,31 @@ def serve_ui(
     open_browser: bool = True,
 ) -> int:
     """Start the local 127.0.0.1 control panel and block until Ctrl+C or UI shutdown."""
-    server, url, _ = create_ui_server(state_path=state_path, target=target, port=port)
-    print(f"sessfork Control Panel running at {url} (127.0.0.1 only, press Ctrl+C to stop)", flush=True)
+    server, url, token = create_ui_server(state_path=state_path, target=target, port=port)
+    auth_display_url = f"{url}?token={token}"
+    print(
+        f"sessfork Control Panel running at {auth_display_url} (127.0.0.1 only, press Ctrl+C to stop)",
+        flush=True,
+    )
+    launcher: Optional[Path] = None
     if open_browser:
-        threading.Timer(0.25, lambda: webbrowser.open(url)).start()
+        try:
+            launcher = _write_ui_launcher_html(state_path.expanduser().parent, url + "auth", token)
+            open_target = launcher.as_uri()
+        except (BrowserProfileError, OSError):
+            open_target = auth_display_url
+        threading.Timer(0.25, lambda: webbrowser.open(open_target)).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         server.server_close()
+        if launcher is not None:
+            try:
+                launcher.unlink()
+            except OSError:
+                pass
     return 0
 
 
@@ -1057,7 +1287,7 @@ _UI_HTML_TEMPLATE = """<!doctype html>
 
     async function api(path, payload = null) {
       const opts = payload === null
-        ? { method: "GET" }
+        ? { method: "GET", headers: { "X-Sessfork-Token": CSRF_TOKEN } }
         : {
             method: "POST",
             headers: { "Content-Type": "application/json", "X-Sessfork-Token": CSRF_TOKEN },

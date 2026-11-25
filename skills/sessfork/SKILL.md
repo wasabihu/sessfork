@@ -34,7 +34,7 @@ sessfork --refresh                        # Refresh all existing saved domains i
 
 If `sessfork` is not yet on global `$PATH`, run via `uvx` or from a local source checkout:
 ```bash
-uvx --from git+https://github.com/wasabihu/sessfork.git sessfork <domain>
+uvx --from git+https://github.com/wasabihu/sessfork.git@v0.1.5 sessfork <domain>
 # Or from a local repo root: PYTHONPATH=src python3 -m sessfork <domain>
 ```
 
@@ -56,5 +56,5 @@ Use the `sessfork-browser` MCP tools (`browser_navigate`, `browser_snapshot`, `b
 ## Security Guardrails
 
 1. **Least Privilege**: Always pass explicit `<domain>` names (never pass `--all-domains` unless the user explicitly asks for it).
-2. **Zero Secret Leakage**: NEVER run `cat`, `head`, or `view_file` on `~/.sessfork/state.json`, `~/.sessfork/playwright-output/.sessfork-state.json`, or `~/.sessfork/keys.json`, and NEVER call `browser_storage_state` or `browser_cookie_list` or echo raw cookie/token values into chat or logs (`browser_set_storage_state` is safe because it only loads from disk and never echoes secrets). Use `sessfork --status` to inspect active counts safely.
+2. **Zero Secret Leakage**: NEVER run `cat`, `head`, or `view_file` on `~/.sessfork/state.json`, `~/.sessfork/playwright-output/.sessfork-state.json`, or `~/.sessfork/keys.json`, and NEVER call `browser_storage_state`, `browser_cookie_list`, `browser_cookie_get`, `browser_localstorage_list`, `browser_localstorage_get`, `browser_sessionstorage_list`, or `browser_sessionstorage_get` or echo raw cookie/token values into chat or logs (`browser_set_storage_state` is safe because it only loads from disk and never echoes secrets). Use `sessfork --status` to inspect active counts safely.
 3. **No Silent Key Caching**: Never pass `--cache-key` unless the user explicitly asks for it; it persists the derived cookie key on disk and weakens Keychain protection. If the user wants it removed, run `sessfork --purge-keys`.

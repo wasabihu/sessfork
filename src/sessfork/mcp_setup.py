@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import importlib.resources
 import json
 import os
 import platform as platform_mod
@@ -640,17 +641,25 @@ def ensure_mcp_configured(
         if env_cdp and engine is None:
             normalize_cdp_endpoint(env_cdp)
 
-    # Ensure the state file exists on disk so Playwright MCP never errors on startup
-    resolved_state = state_path.expanduser().resolve()
-    if not resolved_state.is_file():
-        save_storage_state_atomic(load_storage_state(resolved_state), resolved_state)
+    # Ensure the state file exists on disk so Playwright MCP never errors on startup.
+    # Reject symlinks BEFORE `.resolve()` so symlinked state files/dirs cannot bypass state.py guards.
+    raw_state = state_path.expanduser()
+    if raw_state.is_symlink() or raw_state.parent.is_symlink():
+        raise BrowserProfileError(f"Refusing to use symlinked state path: {raw_state}")
+    if not raw_state.is_file():
+        save_storage_state_atomic(load_storage_state(raw_state), raw_state)
+    resolved_state = raw_state.parent.resolve() / raw_state.name
     output_dir = resolved_state.parent / PLAYWRIGHT_OUTPUT_DIRNAME
+    if output_dir.is_symlink():
+        raise BrowserProfileError(f"Refusing to use symlinked output directory: {output_dir}")
     output_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     for secure_dir in (resolved_state.parent, output_dir):
-        try:
-            os.chmod(secure_dir, 0o700)
-        except OSError:
-            pass
+        st = os.lstat(secure_dir)
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            raise BrowserProfileError(f"Refusing non-directory state path: {secure_dir}")
+        if hasattr(os, "getuid") and st.st_uid != os.getuid():
+            raise BrowserProfileError(f"State directory is not owned by current user: {secure_dir}")
+        os.chmod(secure_dir, 0o700)
 
     def _build_updates_for_mode(
         mode: str,
@@ -743,14 +752,20 @@ def ensure_mcp_configured(
 @contextlib.contextmanager
 def _exclusive_mcp_cfg_lock(cfg_path: Path) -> Iterator[None]:
     """Serialize concurrent read-modify-write updates to an agent MCP config file."""
-    resolved = cfg_path.expanduser().resolve()
-    resolved.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = resolved.parent / f".{resolved.name}.sessfork.lock"
+    raw = cfg_path.expanduser()
+    if raw.is_symlink() or raw.parent.is_symlink():
+        raise BrowserProfileError(f"Refusing to modify symlinked MCP config path: {raw}")
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    resolved_parent = raw.parent.resolve()
+    lock_path = resolved_parent / f".{raw.name}.sessfork.lock"
     if lock_path.is_symlink():
         raise OSError(f"Refusing to use symlinked MCP config lock file: {lock_path}")
     flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(str(lock_path), flags, 0o600)
     try:
+        lock_st = os.fstat(fd)
+        if not stat.S_ISREG(lock_st.st_mode):
+            raise OSError(f"Refusing non-regular MCP config lock file: {lock_path}")
         os.fchmod(fd, 0o600)
         fcntl.flock(fd, fcntl.LOCK_EX)
         try:
@@ -762,13 +777,14 @@ def _exclusive_mcp_cfg_lock(cfg_path: Path) -> Iterator[None]:
 
 
 def _sync_mcp_servers(cfg_path: Path, updates: Dict[str, Optional[Dict[str, Any]]]) -> bool:
-    with _exclusive_mcp_cfg_lock(cfg_path):
-        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_cfg = cfg_path.expanduser()
+    with _exclusive_mcp_cfg_lock(raw_cfg):
+        raw_cfg.parent.mkdir(parents=True, exist_ok=True)
         doc: Dict[str, Any] = {}
         file_mode = 0o600
-        if cfg_path.is_file():
-            file_mode = stat.S_IMODE(cfg_path.stat().st_mode)
-            raw = cfg_path.read_text(encoding="utf-8").strip()
+        if raw_cfg.is_file():
+            file_mode = stat.S_IMODE(raw_cfg.stat().st_mode)
+            raw = raw_cfg.read_text(encoding="utf-8").strip()
             if raw:
                 doc = json.loads(raw)
 
@@ -791,15 +807,25 @@ def _sync_mcp_servers(cfg_path: Path, updates: Dict[str, Optional[Dict[str, Any]
             return False
 
         payload = json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
-        fd, tmp_name = tempfile.mkstemp(prefix=".mcp_", suffix=".tmp", dir=str(cfg_path.parent))
+        fd, tmp_name = tempfile.mkstemp(prefix=".mcp_", suffix=".tmp", dir=str(raw_cfg.parent))
+        fd_owned = True
         try:
             os.fchmod(fd, file_mode)
+            fd_owned = False
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(payload)
-            os.replace(tmp_name, cfg_path)
+            os.replace(tmp_name, raw_cfg)
         except BaseException:
+            if fd_owned:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
             if os.path.exists(tmp_name):
-                os.unlink(tmp_name)
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
             raise
         return True
 
@@ -810,10 +836,44 @@ def _upsert_mcp_json(cfg_path: Path, server_name: str, entry: Dict[str, Any]) ->
 
 def bundled_skill_markdown() -> str:
     """Return the canonical SKILL.md content for sessfork."""
+    try:
+        pkg_skill = importlib.resources.files("sessfork").joinpath("data").joinpath("SKILL.md")
+        if pkg_skill.is_file():
+            return pkg_skill.read_text(encoding="utf-8")
+    except (FileNotFoundError, ModuleNotFoundError, OSError):
+        pass
     repo_skill = Path(__file__).resolve().parents[2] / "skills" / "sessfork" / "SKILL.md"
-    if repo_skill.is_file():
+    if repo_skill.is_file() and not repo_skill.is_symlink():
         return repo_skill.read_text(encoding="utf-8")
     return _FALLBACK_SKILL_MD
+
+
+def _write_text_atomic_no_symlink(dest: Path, content: str, mode: int = 0o644) -> None:
+    if dest.is_symlink() or dest.parent.is_symlink():
+        raise BrowserProfileError(f"Refusing to write skill file through symlink: {dest}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.parent.is_symlink():
+        raise BrowserProfileError(f"Refusing to write skill file into symlinked directory: {dest.parent}")
+    fd, tmp_name = tempfile.mkstemp(prefix=".skill_", suffix=".tmp", dir=str(dest.parent))
+    fd_owned = True
+    try:
+        os.fchmod(fd, mode)
+        fd_owned = False
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        os.replace(tmp_name, dest)
+    except BaseException:
+        if fd_owned:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if os.path.exists(tmp_name):
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+        raise
 
 
 def install_agent_skills(home: Optional[Path] = None) -> List[Path]:
@@ -836,9 +896,10 @@ def install_agent_skills(home: Optional[Path] = None) -> List[Path]:
         if dest in seen:
             continue
         seen.add(dest)
-        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.is_symlink() or dest.parent.is_symlink():
+            raise BrowserProfileError(f"Refusing to overwrite symlinked skill path: {dest}")
         if not dest.is_file() or dest.read_text(encoding="utf-8") != content:
-            dest.write_text(content, encoding="utf-8")
+            _write_text_atomic_no_symlink(dest, content)
             written.append(dest)
     return written
 
@@ -859,5 +920,9 @@ Use `sessfork` whenever a task requires reading or interacting with a website wh
    ```
 2. Hot-reload into a running `sessfork-browser` without restarting MCP by calling `browser_set_storage_state` with `filename` set to `~/.sessfork/playwright-output/.sessfork-state.json` (the exact `Hot-reload path` printed by `sessfork --status`), then run `browser_navigate`, `browser_snapshot`, etc.
 3. On macOS, `sessfork --setup` automatically pins Playwright's `chrome-headless-shell` via `--executable-path` to avoid system Chrome headless multi-origin crashes (`Target page, context or browser has been closed` / `Mach rendezvous failed`). If that error occurs, run `npx -y playwright-core install chromium-headless-shell && sessfork --setup` and reload MCP once.
-4. Security rule: NEVER read, print, or echo `~/.sessfork/state.json`, `~/.sessfork/playwright-output/.sessfork-state.json`, or `~/.sessfork/keys.json` into the conversation context.
+
+## Security Guardrails
+1. **Least Privilege**: Always pass explicit `<domain>` names (never pass `--all-domains` unless the user explicitly asks for it).
+2. **Zero Secret Leakage**: NEVER run `cat`, `head`, or `view_file` on `~/.sessfork/state.json`, `~/.sessfork/playwright-output/.sessfork-state.json`, or `~/.sessfork/keys.json`, and NEVER call `browser_storage_state`, `browser_cookie_list`, `browser_cookie_get`, `browser_localstorage_list`, `browser_localstorage_get`, `browser_sessionstorage_list`, or `browser_sessionstorage_get` or echo raw cookie/token values into chat or logs.
+3. **No Silent Key Caching**: Never pass `--cache-key` unless the user explicitly asks for it; remove cached keys with `sessfork --purge-keys`.
 """

@@ -1,22 +1,178 @@
 use crate::ax::format_ax_tree;
 use crate::cdp::{CdpPipeClient, WebMcpInvokeWait, WebMcpResponseWait};
-use crate::markdown::{build_markdown_extract_expression, format_markdown_response};
-use crate::storage::{
-    build_live_local_storage_sync_script, build_local_storage_init_script, cookies_to_cdp_params,
-    load_storage_state_file, validate_allowed_path, StorageState,
+use crate::markdown::{
+    build_markdown_extract_expression, format_markdown_response, truncate_chars,
 };
-use crate::webmcp::{format_invocation_outcome, format_tool_catalog, select_tool};
+use crate::storage::{
+    build_local_storage_init_script, build_single_origin_local_storage_sync_script,
+    cookies_to_cdp_params, load_storage_state_file, normalize_origin, validate_allowed_path,
+    StorageState,
+};
+use crate::webmcp::{format_invocation_outcome, format_tool_catalog, select_tool, FrameOriginInfo};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
+
+#[cfg(unix)]
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 
 const DEFAULT_CDP_TIMEOUT: Duration = Duration::from_secs(20);
 const DEFAULT_LOAD_TIMEOUT: Duration = Duration::from_secs(15);
 const SPA_HYDRATION_SETTLE_TIMEOUT: Duration = Duration::from_millis(2500);
 const DEFAULT_MAX_SNAPSHOT_CHARS: usize = 32_000;
+const ISOLATED_WORLD_NAME: &str = "__sessfork_ls_isolated";
+
+fn origin_from_url(url: &str) -> String {
+    let trimmed = url.trim();
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        normalize_origin(trimmed)
+    } else {
+        String::new()
+    }
+}
+
+fn collect_frame_tree_node(
+    node: &Value,
+    is_top: bool,
+    out: &mut HashMap<String, FrameOriginInfo>,
+) -> Option<FrameOriginInfo> {
+    let frame = node.get("frame")?;
+    let fid = frame.get("id")?.as_str()?.trim().to_string();
+    if fid.is_empty() {
+        return None;
+    }
+    let url = frame
+        .get("url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let raw_origin = frame
+        .get("securityOrigin")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let origin = if raw_origin == "null" || raw_origin == "://" {
+        // Explicit opaque securityOrigin (e.g. sandboxed iframe without allow-same-origin)
+        // must stay opaque and NEVER inherit the URL's origin.
+        "null".to_string()
+    } else if !raw_origin.is_empty() {
+        normalize_origin(raw_origin)
+    } else {
+        origin_from_url(&url)
+    };
+    let info = FrameOriginInfo {
+        frame_id: fid.clone(),
+        url,
+        origin,
+        is_top,
+    };
+    out.insert(fid, info.clone());
+    if let Some(children) = node.get("childFrames").and_then(|v| v.as_array()) {
+        for child in children {
+            let _ = collect_frame_tree_node(child, false, out);
+        }
+    }
+    Some(info)
+}
+
+fn validate_screenshot_filename(filename: Option<&str>) -> Result<String, String> {
+    let Some(raw) = filename.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok("screenshot.png".to_string());
+    };
+    if raw.contains('/')
+        || raw.contains('\\')
+        || raw.contains("..")
+        || raw.contains('\0')
+        || raw.starts_with('.')
+    {
+        return Err(format!(
+            "Invalid screenshot filename '{}': must be a plain non-hidden .png filename inside --output-dir",
+            raw
+        ));
+    }
+    if !raw.to_ascii_lowercase().ends_with(".png") || raw.len() <= 4 {
+        return Err(format!(
+            "Invalid screenshot filename '{}': must end with .png",
+            raw
+        ));
+    }
+    Ok(raw.to_string())
+}
+
+fn write_private_screenshot_file(
+    output_dir: &Path,
+    filename: &str,
+    bytes: &[u8],
+) -> Result<PathBuf, String> {
+    if fs::symlink_metadata(output_dir)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return Err("Refusing to write screenshot into symlinked --output-dir".to_string());
+    }
+    #[cfg(unix)]
+    {
+        if !output_dir.exists() {
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(output_dir)
+                .map_err(|e| format!("Failed to create output dir: {}", e))?;
+        }
+        fs::set_permissions(output_dir, fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("Failed to enforce 0700 on output dir: {}", e))?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::create_dir_all(output_dir)
+            .map_err(|e| format!("Failed to create output dir: {}", e))?;
+    }
+
+    let canon_dir =
+        fs::canonicalize(output_dir).map_err(|e| format!("Failed to resolve output dir: {}", e))?;
+    let out_path = canon_dir.join(filename);
+    if fs::symlink_metadata(&out_path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return Err(format!(
+            "Refusing to overwrite symlinked screenshot target '{}'",
+            out_path.display()
+        ));
+    }
+
+    let mut opts = OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        opts.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = opts.open(&out_path).map_err(|e| {
+        format!(
+            "Failed to open screenshot target '{}': {}",
+            out_path.display(),
+            e
+        )
+    })?;
+    #[cfg(unix)]
+    {
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|e| {
+                format!(
+                    "Failed to enforce 0600 on screenshot '{}': {}",
+                    out_path.display(),
+                    e
+                )
+            })?;
+    }
+    file.write_all(bytes)
+        .map_err(|e| format!("Failed to save screenshot '{}': {}", out_path.display(), e))?;
+    Ok(out_path)
+}
 
 struct ContextState {
     browser_context_id: String,
@@ -169,7 +325,7 @@ impl BrowserManager {
         {
             if let Ok(r) = self.cdp()?.call(
                 "Page.addScriptToEvaluateOnNewDocument",
-                json!({ "source": src }),
+                json!({ "source": src, "worldName": ISOLATED_WORLD_NAME }),
                 Some(&session_id),
                 DEFAULT_CDP_TIMEOUT,
             ) {
@@ -193,6 +349,65 @@ impl BrowserManager {
         let idx = self.tabs.len() - 1;
         self.current_tab = idx;
         Ok(idx)
+    }
+
+    fn query_frame_tree(
+        &self,
+        sid: &str,
+    ) -> Result<(FrameOriginInfo, HashMap<String, FrameOriginInfo>), String> {
+        let resp = self.cdp()?.call(
+            "Page.getFrameTree",
+            json!({}),
+            Some(sid),
+            DEFAULT_CDP_TIMEOUT,
+        )?;
+        let mut map = HashMap::new();
+        let top = resp
+            .get("frameTree")
+            .and_then(|ft| collect_frame_tree_node(ft, true, &mut map))
+            .ok_or_else(|| "CDP Page.getFrameTree returned no top frame".to_string())?;
+        Ok((top, map))
+    }
+
+    fn eval_in_isolated_world(
+        &self,
+        sid: &str,
+        frame_id: &str,
+        expression: &str,
+    ) -> Result<Value, String> {
+        if !frame_id.is_empty() {
+            if let Ok(world) = self.cdp()?.call(
+                "Page.createIsolatedWorld",
+                json!({
+                    "frameId": frame_id,
+                    "worldName": ISOLATED_WORLD_NAME,
+                }),
+                Some(sid),
+                DEFAULT_CDP_TIMEOUT,
+            ) {
+                if let Some(ctx_id) = world.get("executionContextId").and_then(|v| v.as_i64()) {
+                    return self.cdp()?.call(
+                        "Runtime.evaluate",
+                        json!({
+                            "expression": expression,
+                            "contextId": ctx_id,
+                            "returnByValue": true,
+                        }),
+                        Some(sid),
+                        DEFAULT_CDP_TIMEOUT,
+                    );
+                }
+            }
+        }
+        self.cdp()?.call(
+            "Runtime.evaluate",
+            json!({
+                "expression": expression,
+                "returnByValue": true,
+            }),
+            Some(sid),
+            DEFAULT_CDP_TIMEOUT,
+        )
     }
 
     fn apply_storage_state_to_context(
@@ -229,7 +444,6 @@ impl BrowserManager {
             1
         };
         let init_src = build_local_storage_init_script(&state.origins, next_rev);
-        let live_src = build_live_local_storage_sync_script(&state.origins, next_rev);
         if let Some(ctx) = self.contexts.get_mut(context_name) {
             ctx.init_script_source = Some(init_src.clone());
         }
@@ -255,7 +469,7 @@ impl BrowserManager {
             }
             if let Ok(r) = self.cdp()?.call(
                 "Page.addScriptToEvaluateOnNewDocument",
-                json!({ "source": &init_src }),
+                json!({ "source": &init_src, "worldName": ISOLATED_WORLD_NAME }),
                 Some(&sid),
                 DEFAULT_CDP_TIMEOUT,
             ) {
@@ -264,14 +478,20 @@ impl BrowserManager {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
             }
-            let cur_url = &self.tabs[idx].url;
-            if cur_url.starts_with("http://") || cur_url.starts_with("https://") {
-                let _ = self.cdp()?.call(
-                    "Runtime.evaluate",
-                    json!({ "expression": &live_src, "returnByValue": true }),
-                    Some(&sid),
-                    DEFAULT_CDP_TIMEOUT,
-                );
+            // Use browser-authoritative CDP FrameTree origin (never untrusted JS location.href)
+            // and send ONLY entries belonging to this tab's exact origin inside an isolated world.
+            if let Ok((top_frame, _)) = self.query_frame_tree(&sid) {
+                if !top_frame.url.is_empty() {
+                    self.tabs[idx].url = top_frame.url.clone();
+                }
+                if top_frame.url.starts_with("http://") || top_frame.url.starts_with("https://") {
+                    let live_src = build_single_origin_local_storage_sync_script(
+                        &top_frame.origin,
+                        &state.origins,
+                        next_rev,
+                    );
+                    let _ = self.eval_in_isolated_world(&sid, &top_frame.frame_id, &live_src);
+                }
             }
         }
 
@@ -305,25 +525,18 @@ impl BrowserManager {
 
     fn sync_current_page_meta(&mut self) -> Result<(String, String, String), String> {
         let sid = self.current_session_id()?;
-        let ev = self.cdp()?.call(
-            "Runtime.evaluate",
-            json!({
-                "expression": "JSON.stringify({url: String(location.href || ''), title: String(document.title || ''), readyState: String(document.readyState || '')})",
-                "returnByValue": true,
-            }),
-            Some(&sid),
-            DEFAULT_CDP_TIMEOUT,
+        // Obtain authoritative URL from browser-side CDP FrameTree (never trust main-world JS).
+        let (top_frame, _) = self.query_frame_tree(&sid)?;
+        let url = top_frame.url;
+        let ev = self.eval_in_isolated_world(
+            &sid,
+            &top_frame.frame_id,
+            "({title: String(document.title || ''), readyState: String(document.readyState || '')})",
         )?;
-        let raw = ev
+        let parsed = ev
             .pointer("/result/value")
-            .and_then(|v| v.as_str())
-            .unwrap_or("{}");
-        let parsed: Value = serde_json::from_str(raw).unwrap_or_else(|_| json!({}));
-        let url = parsed
-            .get("url")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+            .cloned()
+            .unwrap_or_else(|| json!({}));
         let title = parsed
             .get("title")
             .and_then(|v| v.as_str())
@@ -547,11 +760,10 @@ impl BrowserManager {
         let trimmed = url.trim();
         let allowed_scheme = trimmed.starts_with("http://")
             || trimmed.starts_with("https://")
-            || trimmed.starts_with("about:")
-            || trimmed.starts_with("data:");
+            || trimmed == "about:blank";
         if !allowed_scheme {
             return Err(format!(
-                "Blocked URL '{}': only http://, https://, about:, and data: schemes are permitted",
+                "Blocked URL '{}': only http://, https://, and about:blank are permitted",
                 trimmed
             ));
         }
@@ -723,7 +935,8 @@ impl BrowserManager {
             .pointer("/result/value")
             .cloned()
             .unwrap_or_else(|| ev.get("result").cloned().unwrap_or(Value::Null));
-        Ok(serde_json::to_string_pretty(&val).unwrap_or_else(|_| val.to_string()))
+        let rendered = serde_json::to_string_pretty(&val).unwrap_or_else(|_| val.to_string());
+        Ok(truncate_chars(&rendered, DEFAULT_MAX_SNAPSHOT_CHARS))
     }
 
     pub fn tool_navigate_back(&mut self) -> Result<String, String> {
@@ -802,7 +1015,7 @@ impl BrowserManager {
         if logs.is_empty() {
             Ok("(no console messages)".to_string())
         } else {
-            Ok(logs.join("\n"))
+            Ok(truncate_chars(&logs.join("\n"), DEFAULT_MAX_SNAPSHOT_CHARS))
         }
     }
 
@@ -814,6 +1027,7 @@ impl BrowserManager {
                     .to_string(),
             );
         }
+        let safe_name = validate_screenshot_filename(filename)?;
         let sid = self.current_session_id()?;
         let res = self.cdp()?.call(
             "Page.captureScreenshot",
@@ -827,16 +1041,7 @@ impl BrowserManager {
             .ok_or_else(|| "Page.captureScreenshot returned no image data".to_string())?;
         let bytes = decode_base64(b64)?;
 
-        fs::create_dir_all(&self.cfg.output_dir)
-            .map_err(|e| format!("Failed to create output dir: {}", e))?;
-        let safe_name = filename
-            .and_then(|f| Path::new(f).file_name())
-            .and_then(|s| s.to_str())
-            .filter(|s| !s.is_empty() && !s.contains(".."))
-            .unwrap_or("screenshot.png");
-        let out_path = self.cfg.output_dir.join(safe_name);
-        fs::write(&out_path, &bytes)
-            .map_err(|e| format!("Failed to save screenshot '{}': {}", out_path.display(), e))?;
+        let out_path = write_private_screenshot_file(&self.cfg.output_dir, &safe_name, &bytes)?;
         Ok(format!(
             "Saved screenshot ({} bytes) -> {}",
             bytes.len(),
@@ -851,24 +1056,16 @@ impl BrowserManager {
     ) -> Result<String, String> {
         self.ensure_started()?;
         let sid = self.current_session_id()?;
+        let (top_frame, _) = self.query_frame_tree(&sid)?;
         let expr = build_markdown_extract_expression(selector)?;
-        let ev = self.cdp()?.call(
-            "Runtime.evaluate",
-            json!({
-                "expression": expr,
-                "returnByValue": true,
-            }),
-            Some(&sid),
-            DEFAULT_CDP_TIMEOUT,
-        )?;
+        let ev = self.eval_in_isolated_world(&sid, &top_frame.frame_id, &expr)?;
         if let Some(exc) = ev.get("exceptionDetails") {
             return Err(format!("Markdown extraction JavaScript exception: {}", exc));
         }
-        let raw = ev
+        let val = ev
             .pointer("/result/value")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "Markdown extractor returned no string payload".to_string())?;
-        format_markdown_response(raw, max_chars)
+            .ok_or_else(|| "Markdown extractor returned no object payload".to_string())?;
+        format_markdown_response(&top_frame.url, val, max_chars)
     }
 
     fn ensure_webmcp_supported(&self) -> Result<(), String> {
@@ -893,18 +1090,43 @@ impl BrowserManager {
         self.ensure_started()?;
         self.ensure_webmcp_supported()?;
         let sid = self.current_session_id()?;
-        // CDP command reply acts as a barrier flushing any queued WebMCP.toolsAdded events.
-        self.cdp()?.call(
-            "Page.getFrameTree",
-            json!({}),
-            Some(&sid),
-            DEFAULT_CDP_TIMEOUT,
-        )?;
+        // First wait for any late-registering tools (after a lightweight barrier flush if wait_ms == 0).
+        if wait_ms == 0 {
+            let _ = self.cdp()?.call(
+                "Page.getFrameTree",
+                json!({}),
+                Some(&sid),
+                DEFAULT_CDP_TIMEOUT,
+            )?;
+        }
         let tools = self
             .cdp()?
             .webmcp_tools(&sid, frame_id, Duration::from_millis(wait_ms));
-        let (url, title, _) = self.sync_current_page_meta()?;
-        Ok(format_tool_catalog(&url, &title, &tools))
+        // Query authoritative frame tree AFTER waiting so late-loaded child iframes are attributed.
+        let (top_frame, frame_map) = self.query_frame_tree(&sid)?;
+        let title_ev =
+            self.eval_in_isolated_world(&sid, &top_frame.frame_id, "String(document.title || '')");
+        let title = title_ev
+            .ok()
+            .and_then(|ev| {
+                ev.pointer("/result/value")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_default();
+        if let Some(tab) = self.tabs.get_mut(self.current_tab) {
+            if !top_frame.url.is_empty() {
+                tab.url = top_frame.url.clone();
+            }
+            tab.title = title.clone();
+        }
+        Ok(format_tool_catalog(
+            &top_frame.url,
+            &title,
+            &tools,
+            &frame_map,
+            &top_frame.origin,
+        ))
     }
 
     fn confirm_declarative_webmcp_form(
@@ -1004,14 +1226,9 @@ impl BrowserManager {
         self.ensure_started()?;
         self.ensure_webmcp_supported()?;
         let sid = self.current_session_id()?;
-        self.cdp()?.call(
-            "Page.getFrameTree",
-            json!({}),
-            Some(&sid),
-            DEFAULT_CDP_TIMEOUT,
-        )?;
+        let (top_frame, frame_map) = self.query_frame_tree(&sid)?;
         let tools = self.cdp()?.webmcp_tools(&sid, None, Duration::ZERO);
-        let tool = select_tool(&tools, name, frame_id)?.clone();
+        let tool = select_tool(&tools, name, frame_id, &frame_map, &top_frame.origin)?.clone();
 
         if tool.requires_manual_confirmation() && !confirm {
             return Err(format!(
@@ -1148,4 +1365,92 @@ fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn screenshot_filename_validation_blocks_traversal_hidden_and_non_png() {
+        assert_eq!(
+            validate_screenshot_filename(None).expect("default"),
+            "screenshot.png"
+        );
+        assert_eq!(
+            validate_screenshot_filename(Some("ok_shot.png")).expect("valid png"),
+            "ok_shot.png"
+        );
+        for bad in [
+            "../../escape.png",
+            "sub/shot.png",
+            ".sessfork-state.json",
+            ".hidden.png",
+            "state.json",
+            ".png",
+        ] {
+            assert!(
+                validate_screenshot_filename(Some(bad)).is_err(),
+                "expected rejection for {}",
+                bad
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_private_screenshot_enforces_0600_and_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let base = std::env::temp_dir().join(format!("sf_shot_test_{}", nanos));
+        let out_dir = base.join("out");
+        let outside = base.join("victim.png");
+        fs::create_dir_all(&out_dir).expect("mkdir");
+        fs::write(&outside, b"untouched").expect("victim");
+
+        let link_path = out_dir.join("link.png");
+        symlink(&outside, &link_path).expect("symlink");
+        assert!(write_private_screenshot_file(&out_dir, "link.png", b"PNG").is_err());
+        assert_eq!(fs::read(&outside).expect("read victim"), b"untouched");
+
+        let saved = write_private_screenshot_file(&out_dir, "good.png", b"PNGDATA").expect("write");
+        let mode = fs::metadata(&saved).expect("meta").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn collect_frame_tree_preserves_opaque_sandbox_iframe_origin() {
+        let tree = json!({
+            "frame": {
+                "id": "TOP",
+                "url": "https://trusted.example/app",
+                "securityOrigin": "https://trusted.example"
+            },
+            "childFrames": [
+                {
+                    "frame": {
+                        "id": "SANDBOX",
+                        "url": "https://trusted.example/widget",
+                        "securityOrigin": "null"
+                    }
+                }
+            ]
+        });
+        let mut map = HashMap::new();
+        let top = collect_frame_tree_node(&tree, true, &mut map).expect("top frame");
+        assert_eq!(top.origin, "https://trusted.example");
+        let sandbox = map.get("SANDBOX").expect("sandbox frame");
+        assert_eq!(sandbox.origin, "null");
+        assert!(!crate::webmcp::is_same_origin_frame(
+            Some(sandbox),
+            &top.origin
+        ));
+    }
 }
