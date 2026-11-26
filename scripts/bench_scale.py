@@ -78,6 +78,92 @@ from stress_test import (  # noqa: E402
 )
 
 
+class _HighBacklogHTTPServer(http.server.ThreadingHTTPServer):
+    request_queue_size = 512
+    allow_reuse_address = True
+
+
+def _atomic_swarm_rss(
+    stack: str, worker_pids: List[int], shared_browser_pid: Optional[int] = None
+) -> Dict[str, Any]:
+    """Capture aggregate RSS across all live swarm worker trees in a single `ps` snapshot."""
+    try:
+        ps_out = subprocess.check_output(["ps", "-eo", "pid,ppid,rss,comm"], text=True, timeout=10)
+    except (subprocess.SubprocessError, OSError):
+        return {"browser_rss_mb": 0.0, "wrapper_rss_mb": 0.0, "total_rss_mb": 0.0, "browser_procs": 0}
+    pm: Dict[int, Tuple[int, str]] = {}
+    ch: Dict[int, List[int]] = {}
+    for ln in ps_out.splitlines()[1:]:
+        parts = ln.strip().split(None, 3)
+        if len(parts) < 4:
+            continue
+        try:
+            p, pp, r = int(parts[0]), int(parts[1]), int(parts[2])
+        except ValueError:
+            continue
+        pm[p] = (r, parts[3].strip())
+        ch.setdefault(pp, []).append(p)
+
+    def _collect_tree(root: int) -> List[int]:
+        out_p: List[int] = []
+        stk = [root]
+        seen = set()
+        while stk:
+            cur = stk.pop()
+            if cur in seen:
+                continue
+            seen.add(cur)
+            if cur in pm:
+                out_p.append(cur)
+            stk.extend(ch.get(cur, []))
+        return out_p
+
+    b_kb = w_kb = b_procs = 0
+    seen_all: set[int] = set()
+    if stack == "chrome_rust_cdp_pooled" and shared_browser_pid is not None:
+        for pid in _collect_tree(shared_browser_pid):
+            if pid not in seen_all:
+                seen_all.add(pid)
+                b_kb += pm[pid][0]
+                b_procs += 1
+        for wp in worker_pids:
+            for pid in _collect_tree(wp):
+                if pid not in seen_all:
+                    seen_all.add(pid)
+                    w_kb += pm[pid][0]
+    elif stack == "moli_rust_pipe":
+        for wp in worker_pids:
+            for pid in _collect_tree(wp):
+                if pid in seen_all:
+                    continue
+                seen_all.add(pid)
+                r_kb, cm = pm[pid]
+                if "sessfork-mcp" in cm:
+                    w_kb += r_kb
+                else:
+                    b_kb += r_kb
+                    b_procs += 1
+    else:
+        for wp in worker_pids:
+            for pid in _collect_tree(wp):
+                if pid in seen_all:
+                    continue
+                seen_all.add(pid)
+                r_kb, cm = pm[pid]
+                base = os.path.basename(cm.split()[0]).lower() if cm else ""
+                if base in {"node", "npm", "npx", "sh", "zsh", "bash"} or cm.lower().startswith(("npm ", "node ")):
+                    w_kb += r_kb
+                else:
+                    b_kb += r_kb
+                    b_procs += 1
+    return {
+        "browser_rss_mb": round(b_kb / 1024.0, 1),
+        "wrapper_rss_mb": round(w_kb / 1024.0, 1),
+        "total_rss_mb": round((b_kb + w_kb) / 1024.0, 1),
+        "browser_procs": b_procs,
+    }
+
+
 def _host_memory_telemetry() -> Dict[str, Any]:
     info: Dict[str, Any] = {
         "total_ram_gb": None,
@@ -612,39 +698,23 @@ def _run_swarm_level(
                             if len(sample_errors) < 3:
                                 sample_errors.append(f"w{wid}s{step}: {tl or nav_txt[:140]}")
 
-                # Synchronize ALL workers while loaded so worker 0 captures true aggregate live RSS!
-                idx_at_barrier = barrier.wait(timeout=180.0)
+                # Synchronize ALL workers while loaded so worker 0 captures an atomic aggregate RSS snapshot!
+                idx_at_barrier = barrier.wait(timeout=240.0)
                 if idx_at_barrier == 0:
-                    tot_b = tot_w = tot_procs = 0.0
                     with pids_lock:
                         pids_snap = list(active_pids)
-                    if stack == "moli_rust_pipe":
-                        for p in pids_snap:
-                            info = _rust_moli_tree_rss(p)
-                            tot_b += info["browser_rss_mb"]
-                            tot_w += info["node_mcp_rss_mb"]
-                            tot_procs += info["browser_procs"]
-                    elif stack == "chrome_rust_cdp_pooled":
-                        assert shared_chrome_proc is not None
-                        c_i = get_process_tree_breakdown(shared_chrome_proc.pid)
-                        tot_b = c_i["total_rss_mb"]
-                        tot_procs = c_i["total_procs"]
-                        for p in pids_snap:
-                            r_i = get_process_tree_breakdown(p)
-                            tot_w += r_i["total_rss_mb"]
-                    else:
-                        for p in pids_snap:
-                            c_i = get_process_tree_breakdown(p)
-                            tot_b += c_i["browser_rss_mb"]
-                            tot_w += c_i["node_mcp_rss_mb"]
-                            tot_procs += c_i["browser_procs"]
+                    snap = _atomic_swarm_rss(
+                        stack,
+                        pids_snap,
+                        shared_chrome_proc.pid if shared_chrome_proc is not None else None,
+                    )
                     tel = _host_memory_telemetry()
                     peak_rss_box.update(
                         {
-                            "browser_rss_mb": round(tot_b, 1),
-                            "wrapper_rss_mb": round(tot_w, 1),
-                            "total_rss_mb": round(tot_b + tot_w, 1),
-                            "browser_procs": int(tot_procs),
+                            "browser_rss_mb": snap["browser_rss_mb"],
+                            "wrapper_rss_mb": snap["wrapper_rss_mb"],
+                            "total_rss_mb": snap["total_rss_mb"],
+                            "browser_procs": snap["browser_procs"],
                             "host_load_1m_peak": tel.get("load_1m"),
                             "host_free_mem_pct_peak": tel.get("free_mem_pct"),
                             "host_swap_used_mb_peak": tel.get("swap_used_mb"),
@@ -738,6 +808,105 @@ def run_swarm_suite(
     return out
 
 
+def run_swarm_ceiling(
+    chrome_bin: Path,
+    moli_bin: Path,
+    rust_mcp_bin: Path,
+    origin: str,
+    min_free_pct: int,
+    max_stack_rss_mb: float,
+    baseline_swap_mb: float,
+) -> Dict[str, Any]:
+    """Find the maximum 0-error parallel agent count for both Rust swarm modes within ~80% RAM."""
+    plans = [
+        ("chrome_rust_cdp_pooled", [16, 32, 48, 56, 64]),
+        ("moli_rust_pipe", [16, 32, 64, 96, 128, 144, 160]),
+    ]
+    out: Dict[str, Any] = {}
+    for stack, preset_steps in plans:
+        runs: List[Dict[str, Any]] = []
+        max_clean_workers = 0
+        stop_reason = "completed_plan"
+        steps_queue = list(preset_steps)
+        tried: set[int] = set()
+
+        while steps_queue:
+            w = steps_queue.pop(0)
+            if w in tried:
+                continue
+            tried.add(w)
+
+            # Predict next step RSS from last clean run to avoid overshooting the ~80% RAM target
+            if runs:
+                last = runs[-1]
+                last_w = max(1, int(last.get("workers", 1)))
+                last_rss = float(last.get("total_rss_mb", 0.0))
+                if last_rss > 0:
+                    est_next_rss = (last_rss / last_w) * w
+                    if est_next_rss > max_stack_rss_mb * 1.06:
+                        fitted = int((max_stack_rss_mb / (last_rss / last_w)) // 4) * 4
+                        if fitted > last_w and fitted not in tried:
+                            print(
+                                f"  [ceiling] {stack}: {w} workers est {est_next_rss:.0f} MB > cap; "
+                                f"fitting exact ~80% RAM step -> {fitted} workers",
+                                file=sys.stderr,
+                                flush=True,
+                            )
+                            w = fitted
+                            tried.add(w)
+                            steps_queue.clear()
+                        else:
+                            stop_reason = f"predicted_next_step_{w}_exceeds_cap_{max_stack_rss_mb:.0f}MB"
+                            break
+
+            print(f"  [ceiling] {stack} @ {w} parallel agents x 3 heavy tasks...", file=sys.stderr, flush=True)
+            res = _run_swarm_level(
+                stack, w, 3, chrome_bin, moli_bin, rust_mcp_bin, origin, min_free_pct, max_stack_rss_mb
+            )
+            runs.append(res)
+            rss = float(res.get("total_rss_mb", 0.0))
+            fp = res.get("host_free_mem_pct_peak")
+            sw = res.get("host_swap_used_mb_peak")
+            swap_delta = round(float(sw) - baseline_swap_mb, 1) if sw is not None else 0.0
+            res["swap_delta_mb"] = swap_delta
+            clean = (
+                not res.get("skipped")
+                and res.get("passed_tasks", 0) == res.get("expected_tasks", w * 3)
+                and res.get("cross_agent_leaks", 0) == 0
+            )
+            if clean:
+                max_clean_workers = w
+            print(
+                f"    -> {res.get('passed_tasks', 0)}/{res.get('expected_tasks', w*3)} OK | "
+                f"wall {res.get('wall_ms', 0)} ms ({res.get('throughput_tasks_per_sec', 0)} tasks/s) | "
+                f"total {rss} MB (browser {res.get('browser_rss_mb', 0)} + wrapper {res.get('wrapper_rss_mb', 0)}) | "
+                f"p99={res.get('nav_p99_ms', 0)} ms | free={fp}% | swap_delta={swap_delta:+.1f} MB",
+                file=sys.stderr,
+                flush=True,
+            )
+            time.sleep(1.5)
+
+            if not clean:
+                stop_reason = f"worker_errors_at_{w}_agents"
+                break
+            if rss >= max_stack_rss_mb * 0.96:
+                stop_reason = f"reached_target_rss_cap_{rss:.0f}MB"
+                break
+            if fp is not None and fp <= min_free_pct:
+                stop_reason = f"reached_free_mem_floor_{fp}pct"
+                break
+            if swap_delta > 2500.0:
+                stop_reason = f"swap_growth_cap_{swap_delta:+.0f}MB"
+                break
+
+        out[stack] = {
+            "max_verified_zero_error_agents": max_clean_workers,
+            "stop_reason": stop_reason,
+            "runs": runs,
+        }
+    return out
+
+
 def run_soak_500(chrome_bin: Path, moli_bin: Path, rust_mcp_bin: Path, origin: str, cycles: int) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     print(f"  [soak-{cycles}] moli_rust_pipe...", file=sys.stderr, flush=True)
@@ -793,6 +962,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     parser.add_argument("--max-stack-rss-mb", type=float, default=14500.0, help="Per-stack RSS safety cap in MB.")
     parser.add_argument("--soak-cycles", type=int, default=500, help="Hot-reload soak cycles (default 500).")
+    parser.add_argument(
+        "--swarm-ceiling",
+        action="store_true",
+        help="Run progressive parallel swarm ceiling sweep (~80 percent RAM target) for Chrome+Rust and Moli+Rust.",
+    )
     parser.add_argument("--json-out", type=Path, default=None, help="Optional JSON report path.")
     args = parser.parse_args(argv)
 
@@ -804,49 +978,78 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
 
     baseline = _host_memory_telemetry()
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), LocalAuthHandler)
+    server = _HighBacklogHTTPServer(("127.0.0.1", 0), LocalAuthHandler)
     server.daemon_threads = True
     http_port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
     origin = f"http://127.0.0.1:{http_port}"
 
     try:
-        print("[1/3] Running Single-Host Concurrency Density Ladder...", file=sys.stderr, flush=True)
-        density = run_density_ladder(
-            chrome_bin, moli_bin, rust_mcp_bin, origin, args.min_free_pct, args.max_stack_rss_mb
-        )
+        if args.swarm_ceiling:
+            print("[ceiling] Running Progressive Swarm Ceiling Sweep (~80% host RAM target)...", file=sys.stderr, flush=True)
+            ceiling = run_swarm_ceiling(
+                chrome_bin,
+                moli_bin,
+                rust_mcp_bin,
+                origin,
+                args.min_free_pct,
+                args.max_stack_rss_mb,
+                float(baseline.get("swap_used_mb") or 0.0),
+            )
+            report: Dict[str, Any] = {
+                "host": {
+                    "platform": platform.platform(),
+                    "machine": platform.machine(),
+                    "python": platform.python_version(),
+                    "chrome_binary": chrome_bin.name,
+                    "moli_version": (get_moli_version(moli_bin) or "moli").strip(),
+                    "rust_mcp_version": (get_rust_mcp_version(rust_mcp_bin) or "sessfork-mcp").strip(),
+                    "baseline_telemetry": baseline,
+                    "end_telemetry": _host_memory_telemetry(),
+                    "circuit_breaker": {
+                        "min_free_mem_pct": args.min_free_pct,
+                        "max_stack_rss_mb": args.max_stack_rss_mb,
+                    },
+                },
+                "swarm_ceiling": ceiling,
+            }
+        else:
+            print("[1/3] Running Single-Host Concurrency Density Ladder...", file=sys.stderr, flush=True)
+            density = run_density_ladder(
+                chrome_bin, moli_bin, rust_mcp_bin, origin, args.min_free_pct, args.max_stack_rss_mb
+            )
 
-        print("[2/3] Running Multi-Agent Independent Process Swarm (4 / 8 / 16 workers)...", file=sys.stderr, flush=True)
-        swarm = run_swarm_suite(
-            chrome_bin, moli_bin, rust_mcp_bin, origin, args.min_free_pct, args.max_stack_rss_mb
-        )
+            print("[2/3] Running Multi-Agent Independent Process Swarm (4 / 8 / 16 workers)...", file=sys.stderr, flush=True)
+            swarm = run_swarm_suite(
+                chrome_bin, moli_bin, rust_mcp_bin, origin, args.min_free_pct, args.max_stack_rss_mb
+            )
 
-        print(f"[3/3] Running {args.soak_cycles}-Cycle High-Frequency Soak...", file=sys.stderr, flush=True)
-        soak = run_soak_500(chrome_bin, moli_bin, rust_mcp_bin, origin, args.soak_cycles)
+            print(f"[3/3] Running {args.soak_cycles}-Cycle High-Frequency Soak...", file=sys.stderr, flush=True)
+            soak = run_soak_500(chrome_bin, moli_bin, rust_mcp_bin, origin, args.soak_cycles)
+            report = {
+                "host": {
+                    "platform": platform.platform(),
+                    "machine": platform.machine(),
+                    "python": platform.python_version(),
+                    "chrome_binary": chrome_bin.name,
+                    "moli_version": (get_moli_version(moli_bin) or "moli").strip(),
+                    "rust_mcp_version": (get_rust_mcp_version(rust_mcp_bin) or "sessfork-mcp").strip(),
+                    "playwright_mcp_pkg": DEFAULT_PLAYWRIGHT_MCP_PKG,
+                    "baseline_telemetry": baseline,
+                    "end_telemetry": _host_memory_telemetry(),
+                    "circuit_breaker": {
+                        "min_free_mem_pct": args.min_free_pct,
+                        "max_stack_rss_mb": args.max_stack_rss_mb,
+                    },
+                },
+                "density_ladder": density,
+                "swarm_concurrency": swarm,
+                "soak_500": soak,
+            }
     finally:
         server.shutdown()
         server.server_close()
 
-    report = {
-        "host": {
-            "platform": platform.platform(),
-            "machine": platform.machine(),
-            "python": platform.python_version(),
-            "chrome_binary": chrome_bin.name,
-            "moli_version": (get_moli_version(moli_bin) or "moli").strip(),
-            "rust_mcp_version": (get_rust_mcp_version(rust_mcp_bin) or "sessfork-mcp").strip(),
-            "playwright_mcp_pkg": DEFAULT_PLAYWRIGHT_MCP_PKG,
-            "baseline_telemetry": baseline,
-            "end_telemetry": _host_memory_telemetry(),
-            "circuit_breaker": {
-                "min_free_mem_pct": args.min_free_pct,
-                "max_stack_rss_mb": args.max_stack_rss_mb,
-            },
-        },
-        "density_ladder": density,
-        "swarm_concurrency": swarm,
-        "soak_500": soak,
-    }
     payload = json.dumps(report, indent=2, ensure_ascii=False) + "\n"
     if args.json_out is not None:
         args.json_out.write_text(payload, encoding="utf-8")

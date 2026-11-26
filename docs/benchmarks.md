@@ -8,6 +8,9 @@
 # High-scale density ladder (12->24->48 Heavy-DOM), 4/8/16 parallel agent swarm, & 500-cycle soak
 python3 scripts/bench_scale.py --min-free-pct 25 --soak-cycles 500
 
+# Progressive ~80% RAM swarm ceiling sweep (Chrome+Rust pooled up to 56, Moli+Rust dedicated up to 160)
+python3 scripts/bench_scale.py --swarm-ceiling --min-free-pct 20 --max-stack-rss-mb 15500
+
 # Extended 4-way 12x Heavy-DOM (3 rounds), 100-cycle memory soak, SIGKILL & --cdp-url detach proofs
 python3 scripts/bench_extended.py --rounds 3 --soak-cycles 100
 
@@ -91,6 +94,36 @@ Every tier runs `N` isolated contexts on the 1,775-node Heavy-DOM dashboard with
 | **16 Agents** *(48 tasks)* | `chrome` + Node `@playwright/mcp` *(16× dedicated)* | `4,558.8 ms` | `10.53 /s` | `2,200 / 3,389 ms` | `110.5 / 305.2 ms` | **`10,634.7 MB`** (`10.4 GiB`) | **`4,079.6 MB`** (`4.0 GiB` Node!) | `64` |
 | **16 Agents** *(48 tasks)* | **`chrome` + Rust `--cdp-url`** *(16× Rust → 1 Chrome pool)* | `1,513.7 ms` | **`31.71 /s`** (`3.01×`) | `12.3 / 27.3 ms` | `198.7 / 472.3 ms` | **`4,619.9 MB`** (**saves `6.01 GB` / `-56.6%`**) | `857.0 MB` | `35` |
 | **16 Agents** *(48 tasks)* | **`moli` + Rust Pipe** *(16× dedicated)* | **`1,245.3 ms`** | **`38.55 /s`** (**`3.66×`**) | **`7.4 / 10.5 ms`** | **`147.7 / 196.3 ms`** | **`1,689.0 MB`** (**`6.30×` smaller / `-84.1%`**, saves **`8.95 GB`**) | **`324.2 MB`** (`12.6×` smaller) | **`16`** |
+
+### 3. Single-Host ~80% RAM Parallel Swarm Ceiling (`--swarm-ceiling`, 24 GB Apple Silicon)
+
+To measure the true **maximum zero-error concurrent agent ceiling** inside a strict **~80% total host RAM budget** (`15.5 GB` benchmark RSS cap on a 24 GB Mac alongside ~`4.2 GB` active OS/IDE footprint, `20%` free-memory floor, and `0 MB` net swap growth), we swept both Rust swarm architectures up to the `15.5 GB` ceiling (every single run verified **`100%` pass rate, `0` cross-agent leaks, and `+0.0 MB` swap growth**):
+
+#### 3a. `chrome-headless-shell` + Rust `sessfork-mcp --cdp-url` (Pooled Chrome, Ceiling: **56 Parallel Agents**)
+
+| Parallel Agents *(×3 Heavy Tasks)* | Passed / Leaks | Total Wall Time | Throughput | Cold Init p50 / p95 | Nav p50 / p99 | Peak Total RSS *(Browser + Rust)* | Browser Procs | Net Swap Growth |
+| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **16 Agents** *(48 tasks)* | `48 / 48` (`0`) | `1.13 s` | `42.61 /s` | `16.1 / 20.6 ms` | `182.8 / 470.5 ms` | `4,627.9 MB` (`3,764 + 865`) | `35` | `+0.0 MB` |
+| **32 Agents** *(96 tasks)* | `96 / 96` (`0`) | `2.24 s` | `42.86 /s` | `20.0 / 45.6 ms` | `394.5 / 1,180.0 ms` | `9,038.5 MB` (`7,312 + 1,727`) | `67` | `+0.0 MB` |
+| **48 Agents** *(144 tasks)* | `144 / 144` (`0`) | `3.35 s` | `43.05 /s` | `27.8 / 50.1 ms` | `725.2 / 1,472.0 ms` | `13,417.3 MB` (`10,837 + 2,581`) | `99` | `+0.0 MB` |
+| **56 Agents** *(168 tasks — ~80% RAM cap)* | **`168 / 168`** (`0`) | **`3.85 s`** | **`43.59 /s`** | **`14.4 / 65.3 ms`** | `789.7 / 1,552.0 ms` | **`15,348.8 MB`** (`12,337 + 3,012`) | `115` | **`+0.0 MB`** |
+
+#### 3b. `moli 1.1.27` + Rust `sessfork-mcp` Unix Pipe (100% Dedicated OS Processes, Ceiling: **160 Parallel Agents / 320 Live Processes**)
+
+| Parallel Agents *(×3 Heavy Tasks)* | Passed / Leaks | Total Wall Time | Throughput | Cold Init p50 / p95 | Nav p50 / p99 | Peak Total RSS *(Moli + Rust)* | Moli Procs | Net Swap Growth |
+| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **16 Agents** *(48 tasks)* | `48 / 48` (`0`) | `0.97 s` | `49.73 /s` | `8.3 / 14.8 ms` | `145.5 / 203.9 ms` | `1,687.1 MB` (`1,363 + 324`) | `16` | `+0.0 MB` |
+| **32 Agents** *(96 tasks)* | `96 / 96` (`0`) | `1.88 s` | `51.01 /s` | `11.6 / 24.2 ms` | `282.5 / 399.2 ms` | `3,370.0 MB` (`2,722 + 648`) | `32` | `+0.0 MB` |
+| **64 Agents** *(192 tasks)* | `192 / 192` (`0`) | `3.76 s` | `51.12 /s` | `59.7 / 99.5 ms` | `595.5 / 863.2 ms` | `6,315.8 MB` (`5,022 + 1,294`) | `64` | `+0.0 MB` |
+| **96 Agents** *(288 tasks)* | `288 / 288` (`0`) | `5.36 s` | **`53.70 /s`** | `44.5 / 105.6 ms` | `865.5 / 1,255.0 ms` | `9,481.8 MB` (`7,541 + 1,941`) | `96` | `+0.0 MB` |
+| **128 Agents** *(384 tasks)* | `384 / 384` (`0`) | `7.22 s` | `53.16 /s` | `22.9 / 48.6 ms` | `1,215.7 / 1,797.1 ms` | `12,467.9 MB` (`9,880 + 2,588`) | `128` | `+0.0 MB` |
+| **144 Agents** *(432 tasks)* | `432 / 432` (`0`) | `8.64 s` | `50.03 /s` | `38.3 / 137.2 ms` | `1,426.8 / 2,077.2 ms` | `13,463.0 MB` (`10,653 + 2,810`) | `144` | `+0.0 MB` |
+| **160 Agents** *(480 tasks — ~80% RAM cap)* | **`480 / 480`** (`0`) | **`9.69 s`** | **`49.53 /s`** | **`23.3 / 57.6 ms`** | `1,670.1 / 2,412.7 ms` | **`14,939.1 MB`** (`11,855 + 3,084`) | **`160`** *(320 live procs)* | **`+0.0 MB`** |
+
+> **Single-Host Capacity Takeaway (`~15.5 GB` benchmark budget / ~80% of 24 GB RAM):**
+> - Default **`Chrome` + Node `@playwright/mcp`**: ~`22–23` concurrent agents (`~665 MB/agent`, based on measured `10.63 GB` at 16 agents).
+> - **`Chrome` + Rust `sessfork-mcp --cdp-url` (pooled Chrome)**: **`56` verified parallel agents** (`15.35 GB`, `168/168` pass, `0` leaks, `43.59 tasks/s`, `~274 MB/agent`) — **`~2.5×` higher Chrome density**.
+> - **`Moli` + Rust `sessfork-mcp` (dedicated OS pipe processes)**: **`160` verified parallel agents** (`14.94 GB`, `480/480` pass, `0` leaks, `49.53 tasks/s` / peak `53.70 tasks/s`, **`~93.4 MB/agent`**) — **`~7×` higher density than Chrome+Node** and **`2.86×` higher than Chrome+Rust**, with **`+0.0 MB` swap growth** across 320 simultaneous live processes.
 
 ---
 
