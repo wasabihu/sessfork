@@ -70,7 +70,7 @@ uv tool install -e .
 
 ---
 
-## 5 Real-World Copy-Paste Examples
+## 6 Real-World Copy-Paste Examples
 
 Once installed, you don't even have to remember CLI flags. Copy any prompt below straight to your AI agent — or run the 1-line command directly.
 
@@ -118,6 +118,15 @@ sessfork https://github.com/notifications
 ```bash
 sessfork x.com --browser arc
 sessfork console.cloud.google.com --profile "Profile 1"
+```
+
+### 6. Feed Live Sessions Straight into `agent-browser` (Zero Profile Copy)
+
+Because `sessfork` writes standard Playwright `storageState` JSON (`0600`), you can pass a single domain's `HttpOnly` cookies + `localStorage` straight into [`vercel-labs/agent-browser`](https://github.com/vercel-labs/agent-browser) without copying a multi-GB Chrome profile or restoring unrelated tabs:
+
+```bash
+sessfork example.com --target none --state-file ~/.sessfork/agent-browser.json
+agent-browser --state ~/.sessfork/agent-browser.json open https://example.com
 ```
 
 ---

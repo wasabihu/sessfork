@@ -66,7 +66,7 @@ uv tool install -e .
 
 ---
 
-## 5 个高频实战事例（直接复制提示词给 AI 即可）
+## 6 个高频实战事例（直接复制提示词给 AI 即可）
 
 配置好一次后，平时完全不用记命令行参数。挑一个场景，直接把下面这段话发给你的 AI 助手：
 
@@ -114,6 +114,15 @@ sessfork https://github.com/notifications
 ```bash
 sessfork x.com --browser arc
 sessfork console.cloud.google.com --profile "Profile 1"
+```
+
+### 6. 直接喂给 `agent-browser`（免拷贝 GB 级 Chrome Profile）
+
+由于 `sessfork` 生成标准 `0600` Playwright `storageState` JSON，可直接按单域名提取 `HttpOnly` Cookie 与 `localStorage` 喂给 [`vercel-labs/agent-browser`](https://github.com/vercel-labs/agent-browser)，彻底绕开 `--profile` 拷贝整个 Chrome 目录耗时超时与拉起无关标签页的问题：
+
+```bash
+sessfork example.com --target none --state-file ~/.sessfork/agent-browser.json
+agent-browser --state ~/.sessfork/agent-browser.json open https://example.com
 ```
 
 ---
