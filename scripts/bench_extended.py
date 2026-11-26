@@ -436,7 +436,7 @@ def _run_soak_on_client(
     stale = 0
     errors: List[str] = []
 
-    checkpoint_set = {1, 10, 25, 50, 75, cycles}
+    checkpoint_set = {c for c in (1, 10, 25, 50, 75, 100, 250, cycles) if c <= cycles}
     t_all = time.perf_counter()
     for i in range(1, cycles + 1):
         payload = {

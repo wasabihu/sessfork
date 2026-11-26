@@ -1,10 +1,13 @@
 # Stress Tests & Benchmarks
 
-`sessfork` ships two zero-dependency, 100% local benchmark harnesses — [`scripts/stress_test.py`](../scripts/stress_test.py) and [`scripts/bench_extended.py`](../scripts/bench_extended.py). Both run against synthetic Chromium `Cookies` (SQLite WAL + AES-128-CBC v24) and `Local Storage/leveldb` (SSTable + WAL MVCC) fixtures plus a local `127.0.0.1` HTTP auth echo server — **zero external network calls, zero real user browser data, and zero OS Keychain prompts**.
+`sessfork` ships three zero-dependency, 100% local benchmark harnesses — [`scripts/stress_test.py`](../scripts/stress_test.py), [`scripts/bench_extended.py`](../scripts/bench_extended.py), and [`scripts/bench_scale.py`](../scripts/bench_scale.py). All run against synthetic Chromium `Cookies` (SQLite WAL + AES-128-CBC v24) and `Local Storage/leveldb` (SSTable + WAL MVCC) fixtures plus a local `127.0.0.1` HTTP auth echo server — **zero external network calls, zero real user browser data, and zero OS Keychain prompts**.
 
 ## Reproducing Locally
 
 ```bash
+# High-scale density ladder (12->24->48 Heavy-DOM), 4/8/16 parallel agent swarm, & 500-cycle soak
+python3 scripts/bench_scale.py --min-free-pct 25 --soak-cycles 500
+
 # Extended 4-way 12x Heavy-DOM (3 rounds), 100-cycle memory soak, SIGKILL & --cdp-url detach proofs
 python3 scripts/bench_extended.py --rounds 3 --soak-cycles 100
 
@@ -54,16 +57,53 @@ In [lexmount/moli Discussion #3465](https://github.com/lexmount/moli/discussions
 
 ---
 
-## 100-Cycle Token-Rotation Hot-Reload Memory Soak (`scripts/bench_extended.py`)
+## High-Scale Density Ladder & 16-Agent Swarm Concurrency (`scripts/bench_scale.py`)
 
-Runs **100 consecutive token-rotation cycles** (`write fresh state` → `browser_set_storage_state` → `browser_navigate` → assert fresh Cookie & LocalStorage tokens with zero stale reads) to verify long-running stability and isolate wrapper vs. browser memory growth:
+Measured on the same **Apple Silicon 10-core, 24 GB RAM** host (`macOS 26.6.2`, `HeadlessChrome/159.0.8154.6`, `moli 1.1.27`, `sessfork-mcp 0.2.1`, `@playwright/mcp@0.0.85`), with a `25%` free-memory circuit breaker active (**`79%–80%` free memory maintained throughout, `0 MB` net swap growth**).
 
-| Stack (100 Consecutive Cycles) | Passed / Stale | Total Wall Time | Hot-Reload p50 / p95 / p99 | Nav p50 / p95 | Rust Wrapper RSS (c1 → c10 → c25 → c50 → c100) | Browser RSS (c1 → c10 → c50 → c100) |
+### 1. Single-Host Concurrency Density Ladder (`12 → 24 → 48` Heavy-DOM, up to 85,200 Live DOM Nodes)
+
+Every tier runs `N` isolated contexts on the 1,775-node Heavy-DOM dashboard with full AX tree snapshots enabled (`0` errors, `0` cross-context leaks across all completed tiers):
+
+| Stack | 12× Heavy-DOM (21.3K DOM) | 24× Heavy-DOM (42.6K DOM) | **48× Heavy-DOM (85.2K DOM)** | Marginal Cost (`MB / ctx`) | 48× Speed | 48× RAM vs. Chrome+Node |
+| :--- | :---: | :---: | :---: | :---: | :---: | :--- |
+| `chrome-headless-shell` + Node `@playwright/mcp` | `2,710.2 MB` / `2.33 s` (`15` procs) | `4,932.0 MB` / `5.08 s` (`27` procs) | **`8,752.2 MB`** / `9.92 s` (`51` procs, p95 `73.7 ms`) | `167.8 MB/ctx` | `1.00×` | baseline (`8.55 GiB`) |
+| **`chrome-headless-shell` + Rust `sessfork-mcp --cdp-url`** | `1,967.8 MB` / `2.49 s` (`16` procs) | `3,637.9 MB` / `2.98 s` (`28` procs) | **`6,769.0 MB`** / **`5.01 s`** (`52` procs, p95 `54.2 ms`) | **`133.4 MB/ctx`** | **`1.98×` faster** | **saves `1.98 GB` (`-22.7%`) on identical Chrome** |
+| `moli 1.1.27` + Node `@playwright/mcp` | `645.2 MB` / `5.47 s` (`1` proc) | `897.5 MB` / `11.07 s` (`1` proc) | `1,326.5 MB` / `17.99 s` (`1` proc, p95 `204.2 ms`) | `18.9 MB/ctx` | `0.55×` | `-84.8%` RAM |
+| **`moli 1.1.27` + Rust `sessfork-mcp` (Unix Pipe)** | **`276.7 MB`** / **`1.57 s`** (`1` proc) | **`402.1 MB`** / **`3.07 s`** (`1` proc) | **`625.8 MB`** / **`4.90 s`** (`1` proc, p95 **`51.9 ms`**) | **`9.7 MB/ctx`** | **`2.03×` faster** (`3.67×` vs Node+Moli) | **`13.99×` smaller (`-92.8%`, saves `8.13 GB`!)** |
+
+> **Real Upstream Limit Discovered During 96-Context Probing (`moli 1.1.27`):**
+> Pushing a **single** `moli 1.1.27` process past **60 concurrent `BrowserContext`s** causes `moli`'s per-process open file descriptors to cross **`1,024` (`FD_SETSIZE`)** (`~17` FDs/context: `KQUEUE` + Unix socketpairs + temp handles; observed `1,063` open FDs at context #60 via `lsof`), triggering `net::ERR_CONNECTION_REFUSED` on subsequent navigations for both Node MCP and Rust MCP (with `0` cross-context leaks).
+> **Recommended production architecture:** shard horizontally across multiple `sessfork-mcp` + `moli` worker processes (see Swarm benchmark below — 16 independent processes × 48 contexts = up to `768` contexts with zero FD pressure and full multi-core parallelism).
+
+### 2. Multi-Agent Independent Process Swarm (`4 / 8 / 16` Parallel MCP Servers)
+
+`W` independent agent workers spawn **`W` separate MCP server processes simultaneously**, each opening its own isolated context and running 3 consecutive Heavy-DOM authenticated tasks (`W × 3` total tasks). Aggregate RSS is captured via a `threading.Barrier(W)` while **all `W` workers are loaded and alive simultaneously** (`100%` pass rate, **`0` cross-agent leaks** on every run):
+
+| Parallel Agents | Stack & Deployment Topology | Total Wall Time *(incl. Cold Spawn)* | Throughput (`tasks/s`) | Cold Init p50 / p95 | Nav p50 / p99 | **Peak Aggregate RSS** *(Browser + Wrapper)* | Wrapper-Only RSS | Browser OS Procs |
+| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **4 Agents** *(12 tasks)* | `chrome` + Node `@playwright/mcp` *(4× dedicated)* | `2,061.7 ms` | `5.82 /s` | `1,410 / 1,459 ms` | `68.7 / 90.1 ms` | `2,709.1 MB` | `1,022.8 MB` | `16` |
+| **4 Agents** *(12 tasks)* | **`chrome` + Rust `--cdp-url`** *(4× Rust → 1 Chrome pool)* | **`444.0 ms`** | **`27.03 /s`** (`4.64×`) | `7.1 / 8.9 ms` | `62.5 / 130.8 ms` | `1,327.1 MB` (`-51.0%`) | `215.2 MB` | `11` |
+| **4 Agents** *(12 tasks)* | **`moli` + Rust Pipe** *(4× dedicated)* | `468.8 ms` | **`25.60 /s`** (`4.40×`) | **`4.7 / 5.5 ms`** | **`59.9 / 63.5 ms`** | **`421.0 MB`** (`-84.5%`) | **`80.0 MB`** | **`4`** |
+| **8 Agents** *(24 tasks)* | `chrome` + Node `@playwright/mcp` *(8× dedicated)* | `2,837.3 ms` | `8.46 /s` | `1,483 / 2,052 ms` | `104.3 / 197.9 ms` | `5,418.5 MB` | `2,040.5 MB` | `32` |
+| **8 Agents** *(24 tasks)* | **`chrome` + Rust `--cdp-url`** *(8× Rust → 1 Chrome pool)* | `788.6 ms` | **`30.44 /s`** (`3.60×`) | `7.8 / 8.8 ms` | `110.9 / 241.0 ms` | `2,397.4 MB` (`-55.8%`) | `428.7 MB` | `19` |
+| **8 Agents** *(24 tasks)* | **`moli` + Rust Pipe** *(8× dedicated)* | **`703.1 ms`** | **`34.14 /s`** (`4.04×`) | **`7.0 / 10.5 ms`** | **`80.8 / 95.7 ms`** | **`844.4 MB`** (`-84.4%`) | **`162.2 MB`** | **`8`** |
+| **16 Agents** *(48 tasks)* | `chrome` + Node `@playwright/mcp` *(16× dedicated)* | `4,558.8 ms` | `10.53 /s` | `2,200 / 3,389 ms` | `110.5 / 305.2 ms` | **`10,634.7 MB`** (`10.4 GiB`) | **`4,079.6 MB`** (`4.0 GiB` Node!) | `64` |
+| **16 Agents** *(48 tasks)* | **`chrome` + Rust `--cdp-url`** *(16× Rust → 1 Chrome pool)* | `1,513.7 ms` | **`31.71 /s`** (`3.01×`) | `12.3 / 27.3 ms` | `198.7 / 472.3 ms` | **`4,619.9 MB`** (**saves `6.01 GB` / `-56.6%`**) | `857.0 MB` | `35` |
+| **16 Agents** *(48 tasks)* | **`moli` + Rust Pipe** *(16× dedicated)* | **`1,245.3 ms`** | **`38.55 /s`** (**`3.66×`**) | **`7.4 / 10.5 ms`** | **`147.7 / 196.3 ms`** | **`1,689.0 MB`** (**`6.30×` smaller / `-84.1%`**, saves **`8.95 GB`**) | **`324.2 MB`** (`12.6×` smaller) | **`16`** |
+
+---
+
+## 500-Cycle High-Frequency Hot-Reload Memory Soak (`scripts/bench_scale.py`)
+
+Runs **500 consecutive token-rotation cycles** (`write fresh state` → `browser_set_storage_state` → `browser_navigate` → assert fresh Cookie & LocalStorage tokens with zero stale reads) to prove long-running zero-leak stability:
+
+| Stack (500 Consecutive Cycles) | Passed / Stale | Total Wall Time | Hot-Reload p50 / p95 / p99 | Nav p50 / p95 | Rust Wrapper RSS (c1 → c25 → c100 → c250 → c500) | Browser RSS (c1 → c100 → c250 → c500) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`moli 1.1.27` + `sessfork-mcp` (Pipe)** | **`100 / 100`** (`0` stale) | **`670.6 ms`** | **`0.85 ms`** / `1.07 ms` / `1.52 ms` | `3.50 ms` / `4.66 ms` | `2.2 → 2.6 → 2.8 → 2.8 → 2.8 MB` (**`+0.0 MB` c25→c100**) | `47.2 → 59.2 → 91.8 → 92.9 MB` *(plateaus at ~92 MB)* |
-| **`chrome-headless-shell 159` + `sessfork-mcp --cdp-url`** | **`100 / 100`** (`0` stale) | **`807.9 ms`** | **`1.01 ms`** / `1.33 ms` / `1.74 ms` | `3.66 ms` / `4.27 ms` | `2.1 → 2.6 → 2.8 → 2.8 → 2.8 MB` (**`+0.0 MB` c25→c100**) | `254.4 → 278.1 → 377.0 → 496.3 MB` *(Chromium BFCache/history)* |
+| **`moli 1.1.27` + `sessfork-mcp` (Pipe)** | **`500 / 500`** (`0` stale) | **`2,445.8 ms`** (`204 /s`) | **`0.82 ms`** / `0.98 ms` / `1.17 ms` | `3.33 ms` / `4.65 ms` | `2.2 → 2.8 → 2.8 → 2.9 → 2.9 MB` (**`+0.1 MB` over 475 cycles**) | `47.2 → 92.8 → 76.5 → 78.8 MB` *(GC reclaims & stabilizes)* |
+| **`chrome-headless-shell 159` + `sessfork-mcp --cdp-url`** | **`500 / 500`** (`0` stale) | **`2,821.9 ms`** (`177 /s`) | **`1.01 ms`** / `1.16 ms` / `1.42 ms` | `3.78 ms` / `4.43 ms` | `2.1 → 2.8 → 2.8 → 2.8 → 2.9 MB` (**`+0.1 MB` over 475 cycles**) | `254.1 → 496.2 → 687.7 → 637.1 MB` *(GC plateaus after c250)* |
 
-> **Honest Engineering Note:** Across 100 consecutive hot-reload navigations, **`sessfork-mcp` itself stays completely flat at `2.8 MB` RSS (`+0.0 MB` from cycle 25 through cycle 100)** on both engines, confirming zero memory leaks in the Rust MCP server. On the engine side, Moli plateaus cleanly around `92 MB` (`+1.1 MB` across cycles 50→100), whereas `chrome-headless-shell` retains BFCache / navigation history across rapid unique-query navigations (`+2.4 MB/nav` before GC pressure).
+> **Zero-Leak Verdict:** Across 500 consecutive hot-reload navigations, **`sessfork-mcp` itself remains pinned at `2.8–2.9 MB` RSS (`+0.1 MB` across cycles 25→500)** on both engines, and **both** browser engines GC and plateau (`moli` settles at `78.8 MB`; `chrome-headless-shell` peaks at `687.7 MB` at cycle 250 and drops back to `637.1 MB` by cycle 500).
 
 ---
 

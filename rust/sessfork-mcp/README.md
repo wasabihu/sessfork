@@ -27,7 +27,9 @@ Reproducible locally via `python3 scripts/bench_extended.py --rounds 3 --soak-cy
 | **MCP Cold `initialize`** | `1,240.4 ms` | **`3.2 ms`** (`388×` faster) | `1,260.5 ms` | **`2.8 ms`** (`443×` faster) |
 | **12× Heavy-DOM Time** *(full AX tree)* | `2,357.9 ms` | **`1,527.8 ms`** (`1.54×` faster) | `5,451.2 ms` | **`1,509.2 ms`** (`1.56×` vs Chrome, `3.61×` vs Node+Moli) |
 | **12× Heavy-DOM Total RSS** | `2,715.1 MB` (`15` procs) | **`1,967.3 MB`** (**`-747.8 MB` / `-27.5%`** on identical Chrome!) | `652.4 MB` (`1` proc) | **`273.8 MB`** (`1` proc, **`9.92×` smaller / `-89.9%`**) |
-| **100-Cycle Hot-Reload Soak** | — | **`100/100`** (`1.01 ms` p50, Rust flat `2.8 MB`) | — | **`100/100`** (`0.85 ms` p50, Rust flat `2.8 MB`) |
+| **48× Heavy-DOM Scaling** *(85.2K DOM)* | `8,752.2 MB` / `9.92 s` (`167.8 MB/ctx`) | **`6,769.0 MB` / `5.01 s`** (**`1.98×` faster**, saves `1.98 GB`) | `1,326.5 MB` / `17.99 s` | **`625.8 MB` / `4.90 s`** (**`13.99×` smaller / `-92.8%`**, `9.7 MB/ctx`) |
+| **16 Parallel Agents Swarm** *(48 tasks)* | `10,634.7 MB` (`4.08 GB` Node!) / `10.53 /s` | **`4,619.9 MB` / `31.71 /s`** *(pooled Chrome, `-56.6%` RAM, `3.01×`)* | — | **`1,689.0 MB` / `38.55 /s`** *(16 dedicated procs, **`-84.1%` RAM, `3.66×`**)* |
+| **500-Cycle Hot-Reload Soak** | — | **`500/500`** (`1.01 ms` p50, Rust flat `2.9 MB`) | — | **`500/500`** (`0.82 ms` p50, Rust flat `2.9 MB`) |
 
 ### Attach Directly to Any Local Chromium / CEF / Stealth Browser (`--cdp-url`, Zero Moli Required)
 
