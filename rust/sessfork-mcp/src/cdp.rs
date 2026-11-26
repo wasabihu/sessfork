@@ -3,8 +3,8 @@ use crate::webmcp::WebMcpTool;
 #[cfg(windows)]
 use crate::ws_cdp::Win32JobGuard;
 use crate::ws_cdp::{
-    connect_loopback_ws, read_moli_bound_port_from_stderr, read_next_ws_message,
-    wait_for_ws_debugger_path, WsFrameWriter,
+    connect_loopback_ws, parse_loopback_cdp_endpoint, read_moli_bound_port_from_stderr,
+    read_next_ws_message, resolve_loopback_cdp_ws, wait_for_ws_debugger_path, WsFrameWriter,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -448,7 +448,7 @@ impl CdpWriter {
 }
 
 pub struct CdpPipeClient {
-    child: Child,
+    child: Option<Child>,
     #[cfg(windows)]
     _job: Option<Win32JobGuard>,
     writer: Arc<Mutex<Option<CdpWriter>>>,
@@ -579,7 +579,7 @@ impl CdpPipeClient {
         });
 
         let client = Self {
-            child,
+            child: Some(child),
             writer: Arc::new(Mutex::new(Some(CdpWriter::Pipe(write_file)))),
             next_id: AtomicU64::new(1),
             shared,
@@ -699,7 +699,7 @@ impl CdpPipeClient {
         });
 
         let client = Self {
-            child,
+            child: Some(child),
             #[cfg(windows)]
             _job: job,
             writer,
@@ -709,6 +709,42 @@ impl CdpPipeClient {
         };
 
         // Verify CDP WebSocket handshake immediately.
+        let _ = client.call(
+            "Browser.getVersion",
+            json!({}),
+            None,
+            Duration::from_secs(10),
+        )?;
+        Ok(client)
+    }
+
+    /// Attach directly to an externally managed loopback CDP server (Chromium, chrome-headless-shell,
+    /// CEF / Owl Browser, or `moli serve`) over pure-std RFC 6455 WebSocket without spawning or
+    /// terminating the host browser process.
+    pub fn connect_external_cdp(cdp_url: &str) -> Result<Self, String> {
+        let endpoint = parse_loopback_cdp_endpoint(cdp_url)?;
+        let (port, ws_path) = resolve_loopback_cdp_ws(&endpoint, Duration::from_secs(10))?;
+        let (ws_reader, ws_writer) = connect_loopback_ws(port, &ws_path)?;
+
+        let shared = Arc::new(SharedState::new());
+        let writer = Arc::new(Mutex::new(Some(CdpWriter::WebSocket(ws_writer))));
+        let reader_shared = Arc::clone(&shared);
+        let reader_writer = Arc::clone(&writer);
+
+        let reader_thread = thread::spawn(move || {
+            ws_reader_loop(ws_reader, reader_shared, reader_writer);
+        });
+
+        let client = Self {
+            child: None,
+            #[cfg(windows)]
+            _job: None,
+            writer,
+            next_id: AtomicU64::new(1),
+            shared,
+            reader_thread: Some(reader_thread),
+        };
+
         let _ = client.call(
             "Browser.getVersion",
             json!({}),
@@ -1091,15 +1127,16 @@ fn terminate_child_process_group(child: &mut Child, term_grace: Duration) {
 
 impl Drop for CdpPipeClient {
     fn drop(&mut self) {
-        // On WebSocket transport, send a graceful Browser.close + Close frame before shutting down;
-        // on Unix pipe transport, dropping FD 3 sends EOF to `moli serve --remote-debugging-pipe`.
+        // When attached to an external browser (`child: None`), NEVER send `Browser.close` — only
+        // close our WebSocket cleanly so the externally managed Chromium/CEF/Moli stays alive.
+        let owned_child = self.child.is_some();
         let is_ws = self
             .writer
             .lock()
             .ok()
             .and_then(|g| g.as_ref().map(|w| matches!(w, CdpWriter::WebSocket(_))))
             .unwrap_or(false);
-        if is_ws {
+        if owned_child && is_ws {
             let _ = self.call("Browser.close", json!({}), None, Duration::from_millis(400));
         }
         if let Ok(mut guard) = self.writer.lock() {
@@ -1107,42 +1144,44 @@ impl Drop for CdpPipeClient {
                 w.close_graceful();
             }
         }
-        // Wait for FD 4 EOF (all processes in the child group closed FD 4) before reaping the
-        // leader; keeping the leader unreaped until EOF pins its PGID so timeout teardown can
-        // safely `killpg` any surviving grandchildren.
-        let deadline = Instant::now() + Duration::from_millis(1500);
-        loop {
-            if self.shared.is_closed() {
-                match self.child.try_wait() {
-                    Ok(Some(_)) => break,
-                    Ok(None) if Instant::now() < deadline => {
-                        thread::sleep(Duration::from_millis(15));
-                        continue;
+        if let Some(mut child) = self.child.take() {
+            // Wait for FD 4 EOF (all processes in the child group closed FD 4) before reaping the
+            // leader; keeping the leader unreaped until EOF pins its PGID so timeout teardown can
+            // safely `killpg` any surviving grandchildren.
+            let deadline = Instant::now() + Duration::from_millis(1500);
+            loop {
+                if self.shared.is_closed() {
+                    match child.try_wait() {
+                        Ok(Some(_)) => break,
+                        Ok(None) if Instant::now() < deadline => {
+                            thread::sleep(Duration::from_millis(15));
+                            continue;
+                        }
+                        _ => {}
                     }
-                    _ => {}
+                } else if Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(15));
+                    continue;
                 }
-            } else if Instant::now() < deadline {
-                thread::sleep(Duration::from_millis(15));
-                continue;
-            }
-            #[cfg(unix)]
-            terminate_child_process_group_with_eof(
-                &mut self.child,
-                Duration::from_millis(200),
-                Some(&self.shared.closed),
-            );
-            #[cfg(not(unix))]
-            {
-                // Close Win32 Job Object BEFORE waiting so `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
-                // terminates both `moli.exe` and any grandchildren holding inherited sockets.
-                #[cfg(windows)]
+                #[cfg(unix)]
+                terminate_child_process_group_with_eof(
+                    &mut child,
+                    Duration::from_millis(200),
+                    Some(&self.shared.closed),
+                );
+                #[cfg(not(unix))]
                 {
-                    let _ = self._job.take();
+                    // Close Win32 Job Object BEFORE waiting so `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
+                    // terminates both `moli.exe` and any grandchildren holding inherited sockets.
+                    #[cfg(windows)]
+                    {
+                        let _ = self._job.take();
+                    }
+                    let _ = child.kill();
+                    let _ = child.wait();
                 }
-                let _ = self.child.kill();
-                let _ = self.child.wait();
+                break;
             }
-            break;
         }
         if let Some(handle) = self.reader_thread.take() {
             let join_deadline = Instant::now() + Duration::from_millis(500);

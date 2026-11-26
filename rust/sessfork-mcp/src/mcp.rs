@@ -400,7 +400,8 @@ mod tests {
     #[test]
     fn handles_initialize_and_tools_list_without_exposing_raw_cookie_readers() {
         let mut mgr = BrowserManager::new(BrowserConfig {
-            moli_bin: PathBuf::from("moli"),
+            moli_bin: Some(PathBuf::from("moli")),
+            cdp_url: None,
             initial_storage_state: None,
             output_dir: std::env::temp_dir(),
             enable_layout: false,

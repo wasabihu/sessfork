@@ -357,7 +357,17 @@ class SessforkTestSuite(unittest.TestCase):
         self.assertEqual(normalize_domain_filter("127.0.0.1:8080"), "127.0.0.1")
 
     def test_security_hardening_guards(self) -> None:
-        for bad in ("com", "co.uk", "github.io", "vercel.app", "github.com;id", "foo bar", "ftp://github.com"):
+        for bad in (
+            "com",
+            "co.uk",
+            "github.io",
+            "vercel.app",
+            "github.com;id",
+            "foo bar",
+            "ftp://github.com",
+            "https://github.com@evil.com",
+            "github.com@evil.com",
+        ):
             with self.assertRaises(BrowserProfileError, msg=f"Expected rejection for {bad!r}"):
                 normalize_domain_filter(bad)
 

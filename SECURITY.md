@@ -2,6 +2,8 @@
 
 `sessfork` handles live browser credentials, so security reports are taken seriously.
 
+For our reproducible adversarial verification results (`14/14` automated probes across 8 trust boundaries, runnable via `python3 scripts/security_verify.py`) and explicit `Not tested ≠ clean` boundaries, see **[docs/security-report.md](docs/security-report.md)**.
+
 ## Reporting a Vulnerability
 
 Please **do not open a public issue** for security problems.

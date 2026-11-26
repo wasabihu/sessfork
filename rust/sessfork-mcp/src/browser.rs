@@ -192,7 +192,8 @@ struct TabState {
 }
 
 pub struct BrowserConfig {
-    pub moli_bin: PathBuf,
+    pub moli_bin: Option<PathBuf>,
+    pub cdp_url: Option<String>,
     pub initial_storage_state: Option<PathBuf>,
     pub output_dir: PathBuf,
     pub enable_layout: bool,
@@ -221,7 +222,16 @@ impl BrowserManager {
         if self.cdp.is_some() {
             return Ok(());
         }
-        let client = CdpPipeClient::spawn_moli(&self.cfg.moli_bin, self.cfg.enable_layout)?;
+        let client = if let Some(ref cdp_url) = self.cfg.cdp_url {
+            CdpPipeClient::connect_external_cdp(cdp_url)?
+        } else {
+            let moli_bin = self
+                .cfg
+                .moli_bin
+                .as_deref()
+                .ok_or_else(|| "Neither --moli nor --cdp-url is configured".to_string())?;
+            CdpPipeClient::spawn_moli(moli_bin, self.cfg.enable_layout)?
+        };
         self.cdp = Some(client);
 
         // Create default isolated context + initial blank tab (index 0).
@@ -1021,9 +1031,9 @@ impl BrowserManager {
 
     pub fn tool_take_screenshot(&mut self, filename: Option<&str>) -> Result<String, String> {
         self.ensure_started()?;
-        if !self.cfg.enable_layout {
+        if !self.cfg.enable_layout && self.cfg.cdp_url.is_none() {
             return Err(
-                "Screenshots require layout rendering. Restart sessfork-mcp with --layout (or fall back to sessfork-browser Chrome)."
+                "Screenshots require layout rendering. Restart sessfork-mcp with --layout (or attach to Chromium via --cdp-url)."
                     .to_string(),
             );
         }
@@ -1335,11 +1345,40 @@ impl BrowserManager {
     }
 
     pub fn tool_close(&mut self) -> Result<String, String> {
+        // When attached to an external browser (--cdp-url), dispose only the isolated
+        // BrowserContexts we created so zero tabs/cookies leak inside the host browser.
+        if self.cfg.cdp_url.is_some() {
+            if let Some(ref cdp) = self.cdp {
+                for ctx in self.contexts.values() {
+                    let _ = cdp.call(
+                        "Target.disposeBrowserContext",
+                        json!({ "browserContextId": ctx.browser_context_id }),
+                        None,
+                        Duration::from_secs(3),
+                    );
+                }
+            }
+        }
         self.cdp.take();
         self.contexts.clear();
         self.tabs.clear();
         self.current_tab = 0;
-        Ok("Closed Moli browser session cleanly.".to_string())
+        if self.cfg.cdp_url.is_some() {
+            Ok(
+                "Detached from external CDP browser cleanly (created contexts disposed)."
+                    .to_string(),
+            )
+        } else {
+            Ok("Closed Moli browser session cleanly.".to_string())
+        }
+    }
+}
+
+impl Drop for BrowserManager {
+    fn drop(&mut self) {
+        if self.cdp.is_some() {
+            let _ = self.tool_close();
+        }
     }
 }
 

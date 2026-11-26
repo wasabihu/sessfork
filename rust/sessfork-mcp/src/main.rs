@@ -113,6 +113,8 @@ fn print_help() {
            sessfork-mcp setup --mcp-file <PATH>        Wire sessfork-moli into an MCP JSON config\n\n\
          MCP OPTIONS:\n\
            --moli <PATH>           Path to moli binary (auto-detected by default)\n\
+           --cdp-url <URL>         Attach to any loopback CDP server (Chromium/CEF/Owl/Moli,\n\
+                                   e.g. http://127.0.0.1:9222 or ws://127.0.0.1:9222/devtools/...)\n\
            --storage-state <PATH>  Initial Playwright storageState JSON file\n\
            --output-dir <PATH>     Allowed root directory for storageState hot-reload & screenshots\n\
            --layout                Enable Moli layout engine (required for screenshots)\n\
@@ -124,6 +126,7 @@ fn print_help() {
 
 fn parse_args(args: &[String]) -> Result<BrowserConfig, i32> {
     let mut moli_arg: Option<String> = None;
+    let mut cdp_url_arg: Option<String> = None;
     let mut state_arg: Option<PathBuf> = None;
     let mut output_dir: Option<PathBuf> = None;
     let mut enable_layout = false;
@@ -144,6 +147,11 @@ fn parse_args(args: &[String]) -> Result<BrowserConfig, i32> {
         } else if a == "--moli" && i + 1 < args.len() {
             i += 1;
             moli_arg = Some(args[i].clone());
+        } else if let Some(val) = a.strip_prefix("--cdp-url=") {
+            cdp_url_arg = Some(val.to_string());
+        } else if a == "--cdp-url" && i + 1 < args.len() {
+            i += 1;
+            cdp_url_arg = Some(args[i].clone());
         } else if let Some(val) = a.strip_prefix("--storage-state=") {
             state_arg = Some(PathBuf::from(val));
         } else if a == "--storage-state" && i + 1 < args.len() {
@@ -161,11 +169,22 @@ fn parse_args(args: &[String]) -> Result<BrowserConfig, i32> {
         i += 1;
     }
 
-    let moli_bin = match find_moli_binary(moli_arg.as_deref()) {
-        Ok(p) => p,
-        Err(e) => {
+    if let Some(ref raw_url) = cdp_url_arg {
+        if let Err(e) = ws_cdp::parse_loopback_cdp_endpoint(raw_url) {
             eprintln!("sessfork-mcp error: {}", e);
-            return Err(1);
+            return Err(2);
+        }
+    }
+
+    let moli_bin = if cdp_url_arg.is_some() {
+        None
+    } else {
+        match find_moli_binary(moli_arg.as_deref()) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                eprintln!("sessfork-mcp error: {}", e);
+                return Err(1);
+            }
         }
     };
 
@@ -187,6 +206,7 @@ fn parse_args(args: &[String]) -> Result<BrowserConfig, i32> {
 
     Ok(BrowserConfig {
         moli_bin,
+        cdp_url: cdp_url_arg,
         initial_storage_state: state_arg,
         output_dir: out_dir,
         enable_layout,

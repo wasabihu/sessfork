@@ -1,8 +1,8 @@
-# sessfork-mcp — Native Rust MCP Server for Moli
+# sessfork-mcp — Native Rust CDP MCP Server (Moli & External Chromium/CEF)
 
-A **~784 KiB**, **zero-Node.js / zero-Tokio** native Rust MCP server (plus built-in Chrome/Edge Native Messaging host) for [`lexmount/moli`](https://github.com/lexmount/moli) — works **completely standalone on macOS, Linux, and Windows** (no Python, no Chrome required) or paired with [`sessfork`](../../README.md) / the [Companion Extension](../../extension/README.md) to fork live Chrome Cookies & LocalStorage into your background agent browser.
+A **~816 KiB**, **zero-Node.js / zero-Tokio** native Rust CDP MCP server (plus built-in Chrome/Edge Native Messaging host) for [`lexmount/moli`](https://github.com/lexmount/moli) **and any local Chromium / `chrome-headless-shell` / CEF CDP browser via `--cdp-url`** — works **completely standalone on macOS, Linux, and Windows** (no Python, no Chrome required) or paired with [`sessfork`](../../README.md) / the [Companion Extension](../../extension/README.md) to fork live Chrome Cookies & LocalStorage into your background agent browser.
 
-On **macOS & Linux**, it talks directly to `moli serve --remote-debugging-pipe` over OS file descriptors 3 & 4 (NUL-framed JSON, zero TCP ports). On **Windows**, it launches `moli.exe serve --host 127.0.0.1 --port 0` (kernel-assigned port, zero TOCTOU) over a pure-std RFC 6455 loopback WebSocket (`34.2 ms` spawn, `0.086 ms/call` vs `23.2 ms` / `0.042 ms/call` on Unix pipe) guarded by a Win32 Job Object (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) and `CREATE_NO_WINDOW` — replacing the `~272 MB` Node.js `@playwright/mcp` wrapper and eliminating `npx` cold starts and orphan browser processes across all three platforms.
+On **macOS & Linux**, it talks directly to `moli serve --remote-debugging-pipe` over OS file descriptors 3 & 4 (NUL-framed JSON, zero TCP ports). On **Windows**, it launches `moli.exe serve --host 127.0.0.1 --port 0` (kernel-assigned port, zero TOCTOU) over a pure-std RFC 6455 loopback WebSocket (`34.2 ms` spawn, `0.086 ms/call` vs `23.2 ms` / `0.042 ms/call` on Unix pipe) guarded by a Win32 Job Object (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) and `CREATE_NO_WINDOW`. With **`--cdp-url http://127.0.0.1:<port>`**, it also attaches directly to any running loopback Chromium / CEF / stealth-browser CDP endpoint (disposing only its own created isolated contexts on close/EOF without shutting down the host browser) — replacing the `~298 MB` Node.js `@playwright/mcp` wrapper everywhere.
 
 ![Chrome Headless Shell vs Moli + Node MCP vs Moli + Rust sessfork-mcp Benchmark](../../docs/assets/benchmark-v014-en.png)
 
@@ -18,17 +18,24 @@ In [lexmount/moli Discussion #3465](https://github.com/lexmount/moli/discussions
 | `moli` + `@playwright/mcp` (Node) | `25.41 s` | `575.6 MiB` | `-76.4%` RAM, `0.46×` speed |
 | **`moli` + `sessfork-mcp` (Rust Pipe)** | **`4.22 s`** | **`226.3 MiB`** | **`-90.7%` RAM (`10.78×` smaller), `2.76×` faster** (`6.02×` vs Node+Moli) |
 
-### Author Apple Silicon Measurements (macOS arm64, M5 24 GB)
+### Author Apple Silicon Measurements (macOS arm64, 3-Round Medians — 4-Way Heavy-DOM)
 
-Reproducible locally via `python3 scripts/stress_test.py --heavy-compare` (full methodology in [docs/benchmarks.md](../../docs/benchmarks.md)):
+Reproducible locally via `python3 scripts/bench_extended.py --rounds 3 --soak-cycles 100` (full 4-way, 100-cycle memory-soak, `SIGKILL` orphan, and Windows 10 data in [docs/benchmarks.md](../../docs/benchmarks.md); live adversarial verification in [docs/security-report.md](../../docs/security-report.md)):
 
-| Metric | Chrome + Node MCP | Moli + Node MCP | **Moli + `sessfork-mcp` (Rust Pipe)** |
-| :--- | :---: | :---: | :---: |
-| **MCP Cold `initialize`** | `1,787.5 ms` | `1,229.5 ms` | **`4.6 ms`** (`1.7 MB` idle RSS) |
-| **50-Origin Hot-Reload p50** | `263.8 ms` | `672.5 ms` | **`5.9 ms`** (0 stale cookies/LS) |
-| **6× Light Auth Time / RAM** | `3,413 ms` / `1,219 MB` | `779 ms` / `383 MB` | **`230 ms` / `85 MB`** (`14.8×` faster / `-93%`) |
-| **12× Heavy-DOM RSS** *(1,775 nodes/tab)* | `2,531.4 MB` (`15` procs) | `656.8 MB` (`1` proc) | **`260.4 MB`** (`1` proc, **`9.72×` smaller**) |
-| **12× Heavy-DOM Time** *(full AX tree)* | `2,915.4 ms` | `5,543.9 ms` | **`1,501.0 ms`** (**`1.94×` faster than Chrome**) |
+| Metric (12× Heavy-DOM, 1,775 nodes/tab) | Chrome + Node MCP | **Chrome + `sessfork-mcp --cdp-url`** | Moli + Node MCP | **Moli + `sessfork-mcp` (Rust Pipe)** |
+| :--- | :---: | :---: | :---: | :---: |
+| **MCP Cold `initialize`** | `1,240.4 ms` | **`3.2 ms`** (`388×` faster) | `1,260.5 ms` | **`2.8 ms`** (`443×` faster) |
+| **12× Heavy-DOM Time** *(full AX tree)* | `2,357.9 ms` | **`1,527.8 ms`** (`1.54×` faster) | `5,451.2 ms` | **`1,509.2 ms`** (`1.56×` vs Chrome, `3.61×` vs Node+Moli) |
+| **12× Heavy-DOM Total RSS** | `2,715.1 MB` (`15` procs) | **`1,967.3 MB`** (**`-747.8 MB` / `-27.5%`** on identical Chrome!) | `652.4 MB` (`1` proc) | **`273.8 MB`** (`1` proc, **`9.92×` smaller / `-89.9%`**) |
+| **100-Cycle Hot-Reload Soak** | — | **`100/100`** (`1.01 ms` p50, Rust flat `2.8 MB`) | — | **`100/100`** (`0.85 ms` p50, Rust flat `2.8 MB`) |
+
+### Attach Directly to Any Local Chromium / CEF / Stealth Browser (`--cdp-url`, Zero Moli Required)
+
+```bash
+# Attach pure Rust sessfork-mcp to any loopback CDP port (strict loopback SSRF allowlist;
+# creates isolated BrowserContexts and disposes only its own contexts on close/EOF):
+sessfork-mcp --cdp-url http://127.0.0.1:9222
+```
 
 ## 30-Second Standalone Setup (Moli Only — No Python, Node.js, or Chrome Required)
 
@@ -103,6 +110,7 @@ See the main [sessfork README](../../README.md) for full session-forking docs.
 | Flag / Subcommand | Default | Description |
 | :--- | :--- | :--- |
 | `--moli <PATH>` | auto-detected | Explicit path to the `moli` / `moli.exe` binary (`SESSFORK_MOLI_PATH` also supported) |
+| `--cdp-url <URL>` | none | Attach directly to any running loopback CDP browser (`http://127.0.0.1:<port>`, `http://localhost:<port>`, or `ws://127.0.0.1:<port>/<path>`) — no Moli binary required; strict fail-closed loopback SSRF allowlist; disposes only created contexts on close/EOF without killing the host browser |
 | `--storage-state <PATH>` | none | Optional initial Playwright `storageState` JSON to hydrate on startup |
 | `--output-dir <PATH>` | `~/.sessfork/playwright-output` | Confined sandbox root for `browser_set_storage_state` hot-reload & screenshots |
 | `--layout` | off (DOM-first) | Enable Moli's on-demand layout engine (required for screenshots) |

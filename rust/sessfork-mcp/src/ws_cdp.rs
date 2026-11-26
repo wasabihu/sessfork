@@ -333,6 +333,86 @@ fn fetch_json_version_ws_path(port: u16, timeout: Duration) -> Result<String, St
     parse_loopback_ws_path(ws_url, port)
 }
 
+/// Strictly validated loopback CDP endpoint (`http://127.0.0.1:<port>` or `ws://127.0.0.1:<port>/<path>`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LoopbackCdpEndpoint {
+    HttpDiscovery { port: u16 },
+    DirectWs { port: u16, path: String },
+}
+
+fn parse_loopback_host_port(authority: &str) -> Result<u16, String> {
+    if authority.contains('@')
+        || authority.contains('/')
+        || authority.contains('?')
+        || authority.contains('#')
+        || authority.bytes().any(|b| !b.is_ascii_graphic())
+    {
+        return Err(format!(
+            "Refusing malformed or userinfo-bearing CDP authority '{authority}'"
+        ));
+    }
+    let (host, port_str) = authority.rsplit_once(':').ok_or_else(|| {
+        format!("Refusing CDP endpoint without explicit loopback port: '{authority}'")
+    })?;
+    if !host.eq_ignore_ascii_case("127.0.0.1") && !host.eq_ignore_ascii_case("localhost") {
+        return Err(format!(
+            "Refusing non-loopback CDP host '{host}' (only 127.0.0.1 / localhost are allowed)"
+        ));
+    }
+    let port = port_str
+        .parse::<u16>()
+        .ok()
+        .filter(|&p| p > 0)
+        .ok_or_else(|| format!("Refusing invalid CDP port '{port_str}'"))?;
+    Ok(port)
+}
+
+/// Parse and fail-closed validate an external `--cdp-url` endpoint.
+/// Accepts ONLY `http://127.0.0.1:<port>` (or `localhost`, optional trailing `/`) for `/json/version`
+/// discovery, or `ws://127.0.0.1:<port>/<path>` (or `localhost`) for direct WebSocket attach.
+pub(crate) fn parse_loopback_cdp_endpoint(raw: &str) -> Result<LoopbackCdpEndpoint, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.bytes().any(|b| !b.is_ascii_graphic() || b == b'#') {
+        return Err(format!("Refusing invalid --cdp-url '{raw}'"));
+    }
+    if let Some(rest) = trimmed.strip_prefix("http://") {
+        let authority = rest.strip_suffix('/').unwrap_or(rest);
+        let port = parse_loopback_host_port(authority)?;
+        return Ok(LoopbackCdpEndpoint::HttpDiscovery { port });
+    }
+    if let Some(rest) = trimmed.strip_prefix("ws://") {
+        let (authority, path_rest) = rest
+            .split_once('/')
+            .ok_or_else(|| format!("Direct ws:// --cdp-url must include a path: '{raw}'"))?;
+        let port = parse_loopback_host_port(authority)?;
+        let path = format!("/{path_rest}");
+        if path_rest.is_empty() || path.bytes().any(|b| !b.is_ascii_graphic() || b == b'#') {
+            return Err(format!(
+                "Refusing invalid WebSocket path in --cdp-url '{raw}'"
+            ));
+        }
+        return Ok(LoopbackCdpEndpoint::DirectWs { port, path });
+    }
+    Err(format!(
+        "Refusing --cdp-url '{raw}': only loopback http:// or ws:// URLs are permitted"
+    ))
+}
+
+/// Resolve a validated loopback CDP endpoint to `(port, ws_path)` by querying `/json/version`
+/// when given `http://127.0.0.1:<port>`, or returning the direct WebSocket path immediately.
+pub(crate) fn resolve_loopback_cdp_ws(
+    endpoint: &LoopbackCdpEndpoint,
+    timeout: Duration,
+) -> Result<(u16, String), String> {
+    match endpoint {
+        LoopbackCdpEndpoint::DirectWs { port, path } => Ok((*port, path.clone())),
+        LoopbackCdpEndpoint::HttpDiscovery { port } => {
+            let path = fetch_json_version_ws_path(*port, timeout)?;
+            Ok((*port, path))
+        }
+    }
+}
+
 /// Strictly validate that `webSocketDebuggerUrl` points back to `ws://127.0.0.1:<expected_port>/...`
 /// (or `ws://localhost:<expected_port>/...`) with ASCII-graphic path and no fragment.
 pub(crate) fn parse_loopback_ws_path(ws_url: &str, expected_port: u16) -> Result<String, String> {
@@ -949,5 +1029,48 @@ mod tests {
         let err = read_next_ws_message(&mut ws_reader, 1024, |_| {}).unwrap_err();
         assert!(err.contains("RSV"));
         srv.join().expect("server thread");
+    }
+
+    #[test]
+    fn external_cdp_url_enforces_strict_loopback_and_blocks_ssrf() {
+        assert_eq!(
+            parse_loopback_cdp_endpoint("http://127.0.0.1:9222").expect("http ip"),
+            LoopbackCdpEndpoint::HttpDiscovery { port: 9222 }
+        );
+        assert_eq!(
+            parse_loopback_cdp_endpoint("http://localhost:9222/").expect("http localhost"),
+            LoopbackCdpEndpoint::HttpDiscovery { port: 9222 }
+        );
+        assert_eq!(
+            parse_loopback_cdp_endpoint("ws://127.0.0.1:9222/devtools/browser/abc-123")
+                .expect("direct ws"),
+            LoopbackCdpEndpoint::DirectWs {
+                port: 9222,
+                path: "/devtools/browser/abc-123".to_string(),
+            }
+        );
+
+        for bad in [
+            "http://169.254.169.254:80",
+            "http://10.0.0.1:9222",
+            "http://evil.com:9222",
+            "http://127.0.0.1.evil.com:9222",
+            "http://127.0.0.1@evil.com:9222",
+            "ws://evil@127.0.0.1:9222/devtools/browser/x",
+            "http://0.0.0.0:9222",
+            "https://127.0.0.1:9222",
+            "wss://127.0.0.1:9222/devtools/browser/x",
+            "file:///etc/passwd",
+            "http://127.0.0.1:0",
+            "http://127.0.0.1",
+            "http://127.0.0.1:9222/extra/path",
+            "ws://127.0.0.1:9222/",
+            "ws://127.0.0.1:9222/devtools/browser/x#frag",
+        ] {
+            assert!(
+                parse_loopback_cdp_endpoint(bad).is_err(),
+                "expected SSRF / invalid --cdp-url to be rejected: {bad}"
+            );
+        }
     }
 }

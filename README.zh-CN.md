@@ -6,7 +6,7 @@
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-22c55e.svg)](pyproject.toml)
 [![wasabihu/sessfork MCP server](https://glama.ai/mcp/servers/wasabihu/sessfork/badges/score.svg)](https://glama.ai/mcp/servers/wasabihu/sessfork)
 
-[English](README.md) · **简体中文** · [纯 Rust Moli MCP](rust/sessfork-mcp/README.md) · [交互式可视化指南](https://wasabihu.github.io/sessfork/) · [压测与基准数据](docs/benchmarks.md)
+[English](README.md) · **简体中文** · [纯 Rust CDP MCP](rust/sessfork-mcp/README.md) · [交互式可视化指南](https://wasabihu.github.io/sessfork/) · [压测与基准数据](docs/benchmarks.md) · [安全审计报告](docs/security-report.md)
 
 **一键把本地 Chrome 登录态（Cookies + LocalStorage）无锁分叉到 AI 后台无头浏览器 —— 零窗口抢焦点、零运行时依赖。**
 

@@ -282,11 +282,17 @@ def normalize_domain_filter(raw: str) -> str:
         )
     if "://" in text:
         parsed = urlparse(text)
-        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        if (
+            parsed.scheme not in ("http", "https")
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or "@" in parsed.netloc
+        ):
             raise BrowserProfileError(f"Invalid URL or domain filter: {raw!r}")
         host = parsed.hostname.lstrip(".").lower()
     else:
-        if any(ch in text for ch in " \t\r\n;|&$`'\"\\<>"):
+        if any(ch in text for ch in " \t\r\n;|&$`'\"\\<>@"):
             raise BrowserProfileError(f"Invalid characters in domain filter: {raw!r}")
         host = text.split("/")[0].split(":")[0].lstrip(".").lower()
 
