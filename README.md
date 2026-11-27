@@ -71,7 +71,7 @@ uv tool install -e .
 
 ---
 
-## 6 Real-World Copy-Paste Examples
+## 7 Real-World Copy-Paste Examples
 
 Once installed, you don't even have to remember CLI flags. Copy any prompt below straight to your AI agent — or run the 1-line command directly.
 
@@ -129,6 +129,29 @@ Because `sessfork` writes standard Playwright `storageState` JSON (`0600`), you 
 sessfork example.com --target none --state-file ~/.sessfork/agent-browser.json
 agent-browser --state ~/.sessfork/agent-browser.json open https://example.com
 ```
+
+### 7. Authenticated Crawling with `Crawl4AI` (Zero Re-Login, Zero Profile Clone)
+
+Feed a single domain's live Chrome/Edge session (`0600` Playwright `storageState`) directly into local [`unclecode/crawl4ai`](https://github.com/unclecode/crawl4ai) without re-authenticating in a second Chromium window (`crwl profiles`) or copying GB-sized profile folders — including Windows Chrome 127+ `v20` via the Companion Extension:
+
+```bash
+sessfork docs.example.com --target none --state-file ~/.sessfork/crawl4ai.json
+```
+
+```python
+import asyncio, os
+from crawl4ai import AsyncWebCrawler, BrowserConfig
+
+async def main():
+    cfg = BrowserConfig(headless=True, storage_state=os.path.expanduser("~/.sessfork/crawl4ai.json"))
+    async with AsyncWebCrawler(config=cfg) as crawler:
+        result = await crawler.arun(url="https://docs.example.com/private")
+        print(result.markdown.raw_markdown)
+
+asyncio.run(main())
+```
+
+*(Full runnable script with `fit_markdown` and JSONL export for local RAG ingestion: [`examples/crawl4ai_auth_crawl.py`](examples/crawl4ai_auth_crawl.py). Complements Crawl4AI's `ManagedBrowser` — for strict anti-bot / device-fingerprint portals, keep using a persistent `ManagedBrowser` profile.)*
 
 ---
 
@@ -324,7 +347,7 @@ Need to silently capture authenticated Notion, Feishu, Confluence, or internal r
 
 | Stage | Project / Model | Role in the Local-First AI Stack |
 | :--- | :--- | :--- |
-| **1. Capture** | **[`wasabihu/sessfork`](https://github.com/wasabihu/sessfork)** (`skills/xerj-auth-ingest/`) | Zero-focus-theft Chrome auth fork (`sessfork-moli` / `sessfork-browser`) + secret-redacting HTML/Markdown/JSONL cleaner into local XERJ. |
+| **1. Capture** | **[`wasabihu/sessfork`](https://github.com/wasabihu/sessfork)** (`skills/xerj-auth-ingest/`, `examples/crawl4ai_auth_crawl.py`) | Zero-focus-theft Chrome auth fork (`sessfork-moli` / `sessfork-browser` / optional local [`Crawl4AI`](https://github.com/unclecode/crawl4ai) `fit_markdown` batch crawl) + secret-redacting HTML/Markdown/JSONL cleaner into local XERJ. |
 | **2. Index & Neural Retrieval** | **[`xerj-org/xerj`](https://github.com/xerj-org/xerj)** + HF **[`wasabihu/xerj-bilingual-fin-law-384`](https://huggingface.co/wasabihu/xerj-bilingual-fin-law-384)** *(MIT)* & **[`wasabihu/VeriCorpus-Reranker-0.6B`](https://huggingface.co/wasabihu/VeriCorpus-Reranker-0.6B)** *(Apache-2.0)* | Single-binary Rust ES-compatible search engine (`~9.9 MB` idle RSS) paired with compact bilingual CJK/EN financial & legal embedding and reranker models. |
 | **3. Read-Only Agent Firewall** | **[`wasabihu/kbwall`](https://github.com/wasabihu/kbwall)** | `~1 MB` air-gapped, loopback-only read-only Rust MCP firewall for XERJ with offline BMP CJK enhancement and `xerj://` evidence URIs. |
 | **4. Citation & Corpus Verification** | **[`wasabihu/claimcite`](https://github.com/wasabihu/claimcite)** + **[`wasabihu/vericorpus`](https://github.com/wasabihu/vericorpus)** | Verifies verbatim quotes against DOIs/PMIDs and `xerj://` evidence URIs (`claimcite`), backed by audit-grade CJK/fin/law benchmarks (`vericorpus`). |

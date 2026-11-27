@@ -22,6 +22,16 @@ sessfork app.example.com --no-cookies  # Pure SPA / JWT LocalStorage (zero Keych
 Hot-reload the forked auth state into your running headless MCP browser without restarting your editor:
 - **Fast DOM-first path (`sessfork-moli`, recommended when `--engine dual` or `moli` is configured)**: read pages directly via `sessfork-moli` (`605 KB` Rust MCP, `1.7 MB` idle RSS, built-in structure-first Markdown extraction).
 - **Playwright fallback (`sessfork-browser`)**: call `browser_set_storage_state` with the hot-reload path from `sessfork --status` (`~/.sessfork/playwright-output/.sessfork-state.json`), then navigate and capture clean HTML or Markdown.
+- **Batch / Deep-Crawl path (`Crawl4AI` + `examples/crawl4ai_auth_crawl.py`)**: for multi-page authenticated docs or portals where you want Crawl4AI's `PruningContentFilter` (`fit_markdown`), export a domain-scoped `0600` state file and emit JSONL directly into this pipeline:
+  ```bash
+  sessfork docs.example.com --target none --state-file ~/.sessfork/crawl4ai.json
+  python3 examples/crawl4ai_auth_crawl.py \
+    --state-file ~/.sessfork/crawl4ai.json \
+    --url https://docs.example.com/private/guide \
+    --fit-markdown \
+    --out-jsonl ./captured-auth/crawl4ai.jsonl
+  ```
+  `ingest_to_xerj.py` natively recognizes Crawl4AI JSONL records (`fit_markdown`, `markdown` dict `{fit_markdown, raw_markdown}`, and `metadata.title`) and runs the full `<REDACTED>` scrubber before writing Markdown.
 
 Save captured pages into a dedicated staging directory (for example `./captured-auth/` as `.html`, `.md`, or `.jsonl` records with `source_url`, `title`, `captured_at`, and `html`/`markdown`).
 

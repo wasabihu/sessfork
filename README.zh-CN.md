@@ -67,7 +67,7 @@ uv tool install -e .
 
 ---
 
-## 6 个高频实战事例（直接复制提示词给 AI 即可）
+## 7 个高频实战事例（直接复制提示词给 AI 即可）
 
 配置好一次后，平时完全不用记命令行参数。挑一个场景，直接把下面这段话发给你的 AI 助手：
 
@@ -125,6 +125,29 @@ sessfork console.cloud.google.com --profile "Profile 1"
 sessfork example.com --target none --state-file ~/.sessfork/agent-browser.json
 agent-browser --state ~/.sessfork/agent-browser.json open https://example.com
 ```
+
+### 7. 免重登喂给 `Crawl4AI` 做带鉴权抓取（零 Profile 克隆）
+
+将单域名的实时登录态（`0600` 标准 Playwright `storageState`）直接传给本地自托管 [`unclecode/crawl4ai`](https://github.com/unclecode/crawl4ai)，无需在第二个窗口重新过 2FA 登录（`crwl profiles`），也无需拷贝数百 MB 的浏览器目录（Windows Chrome 127+ `v20` 站点可直接通过伴生扩展一键导出）：
+
+```bash
+sessfork docs.example.com --target none --state-file ~/.sessfork/crawl4ai.json
+```
+
+```python
+import asyncio, os
+from crawl4ai import AsyncWebCrawler, BrowserConfig
+
+async def main():
+    cfg = BrowserConfig(headless=True, storage_state=os.path.expanduser("~/.sessfork/crawl4ai.json"))
+    async with AsyncWebCrawler(config=cfg) as crawler:
+        result = await crawler.arun(url="https://docs.example.com/private")
+        print(result.markdown.raw_markdown)
+
+asyncio.run(main())
+```
+
+*（带 `fit_markdown` 与 JSONL 导出接入本地 RAG 的完整脚本见 [`examples/crawl4ai_auth_crawl.py`](examples/crawl4ai_auth_crawl.py)。与 Crawl4AI 的 `ManagedBrowser` 互补——遇到强反爬/设备指纹校验站点仍建议使用持久化 `ManagedBrowser`。）*
 
 ---
 
@@ -320,7 +343,7 @@ sessfork --setup
 
 | 环节 | 项目 / 公开模型 | 在本地优先 AI 栈中的职责 |
 | :--- | :--- | :--- |
-| **1. 静默采集清洗** | **[`wasabihu/sessfork`](https://github.com/wasabihu/sessfork)**（`skills/xerj-auth-ingest/`） | 零抢焦点分叉登录态（`sessfork-moli` / `sessfork-browser`）+ 自动脱敏 HTML/Markdown/JSONL 清洗入库。 |
+| **1. 静默采集清洗** | **[`wasabihu/sessfork`](https://github.com/wasabihu/sessfork)**（`skills/xerj-auth-ingest/`、`examples/crawl4ai_auth_crawl.py`） | 零抢焦点分叉登录态（`sessfork-moli` / `sessfork-browser` / 可选本地 [`Crawl4AI`](https://github.com/unclecode/crawl4ai) 鉴权批量抓取）+ 自动脱敏 HTML/Markdown/JSONL 清洗入库。 |
 | **2. 索引与双语语义检索** | **[`xerj-org/xerj`](https://github.com/xerj-org/xerj)** + HF **[`wasabihu/xerj-bilingual-fin-law-384`](https://huggingface.co/wasabihu/xerj-bilingual-fin-law-384)**（MIT）与 **[`wasabihu/VeriCorpus-Reranker-0.6B`](https://huggingface.co/wasabihu/VeriCorpus-Reranker-0.6B)**（Apache-2.0） | 单二进制 Rust 检索引擎（空载约 `9.9 MB` RSS），搭配中英金融/法律 384d 向量模型与 0.6B 重排模型。 |
 | **3. 只读断网 MCP 防火墙** | **[`wasabihu/kbwall`](https://github.com/wasabihu/kbwall)** | 约 `1 MB` 纯 Rust 只读回环 MCP 防火墙，内置离线全 BMP 汉字繁简/拼音/法条增强，输出 `xerj://` 证据 URI。 |
 | **4. 逐字引文核验与基准语料** | **[`wasabihu/claimcite`](https://github.com/wasabihu/claimcite)** + **[`wasabihu/vericorpus`](https://github.com/wasabihu/vericorpus)** | 对 DOI/PMID 及 `xerj://` 证据 URI 做逐字引文防篡改校验（`claimcite`），配合审计级中英金融/法条评测集（`vericorpus`）。 |

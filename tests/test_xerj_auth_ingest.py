@@ -271,6 +271,76 @@ class XerjAuthIngestTestSuite(unittest.TestCase):
             self.assertIn("<REDACTED>", md1)
             self.assertIn("Keep this section.", md1)
 
+    def test_crawl4ai_jsonl_fit_markdown_dict_and_example_adapter(self) -> None:
+        crawl4ai_jwt = (
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+            "eyJzdWIiOiJjcmF3bDRhaSJ9."
+            "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+        )
+        records = [
+            {
+                "url": "https://docs.internal.example/runbooks/deploy",
+                "metadata": {"title": "部署手册 — Crawl4AI"},
+                "html": "<html><body><nav>noisy nav</nav><p>Raw fallback only</p></body></html>",
+                "markdown": {
+                    "raw_markdown": "noisy nav\n\n# 部署手册\n\n原始全文",
+                    "fit_markdown": f"# 部署手册\n\n只保留核心正文，且脱敏 {crawl4ai_jwt}",
+                },
+            },
+            {
+                "source_url": "https://docs.internal.example/runbooks/raw-only",
+                "markdown": {"raw_markdown": "# Raw Markdown Dict\n\nClean body."},
+            },
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            jsonl_file = tmp / "crawl4ai_dump.jsonl"
+            jsonl_file.write_text(
+                "\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n",
+                encoding="utf-8",
+            )
+            out_dir = tmp / "clean"
+            results = self.mod.ingest_paths([jsonl_file], out_dir)
+            self.assertEqual(len(results), 2)
+
+            md0 = Path(results[0]["output_path"]).read_text(encoding="utf-8")
+            self.assertIn('title: "部署手册 — Crawl4AI"', md0)
+            self.assertIn('domain: "docs.internal.example"', md0)
+            self.assertIn("只保留核心正文", md0)
+            self.assertNotIn("noisy nav", md0)
+            self.assertNotIn("Raw fallback only", md0)
+            self.assertNotIn(crawl4ai_jwt, md0)
+            self.assertIn("<REDACTED>", md0)
+
+            md1 = Path(results[1]["output_path"]).read_text(encoding="utf-8")
+            self.assertIn("Clean body.", md1)
+
+        # Verify examples/crawl4ai_auth_crawl.py helper contract without requiring crawl4ai installed
+        example_path = REPO_ROOT / "examples" / "crawl4ai_auth_crawl.py"
+        spec = importlib.util.spec_from_file_location("crawl4ai_auth_crawl", example_path)
+        assert spec is not None and spec.loader is not None
+        ex_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ex_mod)
+
+        class _FakeMd:
+            fit_markdown = "# Pruned Doc\n\nKey paragraph."
+            raw_markdown = "Nav\n\n# Pruned Doc\n\nKey paragraph."
+
+        class _FakeResult:
+            url = "https://docs.example.com/private"
+            metadata = {"title": "Private Guide"}
+            markdown = _FakeMd()
+            status_code = 200
+
+        rec = ex_mod.crawl_result_to_record(
+            _FakeResult(), prefer_fit=True, captured_at="2026-11-27T00:00:00Z"
+        )
+        self.assertEqual(rec["source_url"], "https://docs.example.com/private")
+        self.assertEqual(rec["title"], "Private Guide")
+        self.assertEqual(rec["markdown"], "# Pruned Doc\n\nKey paragraph.")
+        with self.assertRaises(ValueError):
+            ex_mod.validate_http_url("file:///etc/passwd")
+
     def test_loopback_url_guard_and_remote_https_policy(self) -> None:
         # Allowed loopback defaults
         for ok_url in (

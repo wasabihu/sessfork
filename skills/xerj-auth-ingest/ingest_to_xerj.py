@@ -571,6 +571,23 @@ def _unique_output_path(out_root: Path, rel_name: Path, used: set[Path]) -> Path
         counter += 1
 
 
+def _extract_crawl4ai_markdown(record: dict[str, Any]) -> str | None:
+    """Return structured Markdown from a Crawl4AI JSONL record (preferring fit_markdown)."""
+    top_fit = record.get("fit_markdown")
+    if isinstance(top_fit, str) and top_fit.strip():
+        return top_fit.strip()
+    md_field = record.get("markdown")
+    if isinstance(md_field, dict):
+        for key in ("fit_markdown", "raw_markdown", "markdown_with_citations"):
+            val = md_field.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+        return None
+    if isinstance(md_field, str) and md_field.strip():
+        return md_field.strip()
+    return None
+
+
 def ingest_paths(
     inputs: Sequence[str | Path],
     out_dir: str | Path,
@@ -611,17 +628,21 @@ def ingest_paths(
 
                 rec_url = str(record.get("source_url") or record.get("url") or source_url or "")
                 rec_ts = str(record.get("captured_at") or default_ts)
-                rec_title = str(record.get("title") or title or "")
+                meta = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+                rec_title = str(record.get("title") or meta.get("title") or title or "")
                 rec_domain = str(record.get("domain") or domain or "")
 
-                if "html" in record and record["html"]:
+                pre_md = _extract_crawl4ai_markdown(record)
+                if pre_md is not None:
+                    body = _HTML_SCRIPT_STYLE_RE.sub("", pre_md).strip()
+                    rec_title = rec_title or _infer_markdown_title(body, f"{src_file.stem}-{idx}")
+                elif "html" in record and record["html"]:
                     body, html_title, canonical_url = html_to_markdown(str(record["html"]))
                     rec_url = rec_url or canonical_url or ""
                     rec_title = rec_title or html_title or _infer_markdown_title(body, f"{src_file.stem}-{idx}")
                 else:
                     raw_body = str(
-                        record.get("markdown")
-                        or record.get("content")
+                        record.get("content")
                         or record.get("body")
                         or record.get("text")
                         or ""
