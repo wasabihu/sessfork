@@ -146,7 +146,7 @@ agent-browser --state ~/.sessfork/agent-browser.json open https://example.com
 
 ## Stress Benchmarks (`chrome-headless-shell` vs. `moli` + Node vs. `moli` + Rust `sessfork-mcp`)
 
-![Chrome Headless Shell vs Moli + Node MCP vs Moli + Rust sessfork-mcp Benchmark](docs/assets/benchmark-v014-en.png)
+![Single-Host AI Browser Ceiling: 56 Chrome vs 160 Moli Parallel Agents with Rust sessfork-mcp](docs/assets/benchmark-v022-en.png)
 
 Measured locally on Apple Silicon (`macOS 26.6.2 arm64`, M5 24 GB, Python 3.14.7, `@playwright/mcp@0.0.85`, `moli 1.1.27`, `sessfork-mcp 0.1.4`) via [`scripts/stress_test.py`](scripts/stress_test.py) (zero external requests). Full methodology & 3-way breakdown in **[docs/benchmarks.md](docs/benchmarks.md)**.
 

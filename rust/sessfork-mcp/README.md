@@ -4,7 +4,7 @@ A **~816 KiB**, **zero-Node.js / zero-Tokio** native Rust CDP MCP server (plus b
 
 On **macOS & Linux**, it talks directly to `moli serve --remote-debugging-pipe` over OS file descriptors 3 & 4 (NUL-framed JSON, zero TCP ports). On **Windows**, it launches `moli.exe serve --host 127.0.0.1 --port 0` (kernel-assigned port, zero TOCTOU) over a pure-std RFC 6455 loopback WebSocket (`34.2 ms` spawn, `0.086 ms/call` vs `23.2 ms` / `0.042 ms/call` on Unix pipe) guarded by a Win32 Job Object (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) and `CREATE_NO_WINDOW`. With **`--cdp-url http://127.0.0.1:<port>`**, it also attaches directly to any running loopback Chromium / CEF / stealth-browser CDP endpoint (disposing only its own created isolated contexts on close/EOF without shutting down the host browser) — replacing the `~298 MB` Node.js `@playwright/mcp` wrapper everywhere.
 
-![Chrome Headless Shell vs Moli + Node MCP vs Moli + Rust sessfork-mcp Benchmark](../../docs/assets/benchmark-v014-en.png)
+![Single-Host AI Browser Ceiling: 56 Chrome vs 160 Moli Parallel Agents with Rust sessfork-mcp](../../docs/assets/benchmark-v022-en.png)
 
 ## Benchmarks (Full AX Tree Enabled, 12× Heavy-DOM & Isolation)
 

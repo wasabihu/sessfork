@@ -1,5 +1,7 @@
 # Stress Tests & Benchmarks
 
+![Single-Host AI Browser Ceiling: 56 Chrome vs 160 Moli Parallel Agents with Rust sessfork-mcp](assets/benchmark-v022-en.png)
+
 `sessfork` ships three zero-dependency, 100% local benchmark harnesses — [`scripts/stress_test.py`](../scripts/stress_test.py), [`scripts/bench_extended.py`](../scripts/bench_extended.py), and [`scripts/bench_scale.py`](../scripts/bench_scale.py). All run against synthetic Chromium `Cookies` (SQLite WAL + AES-128-CBC v24) and `Local Storage/leveldb` (SSTable + WAL MVCC) fixtures plus a local `127.0.0.1` HTTP auth echo server — **zero external network calls, zero real user browser data, and zero OS Keychain prompts**.
 
 ## Reproducing Locally

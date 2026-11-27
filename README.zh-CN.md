@@ -142,7 +142,7 @@ agent-browser --state ~/.sessfork/agent-browser.json open https://example.com
 
 ## 实测压测数据（Chrome vs Node+Moli vs 全 Rust `sessfork-mcp`+Moli）
 
-![Chrome vs Node+Moli vs 全 Rust sessfork-mcp+Moli 压测对比图](docs/assets/benchmark-v014-zh.png)
+![单台 24 GB 笔记本并发极限：56 路 Chrome / 160 路 Moli（纯 Rust sessfork-mcp）](docs/assets/benchmark-v022-zh.png)
 
 在 Apple Silicon 本机（`macOS 26.6.2 arm64` / M5 24 GB / Python 3.14.7 / `@playwright/mcp@0.0.85` / `moli 1.1.27` / `sessfork-mcp 0.1.4`）通过 [`scripts/stress_test.py`](scripts/stress_test.py) 全本地同场实测（零外部网络请求），完整方法论见 **[docs/benchmarks.md](docs/benchmarks.md)**：
 
