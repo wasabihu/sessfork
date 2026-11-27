@@ -81,7 +81,7 @@ claude mcp add moli-browser -- ~/.local/bin/sessfork-mcp
 codex mcp add moli-browser -- ~/.local/bin/sessfork-mcp
 ```
 
-**Cursor / Antigravity / Generic MCP JSON:**
+**Cursor / Antigravity / Gemini CLI / WorkBuddy / Windsurf (Generic `mcpServers` JSON):**
 
 ```json
 {
@@ -108,6 +108,19 @@ codex mcp add moli-browser -- ~/.local/bin/sessfork-mcp
     }
   }
 }
+```
+
+**Hermes Agent (`~/.hermes/config.yaml`, then run `/reload-mcp` in session):**
+
+*(Or import from Claude Code in one command via `hermes import-agent claude-code`.)*
+
+```yaml
+mcp_servers:
+  sessfork-moli:
+    command: "/Users/you/.local/bin/sessfork-mcp"
+    args:
+      - "--storage-state=/Users/you/.sessfork/state.json"
+      - "--output-dir=/Users/you/.sessfork/playwright-output"
 ```
 
 *(Pass `"--layout"` in `args` / `command` if you want `browser_take_screenshot` with Moli's on-demand layout engine, or `"--cdp-url", "http://127.0.0.1:9222"` to attach to an existing local Chromium instance.)*

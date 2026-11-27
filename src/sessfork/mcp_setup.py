@@ -622,6 +622,17 @@ def detect_installed_targets(home: Optional[Path] = None) -> List[str]:
         or (home is None and shutil.which("opencode") is not None)
     ):
         targets.append("opencode")
+    # Only wire Gemini CLI when its settings.json or `gemini` binary exists (avoid false-positive on pure Antigravity ~/.gemini).
+    if (root / ".gemini" / "settings.json").is_file() or (
+        home is None and shutil.which("gemini") is not None
+    ):
+        targets.append("gemini")
+    if (root / ".workbuddy" / "mcp.json").is_file() or (root / ".workbuddy").is_dir():
+        targets.append("workbuddy")
+    if (root / ".codeium" / "windsurf" / "mcp_config.json").is_file() or (
+        root / ".codeium" / "windsurf"
+    ).is_dir():
+        targets.append("windsurf")
     return targets
 
 
@@ -653,9 +664,23 @@ def target_mcp_config_paths(target: str, home: Optional[Path] = None) -> List[Pa
         return [root / ".cursor" / "mcp.json"]
     if target == "opencode":
         return [root / ".config" / "opencode" / "opencode.json"]
+    if target == "gemini":
+        return [root / ".gemini" / "settings.json"]
+    if target == "workbuddy":
+        return [root / ".workbuddy" / "mcp.json"]
+    if target == "windsurf":
+        return [root / ".codeium" / "windsurf" / "mcp_config.json"]
     if target == "all":
         all_paths: List[Path] = []
-        for sub_target in ("antigravity", "claude", "cursor", "opencode"):
+        for sub_target in (
+            "antigravity",
+            "claude",
+            "cursor",
+            "opencode",
+            "gemini",
+            "workbuddy",
+            "windsurf",
+        ):
             for p in target_mcp_config_paths(sub_target, home=home):
                 if p not in all_paths:
                     all_paths.append(p)

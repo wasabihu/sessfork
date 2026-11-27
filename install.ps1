@@ -221,8 +221,11 @@ try {
         $ClientTargets = @(
             @{ Name = "Antigravity";        Path = (Join-Path $env:USERPROFILE ".gemini\config\mcp_config.json");      Dir = (Join-Path $env:USERPROFILE ".gemini\config");      Format = "standard"; Cmd = $null },
             @{ Name = "Antigravity Legacy"; Path = (Join-Path $env:USERPROFILE ".gemini\antigravity\mcp_config.json"); Dir = $null;                                             Format = "standard"; Cmd = $null },
+            @{ Name = "Gemini CLI";         Path = (Join-Path $env:USERPROFILE ".gemini\settings.json");               Dir = $null;                                             Format = "standard"; Cmd = "gemini" },
             @{ Name = "Cursor";             Path = (Join-Path $env:USERPROFILE ".cursor\mcp.json");                    Dir = (Join-Path $env:USERPROFILE ".cursor");             Format = "standard"; Cmd = $null },
             @{ Name = "Claude Code";        Path = (Join-Path $env:USERPROFILE ".claude.json");                        Dir = $null;                                             Format = "standard"; Cmd = $null },
+            @{ Name = "WorkBuddy";          Path = (Join-Path $env:USERPROFILE ".workbuddy\mcp.json");                 Dir = (Join-Path $env:USERPROFILE ".workbuddy");          Format = "standard"; Cmd = $null },
+            @{ Name = "Windsurf";           Path = (Join-Path $env:USERPROFILE ".codeium\windsurf\mcp_config.json");   Dir = (Join-Path $env:USERPROFILE ".codeium\windsurf");   Format = "standard"; Cmd = $null },
             @{ Name = "OpenCode";           Path = (Join-Path $env:USERPROFILE ".config\opencode\opencode.json");      Dir = (Join-Path $env:USERPROFILE ".config\opencode");    Format = "opencode"; Cmd = "opencode" }
         )
         foreach ($T in $ClientTargets) {

@@ -33,7 +33,7 @@ When AI coding agents ([Google Antigravity](https://antigravity.google/docs/comm
 
 ### Option A · One-Click Auto-Setup (Recommended — zero prerequisites)
 
-Auto-detects installed AI tools (**Antigravity**, **Claude Code**, **Cursor**, **OpenCode**), registers the background `sessfork-browser` MCP server, and installs the global Agent `SKILL.md`:
+Auto-detects installed AI tools (**Antigravity**, **Claude Code**, **Cursor**, **OpenCode**, **Gemini CLI**, **WorkBuddy**, **Windsurf**), registers the background `sessfork-browser` MCP server, and installs the global Agent `SKILL.md`:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.2.1/install.sh | bash
@@ -191,7 +191,8 @@ python3 scripts/stress_test.py --heavy-compare
 | Choose source browser (`chrome`, `arc`, `brave`, `edge`, `canary`) | `sessfork x.com --browser arc` |
 | Target specific profile folder | `sessfork github.com --profile "Profile 1"` |
 | Wire OpenCode (`~/.config/opencode/opencode.json`) explicitly | `sessfork --setup --target opencode` |
-| Wire Antigravity + Claude Code + Cursor + OpenCode explicitly | `sessfork --setup --target all` |
+| Wire WorkBuddy / Gemini CLI / Windsurf explicitly | `sessfork --setup --target workbuddy` *(or `gemini` / `windsurf`)* |
+| Wire all 7 JSON harnesses explicitly | `sessfork --setup --target all` |
 | Open the local visual control panel (`127.0.0.1`, zero deps) | `sessfork --ui` |
 | Switch headless engine (`chrome` default / `moli` Rust / `dual` fallback) | `sessfork --engine dual` *(or `chrome` / `moli`)* |
 | Attach MCP to an existing external CDP server (`moli serve`) | `sessfork --setup --cdp-endpoint http://127.0.0.1:9222` |
@@ -260,6 +261,14 @@ By default `sessfork` does **not** store the derived decryption key anywhere, so
       }
     }
     ```
+  - **Hermes Agent (`~/.hermes/config.yaml`) & Codex CLI (`~/.codex/config.toml`)**:
+    - **Codex CLI**: `codex mcp add sessfork-moli -- ~/.local/bin/sessfork-mcp`
+    - **Hermes Agent**: add under `mcp_servers:` in `~/.hermes/config.yaml` and run `/reload-mcp` (or `hermes import-agent claude-code`):
+      ```yaml
+      mcp_servers:
+        sessfork-moli:
+          command: "sessfork-mcp"
+      ```
 
 </details>
 

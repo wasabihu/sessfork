@@ -57,6 +57,12 @@ def _client_label_from_path(cfg_path: str) -> str:
         return "Cursor"
     if "opencode" in low:
         return "OpenCode"
+    if ".workbuddy" in low:
+        return "WorkBuddy"
+    if "windsurf" in low:
+        return "Windsurf"
+    if ".gemini" in low and low.endswith("settings.json"):
+        return "Gemini CLI"
     if "antigravity" in low or ".gemini" in low:
         return "Antigravity"
     return Path(cfg_path).name

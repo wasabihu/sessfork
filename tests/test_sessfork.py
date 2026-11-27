@@ -2021,6 +2021,58 @@ class SessforkTestSuite(unittest.TestCase):
                 ensure_mcp_configured(["opencode"], state_path=state_file, home=bad_home, npx_cmd="/opt/homebrew/bin/npx")
             self.assertEqual(bad_oc.read_text(encoding="utf-8"), '{"mcp": []}')
 
+    def test_workbuddy_gemini_cli_and_windsurf_auto_detect_and_labels(self) -> None:
+        from sessfork.mcp_setup import detect_installed_targets, target_mcp_config_paths
+        from sessfork.ui_server import _client_label_from_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox_home = Path(tmp)
+            state_file = sandbox_home / ".sessfork" / "state.json"
+
+            # 1. Pure Antigravity (~/.gemini/config without settings.json) MUST NOT trigger Gemini CLI
+            (sandbox_home / ".gemini" / "config").mkdir(parents=True)
+            self.assertEqual(detect_installed_targets(home=sandbox_home), ["antigravity"])
+
+            # 2. Creating WorkBuddy, Gemini CLI settings.json, and Windsurf enables auto-detection
+            wb_cfg = sandbox_home / ".workbuddy" / "mcp.json"
+            wb_cfg.parent.mkdir(parents=True)
+            wb_cfg.write_text(json.dumps({"mcpServers": {"obscura": {"command": "echo"}}}), encoding="utf-8")
+
+            gm_cfg = sandbox_home / ".gemini" / "settings.json"
+            gm_cfg.write_text(json.dumps({"security": {"auth": "oauth"}}), encoding="utf-8")
+
+            ws_dir = sandbox_home / ".codeium" / "windsurf"
+            ws_dir.mkdir(parents=True)
+            ws_cfg = ws_dir / "mcp_config.json"
+
+            detected = detect_installed_targets(home=sandbox_home)
+            self.assertEqual(detected, ["antigravity", "gemini", "workbuddy", "windsurf"])
+
+            updated = ensure_mcp_configured(
+                ["auto"],
+                state_path=state_file,
+                home=sandbox_home,
+                npx_cmd="/opt/homebrew/bin/npx",
+            )
+            for expected_cfg in (wb_cfg, gm_cfg, ws_cfg):
+                self.assertIn(expected_cfg, updated)
+                parsed = json.loads(expected_cfg.read_text(encoding="utf-8"))
+                self.assertIn(MCP_SERVER_NAME, parsed["mcpServers"])
+
+            # Existing user keys preserved in both WorkBuddy and Gemini CLI
+            self.assertIn("obscura", json.loads(wb_cfg.read_text(encoding="utf-8"))["mcpServers"])
+            self.assertEqual(json.loads(gm_cfg.read_text(encoding="utf-8"))["security"], {"auth": "oauth"})
+
+            # 3. UI client labels accurately distinguish Gemini CLI vs Antigravity + WorkBuddy + Windsurf
+            self.assertEqual(_client_label_from_path(str(sandbox_home / ".gemini" / "config" / "mcp_config.json")), "Antigravity")
+            self.assertEqual(_client_label_from_path(str(gm_cfg)), "Gemini CLI")
+            self.assertEqual(_client_label_from_path(str(wb_cfg)), "WorkBuddy")
+            self.assertEqual(_client_label_from_path(str(ws_cfg)), "Windsurf")
+
+            # 4. `all` returns all 7 JSON harnesses
+            all_paths = target_mcp_config_paths("all", home=sandbox_home)
+            self.assertEqual(len(all_paths), 7)
+
 
 if __name__ == "__main__":
     unittest.main()
