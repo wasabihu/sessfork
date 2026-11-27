@@ -117,9 +117,19 @@ See the main [sessfork README](../../README.md) for full session-forking docs.
 | `--storage-state <PATH>` | none | Optional initial Playwright `storageState` JSON to hydrate on startup |
 | `--output-dir <PATH>` | `~/.sessfork/playwright-output` | Confined sandbox root for `browser_set_storage_state` hot-reload & screenshots |
 | `--layout` | off (DOM-first) | Enable Moli's on-demand layout engine (required for screenshots) |
+| `--compact` | off | Default snapshots to zero-layout distilled interactive+semantic view & active-modal scoping |
+| `--diff` | off | Default `click`/`type`/`press_key` to Action Receipts (`OK` / `WARNING: NO_OP`) + shift-invariant `+/-` diffs (cuts 8-step cumulative input tokens by **85.4%**) |
 | `native-host` | auto-detected on Chrome launch | Run Chrome/Edge Native Messaging host (`com.wasabihu.sessfork`) for the [Companion Extension](../../extension/README.md) |
 | `register-host [--extension-id <ID>]` | fixed ID + `--browser all` | Register Native Messaging manifest in Chrome / Edge / Brave / Chromium (HKCU Registry on Windows, JSON manifest on macOS/Linux; defaults to official fixed extension ID `eipgnmlpcpmadpbignmifidnbjfmlphm`) |
 | `setup --mcp-file <PATH>` | `--name sessfork-moli` | Atomically wire `sessfork-mcp` into an MCP JSON config (zero Python needed) |
+
+## Small-Model Ergonomic Mode (`--compact --diff`, Zero Layout)
+
+Running `sessfork-mcp --compact --diff` (or passing per-call `compact`, `diff`, `scopeModal` flags) keeps the exact same 16 tools and zero-layout Moli speed while slashing LLM context overhead:
+
+- **Zero-layout observation distillation (`--compact`)**: Strips non-interactive boilerplate and deep YAML indentation straight from CDP `Accessibility.getFullAXTree` (never invokes `getBoundingClientRect` / layout), surfacing `[disabled]`/`[checked]`/`[selected]`/`[invalid]` states plus `heading`/`alert`/`status` callouts.
+- **Active modal scoping (`scopeModal`)**: When an active `alertdialog` or `aria-modal="true"` `dialog` opens, scopes the snapshot strictly to the modal subtree and suppresses obscured background controls.
+- **Action Receipts + shift-invariant `+/-` diffs + `NO_OP` guard (`--diff`)**: Uses a per-document persistent `RefRegistry` (`backendDOMNodeId -> eN`) so existing refs stay stable across same-page DOM updates, returns only `+/-` diffs on mutations, and emits `WARNING: NO_OP` with zero redundant snapshot payload when clicking disabled/inert controls.
 
 ## Native WebMCP & Structure-First Markdown (Zero Clicks, Zero Layout)
 

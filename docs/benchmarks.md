@@ -2,11 +2,14 @@
 
 ![Single-Host AI Browser Ceiling: 56 Chrome vs 160 Moli Parallel Agents with Rust sessfork-mcp](assets/benchmark-v022-en.png)
 
-`sessfork` ships three zero-dependency, 100% local benchmark harnesses — [`scripts/stress_test.py`](../scripts/stress_test.py), [`scripts/bench_extended.py`](../scripts/bench_extended.py), and [`scripts/bench_scale.py`](../scripts/bench_scale.py). All run against synthetic Chromium `Cookies` (SQLite WAL + AES-128-CBC v24) and `Local Storage/leveldb` (SSTable + WAL MVCC) fixtures plus a local `127.0.0.1` HTTP auth echo server — **zero external network calls, zero real user browser data, and zero OS Keychain prompts**.
+`sessfork` ships four zero-dependency, 100% local benchmark harnesses — [`scripts/stress_test.py`](../scripts/stress_test.py), [`scripts/bench_extended.py`](../scripts/bench_extended.py), [`scripts/bench_scale.py`](../scripts/bench_scale.py), and [`scripts/bench_tokens.py`](../scripts/bench_tokens.py). All run against synthetic Chromium `Cookies` (SQLite WAL + AES-128-CBC v24) and `Local Storage/leveldb` (SSTable + WAL MVCC) fixtures plus a local `127.0.0.1` HTTP auth echo server — **zero external network calls, zero real user browser data, and zero OS Keychain prompts**.
 
 ## Reproducing Locally
 
 ```bash
+# 4-way 8-step authenticated SPA token & ergonomic benchmark (Chrome Node vs Chrome/Moli Rust --compact --diff)
+python3 scripts/bench_tokens.py
+
 # High-scale density ladder (12->24->48 Heavy-DOM), 4/8/16 parallel agent swarm, & 500-cycle soak
 python3 scripts/bench_scale.py --min-free-pct 25 --soak-cycles 500
 
@@ -59,6 +62,23 @@ In [lexmount/moli Discussion #3465](https://github.com/lexmount/moli/discussions
 | `chrome-headless-shell` + `@playwright/mcp` | `11.65 s` | `2,439.5 MiB` | baseline |
 | `moli` + `@playwright/mcp` (Node) | `25.41 s` | `575.6 MiB` | `-76.4%` RAM, `0.46×` speed |
 | **`moli` + `sessfork-mcp` (Rust Pipe)** | **`4.22 s`** | **`226.3 MiB`** | **`-90.7%` RAM (`10.78×` smaller), `2.76×` faster** (`6.02×` faster than Node+Moli) |
+
+---
+
+## Small-Model Token & Ergonomic Benchmark (`scripts/bench_tokens.py`)
+
+Measured on **macOS 26.6.2 (Apple Silicon `arm64`)**, **`@playwright/mcp@0.0.85`** (42 tools), **`moli 1.1.27`**, **`chrome-headless-shell` (`HeadlessChrome/159`)**, and **`sessfork-mcp`** (`848.6 KiB` stripped binary, 16 tools).
+
+All 4 stacks execute the exact same **8-step authenticated SaaS Admin SPA** (forked `HttpOnly` Cookie + `LocalStorage` JWT, 15 sidebar links, 12 policy notices, 45 order rows, validation-gated `NO_OP` click trap, `alertdialog` confirmation modal, async export status banner, and `browser_type(..., submit=True)` slow navigation):
+
+| Stack (8-Step Authenticated SPA) | Upfront `tools/list` Schema | 8-Step Obs Payload (`~tokens`) | Cumulative 8-Turn Input (`~tokens`) | Input Saved vs. Playwright | Wall Time | Peak RSS | `NO_OP` Guard | Modal Scoped | `submit` Settle |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| `chrome-headless-shell` + Node `@playwright/mcp` *(7 file spills)* | `7,239 tk` | `19,526 tk` | `174,114 tk` | baseline | `4,069 ms` | `585.3 MB` | No | No | Yes |
+| `chrome-headless-shell` + Rust `sessfork-mcp --cdp-url` *(default full YAML)* | `1,783 tk` | `28,909 tk` | `189,103 tk` | `-8.6%` | `2,534 ms` | `310.1 MB` | **Yes** | No | **Yes** |
+| **`chrome-headless-shell` + Rust `sessfork-mcp --cdp-url --compact --diff`** | **`1,783 tk`** | **`2,012 tk`** *(`-89.7%`)* | **`25,474 tk`** | **`-85.4%` (`6.83×` less)** | **`2,533 ms`** | `309.8 MB` | **Yes** *(`288 B`)* | **Yes** *(`514 B`)* | **Yes** |
+| **`moli 1.1.27` + Rust `sessfork-mcp --compact --diff` *(zero-layout)*** | **`1,783 tk`** | **`2,012 tk`** *(`-89.7%`)* | **`25,474 tk`** | **`-85.4%` (`6.83×` less)** | **`2,333 ms`** *(`1.74×`)* | **`66.6 MB`** *(`-88.6%`)* | **Yes** *(`288 B`)* | **Yes** *(`514 B`)* | **Yes** |
+
+> Token estimates use the standard conservative `ceil(chars / 4)` formula on the exact text the LLM must ingest (including `@playwright/mcp`'s spilled `.yml` snapshot files, which also forced `7` extra file-read turns on the agent). Both Chromium (`--cdp-url`) and zero-layout Moli produce bit-for-bit identical observation compression (`2,012 tk`) while Moli cuts total RSS to **`66.6 MB`** (`8.79×` smaller than Chrome + Node MCP).
 
 ---
 

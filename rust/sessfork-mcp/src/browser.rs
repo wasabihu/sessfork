@@ -1,4 +1,7 @@
-use crate::ax::format_ax_tree;
+use crate::ax::{
+    compute_snapshot_diff, format_ax_tree_with_options, format_snapshot_diff, AxSnapshot,
+    RefRegistry, SnapshotEntry, SnapshotOptions,
+};
 use crate::cdp::{CdpPipeClient, WebMcpInvokeWait, WebMcpResponseWait};
 use crate::markdown::{
     build_markdown_extract_expression, format_markdown_response, truncate_chars,
@@ -23,6 +26,7 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 const DEFAULT_CDP_TIMEOUT: Duration = Duration::from_secs(20);
 const DEFAULT_LOAD_TIMEOUT: Duration = Duration::from_secs(15);
 const SPA_HYDRATION_SETTLE_TIMEOUT: Duration = Duration::from_millis(2500);
+const NO_OP_RECHECK_DELAY: Duration = Duration::from_millis(150);
 const DEFAULT_MAX_SNAPSHOT_CHARS: usize = 32_000;
 const ISOLATED_WORLD_NAME: &str = "__sessfork_ls_isolated";
 
@@ -180,6 +184,15 @@ struct ContextState {
     state_rev: u64,
 }
 
+struct LastSnapshotState {
+    url: String,
+    title: String,
+    entries: Vec<SnapshotEntry>,
+    active_modal: Option<String>,
+    opts: SnapshotOptions,
+    truncated: bool,
+}
+
 struct TabState {
     target_id: String,
     session_id: String,
@@ -188,6 +201,8 @@ struct TabState {
     title: String,
     init_script_id: Option<String>,
     ref_map: HashMap<String, i64>,
+    ref_registry: RefRegistry,
+    last_snapshot: Option<LastSnapshotState>,
     webmcp_error: Option<String>,
 }
 
@@ -197,6 +212,8 @@ pub struct BrowserConfig {
     pub initial_storage_state: Option<PathBuf>,
     pub output_dir: PathBuf,
     pub enable_layout: bool,
+    pub default_compact: bool,
+    pub default_diff: bool,
 }
 
 pub struct BrowserManager {
@@ -354,6 +371,8 @@ impl BrowserManager {
             title: String::new(),
             init_script_id,
             ref_map: HashMap::new(),
+            ref_registry: RefRegistry::new(),
+            last_snapshot: None,
             webmcp_error,
         });
         let idx = self.tabs.len() - 1;
@@ -566,7 +585,29 @@ impl BrowserManager {
         Ok((url, title, ready_state))
     }
 
-    fn capture_snapshot(&mut self, max_chars: usize) -> Result<crate::ax::AxSnapshot, String> {
+    fn resolve_snapshot_options(
+        &self,
+        compact: Option<bool>,
+        scope_modal: Option<bool>,
+    ) -> SnapshotOptions {
+        let interactive_only = compact.unwrap_or(self.cfg.default_compact);
+        let scope = scope_modal.unwrap_or(interactive_only);
+        SnapshotOptions {
+            interactive_only,
+            scope_modal: scope,
+        }
+    }
+
+    fn resolve_diff_mode(&self, diff: Option<bool>) -> bool {
+        diff.unwrap_or(self.cfg.default_diff)
+    }
+
+    fn capture_snapshot(
+        &mut self,
+        max_chars: usize,
+        opts: SnapshotOptions,
+        reset_refs: bool,
+    ) -> Result<AxSnapshot, String> {
         let sid = self.current_session_id()?;
         let ax = self.cdp()?.call(
             "Accessibility.getFullAXTree",
@@ -577,30 +618,33 @@ impl BrowserManager {
         let nodes = ax
             .get("nodes")
             .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-        let snap = format_ax_tree(&nodes, max_chars);
-        if let Some(tab) = self.tabs.get_mut(self.current_tab) {
-            tab.ref_map = snap.ref_map.clone();
-        }
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let mut fallback_reg = RefRegistry::new();
+        let snap = if let Some(tab) = self.tabs.get_mut(self.current_tab) {
+            if reset_refs {
+                tab.ref_registry.reset();
+            }
+            let s = format_ax_tree_with_options(nodes, max_chars, opts, &mut tab.ref_registry);
+            tab.ref_map = s.ref_map.clone();
+            s
+        } else {
+            format_ax_tree_with_options(nodes, max_chars, opts, &mut fallback_reg)
+        };
         Ok(snap)
     }
 
-    fn format_page_response(
+    fn capture_settled_snapshot(
         &mut self,
-        include_snapshot: bool,
         max_chars: usize,
+        opts: SnapshotOptions,
         settle_spa: bool,
-    ) -> Result<String, String> {
+        force_reset_refs: bool,
+        reset_if_url_ne: Option<&str>,
+    ) -> Result<(String, String, AxSnapshot), String> {
         let (mut url, mut title, mut ready_state) = self.sync_current_page_meta()?;
-        if !include_snapshot {
-            return Ok(format!(
-                "### Page\n- Page URL: {}\n- Page Title: {}\n",
-                url, title
-            ));
-        }
-
-        let mut snap = self.capture_snapshot(max_chars)?;
+        let reset_refs = force_reset_refs || reset_if_url_ne.is_some_and(|prev| prev != url);
+        let mut snap = self.capture_snapshot(max_chars, opts, reset_refs)?;
         let is_http = url.starts_with("http://") || url.starts_with("https://");
         if settle_spa && is_http && (snap.looks_like_loading_shell || ready_state != "complete") {
             let deadline = Instant::now() + SPA_HYDRATION_SETTLE_TIMEOUT;
@@ -613,7 +657,7 @@ impl BrowserManager {
                     title = t;
                     ready_state = rs;
                 }
-                if let Ok(next_snap) = self.capture_snapshot(max_chars) {
+                if let Ok(next_snap) = self.capture_snapshot(max_chars, opts, false) {
                     let improved = next_snap.content_lines > snap.content_lines
                         || !next_snap.looks_like_loading_shell;
                     snap = next_snap;
@@ -623,11 +667,336 @@ impl BrowserManager {
                 }
             }
         }
+        Ok((url, title, snap))
+    }
 
+    fn format_page_header(url: &str, title: &str, snap: Option<&AxSnapshot>) -> String {
         let mut out = format!("### Page\n- Page URL: {}\n- Page Title: {}\n", url, title);
-        out.push_str("\n### Snapshot\n```yaml\n");
-        out.push_str(&snap.yaml);
-        out.push_str("```\n");
+        if let Some(s) = snap {
+            if s.modal_scoped {
+                if let Some(ref m) = s.active_modal {
+                    out.push_str(&format!(
+                        "- Active Modal: \"{}\" (scoped; {} background control(s) suppressed)\n",
+                        m, s.obscured_interactive_count
+                    ));
+                }
+            }
+        }
+        out
+    }
+
+    fn record_last_snapshot(
+        &mut self,
+        url: String,
+        title: String,
+        entries: Vec<SnapshotEntry>,
+        active_modal: Option<String>,
+        opts: SnapshotOptions,
+        truncated: bool,
+    ) {
+        if let Some(tab) = self.tabs.get_mut(self.current_tab) {
+            tab.last_snapshot = Some(LastSnapshotState {
+                url,
+                title,
+                entries,
+                active_modal,
+                opts,
+                truncated,
+            });
+        }
+    }
+
+    fn format_page_response(
+        &mut self,
+        include_snapshot: bool,
+        max_chars: usize,
+        settle_spa: bool,
+        opts: SnapshotOptions,
+        diff_mode: bool,
+        reset_refs: bool,
+    ) -> Result<String, String> {
+        if !include_snapshot {
+            let (url, title, _) = self.sync_current_page_meta()?;
+            return Ok(Self::format_page_header(&url, &title, None));
+        }
+
+        let prev = if reset_refs {
+            None
+        } else {
+            self.tabs
+                .get_mut(self.current_tab)
+                .and_then(|t| t.last_snapshot.take())
+        };
+
+        let (url, title, snap) =
+            self.capture_settled_snapshot(max_chars, opts, settle_spa, reset_refs, None)?;
+        let mut out = Self::format_page_header(&url, &title, Some(&snap));
+
+        let can_diff = diff_mode
+            && prev.as_ref().is_some_and(|p| {
+                p.url == url
+                    && p.opts == opts
+                    && p.active_modal == snap.active_modal
+                    && !p.truncated
+                    && !snap.truncated
+            });
+
+        if can_diff {
+            if let Some(ref p) = prev {
+                let diff = compute_snapshot_diff(&p.entries, &snap.entries);
+                if diff.is_empty() && p.title == title {
+                    out.push_str("\n### Diff\n(no changes since previous snapshot)\n");
+                } else if diff.is_empty() {
+                    out.push_str(&format!("\n### Diff\nTitle changed: \"{}\"\n", title));
+                } else {
+                    out.push_str("\n### Diff\n```diff\n");
+                    out.push_str(&format_snapshot_diff(&diff, max_chars));
+                    out.push_str("```\n");
+                }
+            }
+        } else {
+            out.push_str("\n### Snapshot\n```yaml\n");
+            out.push_str(&snap.yaml);
+            out.push_str("```\n");
+        }
+
+        self.record_last_snapshot(
+            url,
+            title,
+            snap.entries,
+            snap.active_modal,
+            opts,
+            snap.truncated,
+        );
+        Ok(out)
+    }
+
+    fn wait_after_interaction(
+        &mut self,
+        sid: &str,
+        before_url: &str,
+        prev_seq: u64,
+        wait_load_ms: u64,
+    ) -> (bool, bool) {
+        let mut loaded = if wait_load_ms > 0 {
+            self.cdp()
+                .map(|c| {
+                    c.wait_for_load_advance(sid, prev_seq, Duration::from_millis(wait_load_ms))
+                })
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        let mut should_settle = loaded;
+        if let Ok((after_url, _, ready_state)) = self.sync_current_page_meta() {
+            if after_url != before_url || ready_state != "complete" {
+                should_settle = true;
+                if !loaded && ready_state != "complete" {
+                    if let Ok(cdp) = self.cdp() {
+                        if cdp.wait_for_load_advance(sid, prev_seq, Duration::from_secs(8)) {
+                            loaded = true;
+                        }
+                    }
+                }
+            }
+        }
+        (should_settle, loaded)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn format_action_response(
+        &mut self,
+        action_label: &str,
+        before_url: &str,
+        blocked_reason: Option<&str>,
+        max_chars: usize,
+        should_settle: bool,
+        page_reloaded: bool,
+        opts: SnapshotOptions,
+        diff_mode: bool,
+    ) -> Result<String, String> {
+        let prev = self
+            .tabs
+            .get_mut(self.current_tab)
+            .and_then(|t| t.last_snapshot.take());
+
+        // Fast path for explicitly blocked actions (disabled / readonly) in diff mode when we
+        // already hold a baseline snapshot: skip redundant AXTree fetch AND preserve `prev` so
+        // any concurrent background DOM change is never swallowed.
+        if let Some(reason) = blocked_reason {
+            if diff_mode {
+                if let Some(p) = prev {
+                    let out = format!(
+                        "### Page\n- Page URL: {}\n- Page Title: {}\n\n### Receipt\nWARNING: NO_OP | {} target is {} (0 page changes). Resolve prerequisite validation or enable the control first.\n",
+                        p.url, p.title, action_label, reason
+                    );
+                    if let Some(tab) = self.tabs.get_mut(self.current_tab) {
+                        tab.last_snapshot = Some(p);
+                    }
+                    return Ok(out);
+                }
+            }
+        }
+
+        let (mut url, mut title, mut snap) = self.capture_settled_snapshot(
+            max_chars,
+            opts,
+            should_settle,
+            page_reloaded,
+            Some(before_url),
+        )?;
+
+        let mut prev_url = prev.as_ref().map(|p| p.url.as_str()).unwrap_or(before_url);
+        let mut url_changed = url != prev_url;
+        let mut title_changed = prev.as_ref().is_some_and(|p| p.title != title);
+        let mut modal_changed = prev
+            .as_ref()
+            .is_some_and(|p| p.active_modal != snap.active_modal);
+
+        let mut comparable = !page_reloaded
+            && !url_changed
+            && !modal_changed
+            && !snap.truncated
+            && prev
+                .as_ref()
+                .is_some_and(|p| p.opts == opts && !p.truncated);
+        let mut diff = if comparable {
+            prev.as_ref()
+                .map(|p| compute_snapshot_diff(&p.entries, &snap.entries))
+        } else {
+            None
+        };
+
+        let mut is_no_op = blocked_reason.is_some()
+            || (comparable
+                && !title_changed
+                && diff.as_ref().is_some_and(crate::ax::SnapshotDiff::is_empty));
+
+        // Catch short async SPA DOM updates (50–150ms) with ONE bounded re-check
+        // only when the immediate post-action snapshot looks like a NO_OP.
+        if is_no_op && blocked_reason.is_none() && !should_settle {
+            thread::sleep(NO_OP_RECHECK_DELAY);
+            let (u2, t2, s2) =
+                self.capture_settled_snapshot(max_chars, opts, false, false, Some(before_url))?;
+            let (u2, t2, s2) = if u2 != before_url && s2.looks_like_loading_shell {
+                self.capture_settled_snapshot(max_chars, opts, true, false, None)?
+            } else {
+                (u2, t2, s2)
+            };
+            url = u2;
+            title = t2;
+            snap = s2;
+            prev_url = prev.as_ref().map(|p| p.url.as_str()).unwrap_or(before_url);
+            url_changed = url != prev_url;
+            title_changed = prev.as_ref().is_some_and(|p| p.title != title);
+            modal_changed = prev
+                .as_ref()
+                .is_some_and(|p| p.active_modal != snap.active_modal);
+            comparable = !page_reloaded
+                && !url_changed
+                && !modal_changed
+                && !snap.truncated
+                && prev
+                    .as_ref()
+                    .is_some_and(|p| p.opts == opts && !p.truncated);
+            diff = if comparable {
+                prev.as_ref()
+                    .map(|p| compute_snapshot_diff(&p.entries, &snap.entries))
+            } else {
+                None
+            };
+            is_no_op = comparable
+                && !title_changed
+                && diff.as_ref().is_some_and(crate::ax::SnapshotDiff::is_empty);
+        }
+
+        // Build structured Action Receipt.
+        let receipt = if let Some(reason) = blocked_reason {
+            format!(
+                "WARNING: NO_OP | {} target is {} (0 page changes). Resolve prerequisite validation or enable the control first.",
+                action_label, reason
+            )
+        } else if is_no_op {
+            if opts.interactive_only {
+                format!(
+                    "WARNING: NO_OP | {} produced 0 URL, title, modal, or interactive-control changes. Element may be disabled, obscured, already active, or awaiting prior form validation.",
+                    action_label
+                )
+            } else {
+                format!(
+                    "WARNING: NO_OP | {} produced 0 URL, title, modal, or accessibility-tree changes. Element may be disabled, obscured, already active, or awaiting prior form validation.",
+                    action_label
+                )
+            }
+        } else {
+            let mut parts: Vec<String> = Vec::with_capacity(4);
+            if url_changed {
+                parts.push(format!("URL changed: {} -> {}", prev_url, url));
+            } else if page_reloaded {
+                parts.push("Page reloaded".to_string());
+            }
+            if modal_changed {
+                match snap.active_modal.as_deref() {
+                    Some(m) if snap.modal_scoped => parts.push(format!(
+                        "Modal opened: \"{}\" | Scoped ({} interactive, {} background suppressed)",
+                        m,
+                        snap.ref_map.len(),
+                        snap.obscured_interactive_count
+                    )),
+                    Some(m) => parts.push(format!("Modal opened: \"{}\"", m)),
+                    None => parts.push("Modal closed".to_string()),
+                }
+            }
+            if title_changed && !url_changed {
+                parts.push(format!("Title changed: \"{}\"", title));
+            }
+            if let Some(ref d) = diff {
+                if !d.is_empty() {
+                    parts.push(format!("+{} -{} elements", d.added.len(), d.removed.len()));
+                }
+            } else if url_changed || page_reloaded {
+                parts.push(format!(
+                    "{} elements ({} interactive)",
+                    snap.entries.len(),
+                    snap.ref_map.len()
+                ));
+            }
+            if parts.is_empty() {
+                format!("OK | {}", action_label)
+            } else {
+                format!("OK | {}", parts.join(" | "))
+            }
+        };
+
+        let mut out = Self::format_page_header(&url, &title, Some(&snap));
+        out.push_str("\n### Receipt\n");
+        out.push_str(&receipt);
+        out.push('\n');
+
+        if diff_mode && comparable {
+            if !is_no_op {
+                if let Some(ref d) = diff {
+                    if !d.is_empty() {
+                        out.push_str("\n### Diff\n```diff\n");
+                        out.push_str(&format_snapshot_diff(d, max_chars));
+                        out.push_str("```\n");
+                    }
+                }
+            }
+        } else {
+            out.push_str("\n### Snapshot\n```yaml\n");
+            out.push_str(&snap.yaml);
+            out.push_str("```\n");
+        }
+
+        self.record_last_snapshot(
+            url,
+            title,
+            snap.entries,
+            snap.active_modal,
+            opts,
+            snap.truncated,
+        );
         Ok(out)
     }
 
@@ -766,6 +1135,8 @@ impl BrowserManager {
         url: &str,
         include_snapshot: bool,
         max_chars: usize,
+        compact: Option<bool>,
+        scope_modal: Option<bool>,
     ) -> Result<String, String> {
         let trimmed = url.trim();
         let allowed_scheme = trimmed.starts_with("http://")
@@ -796,18 +1167,36 @@ impl BrowserManager {
             .cdp()?
             .wait_for_load_advance(&sid, prev_seq, DEFAULT_LOAD_TIMEOUT);
 
-        self.format_page_response(include_snapshot, max_chars, true)
+        if let Some(tab) = self.tabs.get_mut(self.current_tab) {
+            tab.ref_map.clear();
+            tab.last_snapshot = None;
+            tab.ref_registry.reset();
+        }
+        let opts = self.resolve_snapshot_options(compact, scope_modal);
+        self.format_page_response(include_snapshot, max_chars, true, opts, false, true)
     }
 
-    pub fn tool_snapshot(&mut self, max_chars: usize) -> Result<String, String> {
+    pub fn tool_snapshot(
+        &mut self,
+        max_chars: usize,
+        compact: Option<bool>,
+        diff: Option<bool>,
+        scope_modal: Option<bool>,
+    ) -> Result<String, String> {
         self.ensure_started()?;
-        self.format_page_response(true, max_chars, false)
+        let opts = self.resolve_snapshot_options(compact, scope_modal);
+        // Explicit `browser_snapshot` defaults to full view unless `diff=true` is explicitly passed.
+        let diff_mode = diff.unwrap_or(false);
+        self.format_page_response(true, max_chars, false, opts, diff_mode, false)
     }
 
     pub fn tool_click(
         &mut self,
         ref_id: Option<&str>,
         selector: Option<&str>,
+        compact: Option<bool>,
+        diff: Option<bool>,
+        scope_modal: Option<bool>,
     ) -> Result<String, String> {
         self.ensure_started()?;
         let sid = self.current_session_id()?;
@@ -819,35 +1208,56 @@ impl BrowserManager {
         let obj_id = self.resolve_target_object_id(&sid, ref_id, selector)?;
         let prev_seq = self.cdp()?.current_load_seq(&sid);
 
-        self.cdp()?.call(
+        let click_res = self.cdp()?.call(
             "Runtime.callFunctionOn",
             json!({
                 "objectId": obj_id,
-                "functionDeclaration": "function(){ if(typeof this.scrollIntoView === 'function'){ try{this.scrollIntoView({block:'center'});}catch(_){} } this.focus && this.focus(); this.click(); }",
+                "functionDeclaration": r#"function(){
+                    const isDisabled = Boolean(
+                        this.disabled
+                        || (typeof this.matches === 'function' && this.matches(':disabled'))
+                        || (this.getAttribute && this.getAttribute('aria-disabled') === 'true')
+                    );
+                    if (isDisabled) { return { blocked: 'disabled' }; }
+                    if (typeof this.scrollIntoView === 'function'){ try{this.scrollIntoView({block:'center'});}catch(_){} }
+                    this.focus && this.focus();
+                    this.click();
+                    return { blocked: null };
+                }"#,
                 "returnByValue": true,
             }),
             Some(&sid),
             DEFAULT_CDP_TIMEOUT,
         )?;
-        // Short window to detect click-triggered navigations; if URL changes or readyState drops
-        // from complete (e.g. GitHub Turbo / SPA route transition), wait for full load + settle.
-        let loaded = self
-            .cdp()?
-            .wait_for_load_advance(&sid, prev_seq, Duration::from_millis(300));
-        let mut should_settle = loaded;
-        if let Ok((after_url, _, ready_state)) = self.sync_current_page_meta() {
-            if after_url != before_url || ready_state != "complete" {
-                should_settle = true;
-                if !loaded && ready_state != "complete" {
-                    let _ =
-                        self.cdp()?
-                            .wait_for_load_advance(&sid, prev_seq, Duration::from_secs(8));
-                }
-            }
+        if let Some(exc) = click_res.get("exceptionDetails") {
+            return Err(format!("Click JavaScript exception: {}", exc));
         }
-        self.format_page_response(true, DEFAULT_MAX_SNAPSHOT_CHARS, should_settle)
+        let blocked_reason = click_res
+            .pointer("/result/value/blocked")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let (should_settle, page_reloaded) = if blocked_reason.is_some() {
+            (false, false)
+        } else {
+            self.wait_after_interaction(&sid, &before_url, prev_seq, 300)
+        };
+        let opts = self.resolve_snapshot_options(compact, scope_modal);
+        let diff_mode = self.resolve_diff_mode(diff);
+        let label = format!("browser_click({})", ref_id.or(selector).unwrap_or("target"));
+        self.format_action_response(
+            &label,
+            &before_url,
+            blocked_reason.as_deref(),
+            DEFAULT_MAX_SNAPSHOT_CHARS,
+            should_settle,
+            page_reloaded,
+            opts,
+            diff_mode,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn tool_type(
         &mut self,
         ref_id: Option<&str>,
@@ -855,21 +1265,52 @@ impl BrowserManager {
         text: &str,
         clear: bool,
         submit: bool,
+        compact: Option<bool>,
+        diff: Option<bool>,
+        scope_modal: Option<bool>,
     ) -> Result<String, String> {
         self.ensure_started()?;
         let sid = self.current_session_id()?;
+        let before_url = self
+            .tabs
+            .get(self.current_tab)
+            .map(|t| t.url.clone())
+            .unwrap_or_default();
         let obj_id = self.resolve_target_object_id(&sid, ref_id, selector)?;
+        let prev_seq = self.cdp()?.current_load_seq(&sid);
 
         // React/Vue-compatible native value setter + input/change event dispatch.
         let func = r#"function(val, doClear, doSubmit) {
+            if (
+                this.disabled
+                || (typeof this.matches === 'function' && this.matches(':disabled'))
+                || (this.getAttribute && this.getAttribute('aria-disabled') === 'true')
+            ) {
+                return { blocked: 'disabled' };
+            }
+            if (
+                this.readOnly
+                || (this.getAttribute && this.getAttribute('aria-readonly') === 'true')
+            ) {
+                return { blocked: 'readonly' };
+            }
             this.focus && this.focus();
-            const proto = this.tagName === 'TEXTAREA'
-                ? HTMLTextAreaElement.prototype
-                : HTMLInputElement.prototype;
-            const desc = Object.getOwnPropertyDescriptor(proto, 'value');
-            const nextVal = doClear ? val : ((this.value || '') + val);
-            if (desc && typeof desc.set === 'function') {
-                desc.set.call(this, nextVal);
+            const isInput = this.tagName === 'INPUT';
+            const isTextarea = this.tagName === 'TEXTAREA';
+            const currentVal = (isInput || isTextarea || 'value' in this)
+                ? (this.value || '')
+                : (this.textContent || '');
+            const nextVal = doClear ? val : (currentVal + val);
+            if (isInput || isTextarea) {
+                const proto = isTextarea
+                    ? HTMLTextAreaElement.prototype
+                    : HTMLInputElement.prototype;
+                const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+                if (desc && typeof desc.set === 'function') {
+                    desc.set.call(this, nextVal);
+                } else {
+                    this.value = nextVal;
+                }
             } else if ('value' in this) {
                 this.value = nextVal;
             } else {
@@ -878,17 +1319,32 @@ impl BrowserManager {
             this.dispatchEvent(new Event('input', { bubbles: true }));
             this.dispatchEvent(new Event('change', { bubbles: true }));
             if (doSubmit) {
-                this.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-                this.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
-                if (this.form && typeof this.form.requestSubmit === 'function') {
-                    this.form.requestSubmit();
-                } else if (this.form) {
-                    this.form.submit();
+                const kd = new KeyboardEvent('keydown', {
+                    key: 'Enter',
+                    code: 'Enter',
+                    keyCode: 13,
+                    bubbles: true,
+                    cancelable: true
+                });
+                const allowDefault = this.dispatchEvent(kd);
+                this.dispatchEvent(new KeyboardEvent('keyup', {
+                    key: 'Enter',
+                    code: 'Enter',
+                    keyCode: 13,
+                    bubbles: true
+                }));
+                if (allowDefault && this.form) {
+                    if (typeof this.form.requestSubmit === 'function') {
+                        this.form.requestSubmit();
+                    } else {
+                        this.form.submit();
+                    }
                 }
             }
+            return { blocked: null };
         }"#;
 
-        self.cdp()?.call(
+        let type_res = self.cdp()?.call(
             "Runtime.callFunctionOn",
             json!({
                 "objectId": obj_id,
@@ -903,21 +1359,100 @@ impl BrowserManager {
             Some(&sid),
             DEFAULT_CDP_TIMEOUT,
         )?;
-        self.format_page_response(true, DEFAULT_MAX_SNAPSHOT_CHARS, false)
+        if let Some(exc) = type_res.get("exceptionDetails") {
+            return Err(format!("Type JavaScript exception: {}", exc));
+        }
+        let blocked_reason = type_res
+            .pointer("/result/value/blocked")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let (should_settle, page_reloaded) = if submit && blocked_reason.is_none() {
+            self.wait_after_interaction(&sid, &before_url, prev_seq, 300)
+        } else {
+            (false, false)
+        };
+        let opts = self.resolve_snapshot_options(compact, scope_modal);
+        let diff_mode = self.resolve_diff_mode(diff);
+        let label = format!(
+            "browser_type({}{})",
+            ref_id.or(selector).unwrap_or("target"),
+            if submit { ", submit=true" } else { "" }
+        );
+        self.format_action_response(
+            &label,
+            &before_url,
+            blocked_reason.as_deref(),
+            DEFAULT_MAX_SNAPSHOT_CHARS,
+            should_settle,
+            page_reloaded,
+            opts,
+            diff_mode,
+        )
     }
 
-    pub fn tool_press_key(&mut self, key: &str) -> Result<String, String> {
+    pub fn tool_press_key(
+        &mut self,
+        key: &str,
+        compact: Option<bool>,
+        diff: Option<bool>,
+        scope_modal: Option<bool>,
+    ) -> Result<String, String> {
         self.ensure_started()?;
         let sid = self.current_session_id()?;
+        let before_url = self
+            .tabs
+            .get(self.current_tab)
+            .map(|t| t.url.clone())
+            .unwrap_or_default();
+        let prev_seq = self.cdp()?.current_load_seq(&sid);
         for event_type in ["keyDown", "keyUp"] {
-            let _ = self.cdp()?.call(
+            self.cdp()?.call(
                 "Input.dispatchKeyEvent",
                 json!({ "type": event_type, "key": key }),
                 Some(&sid),
                 DEFAULT_CDP_TIMEOUT,
+            )?;
+        }
+
+        // Preserve legacy zero-snapshot fast response when no ergonomic flags are enabled.
+        let ergonomic_active = self.cfg.default_diff
+            || self.cfg.default_compact
+            || diff.is_some()
+            || compact.is_some()
+            || scope_modal.is_some();
+        if !ergonomic_active {
+            let opts = SnapshotOptions::default();
+            return self.format_page_response(
+                false,
+                DEFAULT_MAX_SNAPSHOT_CHARS,
+                false,
+                opts,
+                false,
+                false,
             );
         }
-        self.format_page_response(false, DEFAULT_MAX_SNAPSHOT_CHARS, false)
+
+        let wait_ms = if matches!(key, "Enter" | "Return") {
+            300
+        } else {
+            0
+        };
+        let (should_settle, page_reloaded) =
+            self.wait_after_interaction(&sid, &before_url, prev_seq, wait_ms);
+        let opts = self.resolve_snapshot_options(compact, scope_modal);
+        let diff_mode = self.resolve_diff_mode(diff);
+        let label = format!("browser_press_key({})", key);
+        self.format_action_response(
+            &label,
+            &before_url,
+            None,
+            DEFAULT_MAX_SNAPSHOT_CHARS,
+            should_settle,
+            page_reloaded,
+            opts,
+            diff_mode,
+        )
     }
 
     pub fn tool_evaluate(&mut self, script: &str) -> Result<String, String> {
@@ -962,6 +1497,7 @@ impl BrowserManager {
             .get("currentIndex")
             .and_then(|v| v.as_i64())
             .unwrap_or(0);
+        let mut navigated = false;
         if cur > 0 {
             if let Some(entry_id) = hist
                 .pointer(&format!("/entries/{}/id", cur - 1))
@@ -977,9 +1513,25 @@ impl BrowserManager {
                 let _ = self
                     .cdp()?
                     .wait_for_load_advance(&sid, prev_seq, DEFAULT_LOAD_TIMEOUT);
+                navigated = true;
             }
         }
-        self.format_page_response(true, DEFAULT_MAX_SNAPSHOT_CHARS, true)
+        if navigated {
+            if let Some(tab) = self.tabs.get_mut(self.current_tab) {
+                tab.ref_map.clear();
+                tab.last_snapshot = None;
+                tab.ref_registry.reset();
+            }
+        }
+        let opts = self.resolve_snapshot_options(None, None);
+        self.format_page_response(
+            true,
+            DEFAULT_MAX_SNAPSHOT_CHARS,
+            navigated,
+            opts,
+            false,
+            navigated,
+        )
     }
 
     pub fn tool_wait_for(

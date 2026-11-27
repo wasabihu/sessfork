@@ -15,7 +15,9 @@ pub fn tools_manifest() -> Value {
                 "properties": {
                     "url": { "type": "string", "description": "Target http(s):// URL" },
                     "snapshot": { "type": "boolean", "description": "Include accessibility snapshot (default: true)" },
-                    "maxChars": { "type": "integer", "description": "Max snapshot characters (default: 32000)" }
+                    "maxChars": { "type": "integer", "description": "Max snapshot characters (default: 32000)" },
+                    "compact": { "type": "boolean", "description": "Zero-layout distilled view (interactive controls + headings/alerts only)" },
+                    "scopeModal": { "type": "boolean", "description": "Scope output to topmost active modal dialog when present" }
                 },
                 "required": ["url"]
             }
@@ -26,7 +28,10 @@ pub fn tools_manifest() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "maxChars": { "type": "integer", "description": "Max snapshot characters (default: 32000)" }
+                    "maxChars": { "type": "integer", "description": "Max snapshot characters (default: 32000)" },
+                    "compact": { "type": "boolean", "description": "Zero-layout distilled view (interactive controls + headings/alerts only)" },
+                    "diff": { "type": "boolean", "description": "Return only +/- changes since previous snapshot on the same URL" },
+                    "scopeModal": { "type": "boolean", "description": "Scope output to topmost active modal dialog when present" }
                 }
             }
         },
@@ -56,19 +61,22 @@ pub fn tools_manifest() -> Value {
         },
         {
             "name": "browser_click",
-            "description": "Click an element by snapshot ref (e.g. 'e3') or CSS selector.",
+            "description": "Click an element by snapshot ref (e.g. 'e3') or CSS selector and return an Action Receipt plus snapshot or diff.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "ref": { "type": "string", "description": "Snapshot element ref (e.g. 'e1')" },
                     "selector": { "type": "string", "description": "Fallback CSS selector" },
-                    "element": { "type": "string", "description": "Human-readable element label (optional)" }
+                    "element": { "type": "string", "description": "Human-readable element label (optional)" },
+                    "compact": { "type": "boolean", "description": "Zero-layout distilled view (interactive controls + headings/alerts only)" },
+                    "diff": { "type": "boolean", "description": "Return only +/- delta diff (omits snapshot on NO_OP)" },
+                    "scopeModal": { "type": "boolean", "description": "Scope output to topmost active modal dialog when present" }
                 }
             }
         },
         {
             "name": "browser_type",
-            "description": "Type text into an input/textarea by snapshot ref or CSS selector (React/Vue compatible).",
+            "description": "Type text into an input/textarea by snapshot ref or CSS selector (React/Vue compatible) with Action Receipt.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -76,18 +84,24 @@ pub fn tools_manifest() -> Value {
                     "selector": { "type": "string", "description": "Fallback CSS selector" },
                     "text": { "type": "string", "description": "Text to type" },
                     "clear": { "type": "boolean", "description": "Replace existing value (default: true)" },
-                    "submit": { "type": "boolean", "description": "Press Enter / submit form after typing" }
+                    "submit": { "type": "boolean", "description": "Press Enter / submit form after typing and settle navigation" },
+                    "compact": { "type": "boolean", "description": "Zero-layout distilled view (interactive controls + headings/alerts only)" },
+                    "diff": { "type": "boolean", "description": "Return only +/- delta diff (omits snapshot on NO_OP)" },
+                    "scopeModal": { "type": "boolean", "description": "Scope output to topmost active modal dialog when present" }
                 },
                 "required": ["text"]
             }
         },
         {
             "name": "browser_press_key",
-            "description": "Dispatch a keyboard key press (e.g. 'Enter', 'Escape', 'Tab').",
+            "description": "Dispatch a keyboard key press (e.g. 'Enter', 'Escape', 'Tab') and return an Action Receipt.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "key": { "type": "string" }
+                    "key": { "type": "string" },
+                    "compact": { "type": "boolean", "description": "Zero-layout distilled view" },
+                    "diff": { "type": "boolean", "description": "Return only +/- delta diff" },
+                    "scopeModal": { "type": "boolean", "description": "Scope output to topmost active modal dialog when present" }
                 },
                 "required": ["key"]
             }
@@ -274,7 +288,9 @@ fn dispatch_tool(name: &str, args: &Value, browser: &mut BrowserManager) -> Resu
                 .and_then(|v| v.as_u64())
                 .map(|v| v.clamp(512, 200_000) as usize)
                 .unwrap_or(DEFAULT_MAX_SNAPSHOT_CHARS);
-            browser.tool_navigate(url, include_snapshot, max_chars)
+            let compact = args.get("compact").and_then(|v| v.as_bool());
+            let scope_modal = args.get("scopeModal").and_then(|v| v.as_bool());
+            browser.tool_navigate(url, include_snapshot, max_chars, compact, scope_modal)
         }
         "browser_snapshot" => {
             let max_chars = args
@@ -282,7 +298,10 @@ fn dispatch_tool(name: &str, args: &Value, browser: &mut BrowserManager) -> Resu
                 .and_then(|v| v.as_u64())
                 .map(|v| v.clamp(512, 200_000) as usize)
                 .unwrap_or(DEFAULT_MAX_SNAPSHOT_CHARS);
-            browser.tool_snapshot(max_chars)
+            let compact = args.get("compact").and_then(|v| v.as_bool());
+            let diff = args.get("diff").and_then(|v| v.as_bool());
+            let scope_modal = args.get("scopeModal").and_then(|v| v.as_bool());
+            browser.tool_snapshot(max_chars, compact, diff, scope_modal)
         }
         "browser_tabs" => {
             let action = args
@@ -306,7 +325,10 @@ fn dispatch_tool(name: &str, args: &Value, browser: &mut BrowserManager) -> Resu
         "browser_click" => {
             let ref_id = args.get("ref").and_then(|v| v.as_str());
             let selector = args.get("selector").and_then(|v| v.as_str());
-            browser.tool_click(ref_id, selector)
+            let compact = args.get("compact").and_then(|v| v.as_bool());
+            let diff = args.get("diff").and_then(|v| v.as_bool());
+            let scope_modal = args.get("scopeModal").and_then(|v| v.as_bool());
+            browser.tool_click(ref_id, selector, compact, diff, scope_modal)
         }
         "browser_type" => {
             let ref_id = args.get("ref").and_then(|v| v.as_str());
@@ -320,14 +342,29 @@ fn dispatch_tool(name: &str, args: &Value, browser: &mut BrowserManager) -> Resu
                 .get("submit")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            browser.tool_type(ref_id, selector, text, clear, submit)
+            let compact = args.get("compact").and_then(|v| v.as_bool());
+            let diff = args.get("diff").and_then(|v| v.as_bool());
+            let scope_modal = args.get("scopeModal").and_then(|v| v.as_bool());
+            browser.tool_type(
+                ref_id,
+                selector,
+                text,
+                clear,
+                submit,
+                compact,
+                diff,
+                scope_modal,
+            )
         }
         "browser_press_key" => {
             let key = args
                 .get("key")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required parameter 'key'".to_string())?;
-            browser.tool_press_key(key)
+            let compact = args.get("compact").and_then(|v| v.as_bool());
+            let diff = args.get("diff").and_then(|v| v.as_bool());
+            let scope_modal = args.get("scopeModal").and_then(|v| v.as_bool());
+            browser.tool_press_key(key, compact, diff, scope_modal)
         }
         "browser_evaluate" => {
             let script = args
@@ -405,6 +442,8 @@ mod tests {
             initial_storage_state: None,
             output_dir: std::env::temp_dir(),
             enable_layout: false,
+            default_compact: false,
+            default_diff: false,
         });
 
         let init = handle_jsonrpc_message(

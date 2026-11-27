@@ -134,6 +134,56 @@ if (mc) {
   });
 }
 </script></body></html>"""
+        elif parsed.path == "/ergonomic":
+            noise = "".join(
+                f"<p>Boilerplate marketing copy paragraph #{i}: lorem ipsum dolor sit amet.</p>"
+                for i in range(40)
+            )
+            html = f"""<!doctype html><html><head><title>OrdersApp</title></head><body>
+<h1>Orders Console</h1>
+<section>{noise}</section>
+<form id="qform" action="/slow-dest" method="get">
+  <input id="qbox" name="q" placeholder="Filter orders" />
+</form>
+<form id="spa-prevent-form" action="/slow-dest" method="get">
+  <input id="spa-prevent-input" name="sp" placeholder="SPA Enter Input" />
+</form>
+<input id="ro-input" type="text" placeholder="ReadOnlyBox" readonly value="LOCKED" />
+<fieldset disabled><button id="fs-disabled" type="button">FieldsetDisabled</button></fieldset>
+<button id="open-modal" type="button" onclick="openModal()">OpenConfirm</button>
+<button id="pay-disabled" type="button" disabled>PayDisabled</button>
+<button id="inert-btn" type="button">InertBtn</button>
+<div id="remount-slot"><button id="remount-btn" type="button" onclick="remountSelf()">RemountMe</button></div>
+<div id="banner-slot"></div>
+<div id="modal-slot"></div>
+<script>
+document.getElementById('spa-prevent-input').addEventListener('keydown', (e) => {{
+  if (e.key === 'Enter') {{
+    e.preventDefault();
+    document.getElementById('banner-slot').innerHTML = '<div role="status">SPA_ENTER_PREVENTED_OK</div>';
+  }}
+}});
+function openModal() {{
+  document.getElementById('modal-slot').innerHTML =
+    '<div role="alertdialog" aria-modal="true" tabindex="-1" aria-label="Confirm Payment">' +
+    '<h2>Confirm Payment</h2>' +
+    '<p>Charge $42.00 now?</p>' +
+    '<button id="m-cancel" type="button" onclick="closeModal()">CancelModal</button>' +
+    '<button id="m-ok" type="button" onclick="confirmOrder()">ConfirmNow</button>' +
+    '</div>';
+}}
+function closeModal() {{
+  document.getElementById('modal-slot').innerHTML = '';
+}}
+function confirmOrder() {{
+  document.getElementById('modal-slot').innerHTML = '';
+  document.getElementById('banner-slot').innerHTML = '<div role="status">ORDER_CONFIRMED_42</div>';
+}}
+function remountSelf() {{
+  document.getElementById('remount-slot').innerHTML =
+    '<button id="remount-btn-2" type="button" onclick="document.title=\\'REMOUNT_CLICK_OK\\'">RemountMe</button>';
+}}
+</script></body></html>"""
         elif parsed.path == "/evil_proto":
             html = """<!doctype html><html><head><title>UntrustedSite</title></head><body>
 <h1>Untrusted Attacker Page</h1>
@@ -850,6 +900,159 @@ class RustMcpE2ETestSuite(unittest.TestCase):
                 is_err, who_txt = client.call_tool("browser_navigate", {"url": f"{self.origin}/whoami"})
                 self.assertFalse(is_err, who_txt)
                 self.assertIn("TRUSTED_ONLY_JWT_SECRET_999", _page_title(who_txt))
+            finally:
+                client.close()
+
+    def test_10_compact_diff_modal_scoping_no_op_and_submit_settle(self) -> None:
+        assert RUST_MCP_BIN is not None and MOLI_BIN is not None
+        with tempfile.TemporaryDirectory(prefix="sf_e2e_ergo_") as tmp:
+            out_dir = Path(tmp) / "out"
+            out_dir.mkdir(mode=0o700)
+            client = _MCPClient(
+                RUST_MCP_BIN,
+                [f"--moli={MOLI_BIN}", f"--output-dir={out_dir}", "--compact", "--diff"],
+            )
+            try:
+                client.initialize()
+                # 1. Zero-layout compact snapshot strips all 40 marketing paragraphs
+                is_err, nav_compact = client.call_tool(
+                    "browser_navigate", {"url": f"{self.origin}/ergonomic"}
+                )
+                self.assertFalse(is_err, nav_compact)
+                self.assertNotIn("Boilerplate marketing copy", nav_compact)
+                self.assertIn('heading "Orders Console"', nav_compact)
+                self.assertIn("PayDisabled", nav_compact)
+
+                # Compare against explicit full snapshot to prove dramatic compression
+                is_err, nav_full = client.call_tool(
+                    "browser_snapshot", {"compact": False, "diff": False}
+                )
+                self.assertFalse(is_err, nav_full)
+                self.assertIn("Boilerplate marketing copy", nav_full)
+                self.assertLess(len(nav_compact), len(nav_full) // 3)
+
+                # Re-anchor compact snapshot state so subsequent --diff calls compare compact->compact
+                is_err, nav_compact2 = client.call_tool(
+                    "browser_snapshot", {"compact": True, "diff": False}
+                )
+                self.assertFalse(is_err, nav_compact2)
+                m_qbox = re.search(r'textbox "Filter orders"[^\n]*\[ref=(e\d+)\]', nav_compact2)
+                m_spa_in = re.search(r'textbox "SPA Enter Input"[^\n]*\[ref=(e\d+)\]', nav_compact2)
+                m_ro = re.search(r'textbox "ReadOnlyBox"[^\n]*\[ref=(e\d+)\]', nav_compact2)
+                m_fs_dis = re.search(r'button "FieldsetDisabled"[^\n]*\[ref=(e\d+)\]', nav_compact2)
+                m_open = re.search(r'button "OpenConfirm"[^\n]*\[ref=(e\d+)\]', nav_compact2)
+                m_disabled = re.search(r'button "PayDisabled"[^\n]*\[ref=(e\d+)\]', nav_compact2)
+                m_inert = re.search(r'button "InertBtn"[^\n]*\[ref=(e\d+)\]', nav_compact2)
+                m_remount = re.search(r'button "RemountMe"[^\n]*\[ref=(e\d+)\]', nav_compact2)
+                self.assertTrue(
+                    m_qbox and m_spa_in and m_ro and m_fs_dis and m_open and m_disabled and m_inert and m_remount,
+                    f"Missing expected refs in compact snapshot:\n{nav_compact2}",
+                )
+
+                # 2. Clicking disabled / <fieldset disabled> / readonly inputs returns WARNING: NO_OP without snapshot
+                for ref_hit, expected_reason in [
+                    (m_disabled.group(1), "disabled"),
+                    (m_fs_dis.group(1), "disabled"),
+                ]:
+                    is_err, dis_res = client.call_tool("browser_click", {"ref": ref_hit})
+                    self.assertFalse(is_err, dis_res)
+                    self.assertIn("WARNING: NO_OP", dis_res)
+                    self.assertIn(expected_reason, dis_res)
+                    self.assertNotIn("### Snapshot", dis_res)
+                    self.assertNotIn("### Diff", dis_res)
+
+                is_err, ro_res = client.call_tool("browser_type", {"ref": m_ro.group(1), "text": "hack"})
+                self.assertFalse(is_err, ro_res)
+                self.assertIn("WARNING: NO_OP", ro_res)
+                self.assertIn("readonly", ro_res)
+                self.assertNotIn("### Snapshot", ro_res)
+
+                # 3. Clicking inert button returns WARNING: NO_OP and omits redundant snapshot
+                is_err, inert_res = client.call_tool("browser_click", {"ref": m_inert.group(1)})
+                self.assertFalse(is_err, inert_res)
+                self.assertIn("WARNING: NO_OP", inert_res)
+                self.assertNotIn("### Snapshot", inert_res)
+
+                # 4. Opening tabindex="-1" alertdialog scopes snapshot to modal, preserves body text,
+                #    and suppresses background controls without bogus cross-scope +/- counts
+                is_err, modal_res = client.call_tool("browser_click", {"ref": m_open.group(1)})
+                self.assertFalse(is_err, modal_res)
+                self.assertIn("Modal opened", modal_res)
+                self.assertIn("Confirm Payment", modal_res)
+                self.assertIn("Charge $42.00 now?", modal_res)
+                self.assertIn("ConfirmNow", modal_res)
+                self.assertNotIn("InertBtn", modal_res)
+                self.assertNotIn("PayDisabled", modal_res)
+
+                # Confirming modal closes it, keeps status banner text, and restores background refs
+                m_confirm = re.search(r'button "ConfirmNow"[^\n]*\[ref=(e\d+)\]', modal_res)
+                self.assertIsNotNone(m_confirm, f"Missing ConfirmNow ref:\n{modal_res}")
+                is_err, after_modal = client.call_tool(
+                    "browser_click", {"ref": m_confirm.group(1)}  # type: ignore[union-attr]
+                )
+                self.assertFalse(is_err, after_modal)
+                self.assertIn("Modal closed", after_modal)
+                self.assertIn("ORDER_CONFIRMED_42", after_modal)
+
+                # 5. Same-label DOM remount emits fresh [ref=eN] in --diff mode, and clicking it works!
+                is_err, remount_res = client.call_tool("browser_click", {"ref": m_remount.group(1)})
+                self.assertFalse(is_err, remount_res)
+                self.assertIn("### Diff", remount_res)
+                m_remount2 = re.search(r'\+ button "RemountMe"[^\n]*\[ref=(e\d+)\]', remount_res)
+                self.assertIsNotNone(m_remount2, f"Expected remounted live ref in diff:\n{remount_res}")
+                self.assertNotEqual(m_remount2.group(1), m_remount.group(1))  # type: ignore[union-attr]
+                is_err, remount_click = client.call_tool(
+                    "browser_click", {"ref": m_remount2.group(1)}  # type: ignore[union-attr]
+                )
+                self.assertFalse(is_err, remount_click)
+                self.assertIn("REMOUNT_CLICK_OK", remount_click)
+
+                # 6. submit=True respects SPA keydown e.preventDefault() (no unintended form navigation!)
+                is_err, spa_sub = client.call_tool(
+                    "browser_type", {"ref": m_spa_in.group(1), "text": "spa", "submit": True}
+                )
+                self.assertFalse(is_err, spa_sub)
+                self.assertIn("/ergonomic", spa_sub)
+                self.assertIn("SPA_ENTER_PREVENTED_OK", spa_sub)
+
+                # 7. Typing into qbox in --diff mode returns delta diff only (not full snapshot)
+                is_err, type_diff = client.call_tool(
+                    "browser_type", {"ref": m_qbox.group(1), "text": "ord-99", "submit": False}
+                )
+                self.assertFalse(is_err, type_diff)
+                self.assertIn("### Receipt", type_diff)
+                self.assertIn("### Diff", type_diff)
+                self.assertIn('value="ord-99"', type_diff)
+                self.assertNotIn("### Snapshot", type_diff)
+
+                # 8. Plain-text page in --compact mode MUST NOT stall 2.5s waiting for interactive nodes
+                t_plain = time.perf_counter()
+                is_err, plain_res = client.call_tool("browser_navigate", {"url": f"{self.origin}/"})
+                plain_elapsed = time.perf_counter() - t_plain
+                self.assertFalse(is_err, plain_res)
+                self.assertLess(plain_elapsed, 1.5, f"Compact plain-text page stalled: {plain_elapsed:.2f}s")
+
+                # 9. browser_navigate(..., snapshot=False) MUST clear stale ref_map from previous page
+                is_err, _ = client.call_tool(
+                    "browser_navigate", {"url": f"{self.origin}/ergonomic", "snapshot": False}
+                )
+                self.assertFalse(is_err)
+                is_err, stale_click = client.call_tool("browser_click", {"ref": m_qbox.group(1)})
+                self.assertTrue(is_err, f"Expected stale ref rejection after snapshot=False:\n{stale_click}")
+                self.assertIn("not found", stale_click)
+
+                # 10. Typing with submit=True on normal form settles slow 450ms navigation!
+                is_err, nav_again = client.call_tool("browser_snapshot", {"compact": True, "diff": False})
+                self.assertFalse(is_err, nav_again)
+                m_qbox2 = re.search(r'textbox "Filter orders"[^\n]*\[ref=(e\d+)\]', nav_again)
+                self.assertIsNotNone(m_qbox2)
+                is_err, sub_res = client.call_tool(
+                    "browser_type", {"ref": m_qbox2.group(1), "text": "go", "submit": True}  # type: ignore[union-attr]
+                )
+                self.assertFalse(is_err, sub_res)
+                self.assertIn("URL changed:", sub_res)
+                self.assertIn("SlowDestLoaded", sub_res)
+                self.assertIn("Slow Destination Content", sub_res)
             finally:
                 client.close()
 

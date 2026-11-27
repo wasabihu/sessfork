@@ -118,6 +118,8 @@ fn print_help() {
            --storage-state <PATH>  Initial Playwright storageState JSON file\n\
            --output-dir <PATH>     Allowed root directory for storageState hot-reload & screenshots\n\
            --layout                Enable Moli layout engine (required for screenshots)\n\
+           --compact               Default to zero-layout distilled snapshots & modal scoping\n\
+           --diff                  Default to Action Receipt + delta diff on click/type/press_key\n\
            -V, --version           Print version\n\
            -h, --help              Print help",
         env!("CARGO_PKG_VERSION")
@@ -130,6 +132,8 @@ fn parse_args(args: &[String]) -> Result<BrowserConfig, i32> {
     let mut state_arg: Option<PathBuf> = None;
     let mut output_dir: Option<PathBuf> = None;
     let mut enable_layout = false;
+    let mut default_compact = false;
+    let mut default_diff = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -142,6 +146,10 @@ fn parse_args(args: &[String]) -> Result<BrowserConfig, i32> {
             return Err(0);
         } else if a == "--layout" {
             enable_layout = true;
+        } else if a == "--compact" {
+            default_compact = true;
+        } else if a == "--diff" {
+            default_diff = true;
         } else if let Some(val) = a.strip_prefix("--moli=") {
             moli_arg = Some(val.to_string());
         } else if a == "--moli" && i + 1 < args.len() {
@@ -210,6 +218,8 @@ fn parse_args(args: &[String]) -> Result<BrowserConfig, i32> {
         initial_storage_state: state_arg,
         output_dir: out_dir,
         enable_layout,
+        default_compact,
+        default_diff,
     })
 }
 
@@ -290,5 +300,25 @@ mod tests {
             cands.first().cloned(),
             Some(base.join("Moli").join("bin").join("moli.exe"))
         );
+    }
+
+    #[test]
+    fn parse_args_enables_compact_and_diff_flags_with_cdp_url() {
+        let args: Vec<String> = vec![
+            "--cdp-url=http://127.0.0.1:9222".to_string(),
+            "--compact".to_string(),
+            "--diff".to_string(),
+        ];
+        let cfg = parse_args(&args).expect("valid args");
+        assert!(cfg.default_compact);
+        assert!(cfg.default_diff);
+        assert!(!cfg.enable_layout);
+        assert_eq!(cfg.cdp_url.as_deref(), Some("http://127.0.0.1:9222"));
+
+        // Negative control: omitted flags stay false for full backward compatibility.
+        let base_args: Vec<String> = vec!["--cdp-url=http://127.0.0.1:9222".to_string()];
+        let base_cfg = parse_args(&base_args).expect("base args");
+        assert!(!base_cfg.default_compact);
+        assert!(!base_cfg.default_diff);
     }
 }
