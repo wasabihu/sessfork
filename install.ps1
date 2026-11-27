@@ -77,6 +77,60 @@ function Find-LocalMoli {
     return $null
 }
 
+function Wire-OpenCodeFallback {
+    param(
+        [string]$ConfigPath,
+        [string]$BinPath
+    )
+    $StatePath = Join-Path $env:USERPROFILE ".sessfork\state.json"
+    $OutputDir = Join-Path $env:USERPROFILE ".sessfork\playwright-output"
+    $ParentDir = Split-Path -Parent $ConfigPath
+    if ($ParentDir -and -not (Test-Path $ParentDir)) {
+        New-Item -ItemType Directory -Force -Path $ParentDir | Out-Null
+    }
+    $Doc = [ordered]@{}
+    if (Test-Path $ConfigPath) {
+        $Raw = Get-Content -Path $ConfigPath -Raw -Encoding UTF8
+        if (-not [string]::IsNullOrWhiteSpace($Raw)) {
+            $Parsed = $Raw | ConvertFrom-Json
+            if ($null -eq $Parsed -or -not ($Parsed -is [System.Management.Automation.PSCustomObject])) {
+                throw "Expected JSON object in $ConfigPath"
+            }
+            foreach ($Prop in $Parsed.PSObject.Properties) {
+                $Doc[$Prop.Name] = $Prop.Value
+            }
+        }
+    }
+    if (-not $Doc.Contains('$schema')) {
+        $Doc['$schema'] = "https://opencode.ai/config.json"
+    }
+    $McpMap = [ordered]@{}
+    if ($Doc.Contains("mcp")) {
+        $ExistingMcp = $Doc["mcp"]
+        if ($null -eq $ExistingMcp -or -not ($ExistingMcp -is [System.Management.Automation.PSCustomObject])) {
+            throw "'mcp' is not a JSON object in $ConfigPath"
+        }
+        foreach ($Prop in $ExistingMcp.PSObject.Properties) {
+            $McpMap[$Prop.Name] = $Prop.Value
+        }
+    }
+    $McpMap["sessfork-moli"] = [ordered]@{
+        type    = "local"
+        command = @(
+            $BinPath,
+            "--storage-state=$StatePath",
+            "--output-dir=$OutputDir"
+        )
+        enabled = $true
+    }
+    $Doc["mcp"] = $McpMap
+    $JsonOut = ($Doc | ConvertTo-Json -Depth 10) + "`n"
+    $TmpFile = "$ConfigPath.sessfork.tmp"
+    [System.IO.File]::WriteAllText($TmpFile, $JsonOut, (New-Object System.Text.UTF8Encoding($false)))
+    Move-Item -Force $TmpFile $ConfigPath
+    Write-Host "Wired MCP server 'sessfork-moli' -> $ConfigPath"
+}
+
 $TmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ("sessfork-install-" + [System.Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $TmpDir | Out-Null
 
@@ -165,19 +219,47 @@ try {
     $Wired = @()
     if ($env:SESSFORK_SKIP_MCP_SETUP -ne "1") {
         $ClientTargets = @(
-            @{ Name = "Antigravity";        Path = (Join-Path $env:USERPROFILE ".gemini\config\mcp_config.json");      Dir = (Join-Path $env:USERPROFILE ".gemini\config") },
-            @{ Name = "Antigravity Legacy"; Path = (Join-Path $env:USERPROFILE ".gemini\antigravity\mcp_config.json"); Dir = $null },
-            @{ Name = "Cursor";             Path = (Join-Path $env:USERPROFILE ".cursor\mcp.json");                    Dir = (Join-Path $env:USERPROFILE ".cursor") },
-            @{ Name = "Claude Code";        Path = (Join-Path $env:USERPROFILE ".claude.json");                        Dir = $null }
+            @{ Name = "Antigravity";        Path = (Join-Path $env:USERPROFILE ".gemini\config\mcp_config.json");      Dir = (Join-Path $env:USERPROFILE ".gemini\config");      Format = "standard"; Cmd = $null },
+            @{ Name = "Antigravity Legacy"; Path = (Join-Path $env:USERPROFILE ".gemini\antigravity\mcp_config.json"); Dir = $null;                                             Format = "standard"; Cmd = $null },
+            @{ Name = "Cursor";             Path = (Join-Path $env:USERPROFILE ".cursor\mcp.json");                    Dir = (Join-Path $env:USERPROFILE ".cursor");             Format = "standard"; Cmd = $null },
+            @{ Name = "Claude Code";        Path = (Join-Path $env:USERPROFILE ".claude.json");                        Dir = $null;                                             Format = "standard"; Cmd = $null },
+            @{ Name = "OpenCode";           Path = (Join-Path $env:USERPROFILE ".config\opencode\opencode.json");      Dir = (Join-Path $env:USERPROFILE ".config\opencode");    Format = "opencode"; Cmd = "opencode" }
         )
         foreach ($T in $ClientTargets) {
-            $Exists = (Test-Path $T.Path) -or ($T.Dir -and (Test-Path $T.Dir))
+            $HasCmd = $T.Cmd -and (Get-Command $T.Cmd -ErrorAction SilentlyContinue)
+            $Exists = (Test-Path $T.Path) -or ($T.Dir -and (Test-Path $T.Dir)) -or $HasCmd
             if ($Exists) {
-                & $DestBin setup --mcp-file $T.Path
-                if ($LASTEXITCODE -eq 0) {
-                    $Wired += "$($T.Name) ($($T.Path))"
+                if ($T.Format -eq "opencode") {
+                    # Prefer native Rust `--format opencode`; fall back cleanly on pre-0.2.2 binaries without triggering PS 5.1 NativeCommandError.
+                    $PrevEAP = $ErrorActionPreference
+                    $SetupExit = 2
+                    try {
+                        $ErrorActionPreference = "Continue"
+                        & $DestBin setup --format opencode --mcp-file $T.Path 2>&1 | Out-Null
+                        $SetupExit = $LASTEXITCODE
+                    } finally {
+                        $ErrorActionPreference = $PrevEAP
+                    }
+                    if ($SetupExit -eq 0) {
+                        Write-Host "Wired MCP server 'sessfork-moli' -> $($T.Path)"
+                        $Wired += "$($T.Name) ($($T.Path))"
+                    } elseif ($SetupExit -eq 2) {
+                        try {
+                            Wire-OpenCodeFallback -ConfigPath $T.Path -BinPath $DestBin
+                            $Wired += "$($T.Name) ($($T.Path))"
+                        } catch {
+                            Write-Host "  Warning: skipped $($T.Name) ($($T.Path)): $($_.Exception.Message)"
+                        }
+                    } else {
+                        Write-Host "  Warning: skipped $($T.Name) ($($T.Path)) due to setup exit code $SetupExit"
+                    }
                 } else {
-                    Write-Host "  Warning: skipped $($T.Name) ($($T.Path)) due to setup exit code $LASTEXITCODE"
+                    & $DestBin setup --mcp-file $T.Path
+                    if ($LASTEXITCODE -eq 0) {
+                        $Wired += "$($T.Name) ($($T.Path))"
+                    } else {
+                        Write-Host "  Warning: skipped $($T.Name) ($($T.Path)) due to setup exit code $LASTEXITCODE"
+                    }
                 }
             }
         }
@@ -185,6 +267,7 @@ try {
     if ($Wired.Count -eq 0) {
         Write-Host '  No pre-existing MCP config detected. Wire manually anytime via:'
         Write-Host '    sessfork-mcp setup --mcp-file "$env:USERPROFILE\.cursor\mcp.json"'
+        Write-Host '    sessfork-mcp setup --mcp-file "$env:USERPROFILE\.config\opencode\opencode.json"'
     }
 
     $ClipboardNote = ""

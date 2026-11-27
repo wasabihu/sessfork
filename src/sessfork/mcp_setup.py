@@ -391,8 +391,47 @@ def _extract_mcp_bridge_arg(args: Any) -> Optional[str]:
     return _extract_cli_arg(args, "--mcp-bridge")
 
 
+OPENCODE_SCHEMA_URL = "https://opencode.ai/config.json"
+
+
+def _is_opencode_config_path(cfg_path: Path) -> bool:
+    return cfg_path.name.lower() in ("opencode.json", "opencode.jsonc")
+
+
+def _get_servers_dict(doc: Dict[str, Any], cfg_path: Path) -> Optional[Dict[str, Any]]:
+    key = "mcp" if _is_opencode_config_path(cfg_path) else "mcpServers"
+    servers = doc.get(key)
+    return servers if isinstance(servers, dict) else None
+
+
+def _extract_entry_command_and_args(entry: Dict[str, Any]) -> Tuple[str, List[str]]:
+    raw_cmd = entry.get("command")
+    if isinstance(raw_cmd, list):
+        parts = [item for item in raw_cmd if isinstance(item, str)]
+        if not parts:
+            return "", []
+        return parts[0].strip(), parts[1:]
+    cmd = str(raw_cmd or "").strip()
+    raw_args = entry.get("args")
+    args = [item for item in raw_args if isinstance(item, str)] if isinstance(raw_args, list) else []
+    return cmd, args
+
+
+def _to_opencode_entry(std_entry: Dict[str, Any]) -> Dict[str, Any]:
+    cmd, args = _extract_entry_command_and_args(std_entry)
+    out: Dict[str, Any] = {
+        "type": "local",
+        "command": [cmd, *args] if cmd else list(args),
+        "enabled": True,
+    }
+    env = std_entry.get("env")
+    if isinstance(env, dict) and env:
+        out["environment"] = env
+    return out
+
+
 def _is_native_rust_mcp_entry(entry: Dict[str, Any]) -> bool:
-    cmd = str(entry.get("command", "")).strip()
+    cmd, _ = _extract_entry_command_and_args(entry)
     if not cmd:
         return False
     return Path(cmd).name in ("sessfork-mcp", "sessfork-mcp.exe")
@@ -409,8 +448,8 @@ def _detect_existing_config_mode(cfg_path: Path) -> Tuple[Optional[str], Optiona
         return None, None
     if not isinstance(doc, dict):
         return None, None
-    servers = doc.get("mcpServers")
-    if not isinstance(servers, dict):
+    servers = _get_servers_dict(doc, cfg_path)
+    if servers is None:
         return None, None
     primary = servers.get(MCP_SERVER_NAME)
     moli_companion = servers.get(MCP_MOLI_SERVER_NAME)
@@ -419,10 +458,11 @@ def _detect_existing_config_mode(cfg_path: Path) -> Tuple[Optional[str], Optiona
     if isinstance(primary, dict):
         if _is_native_rust_mcp_entry(primary):
             return "moli", None
-        bridge = _extract_mcp_bridge_arg(primary.get("args"))
+        _, primary_args = _extract_entry_command_and_args(primary)
+        bridge = _extract_mcp_bridge_arg(primary_args)
         if bridge == "moli":
             return "moli", None
-        cdp_ep = _extract_cdp_endpoint_arg(primary.get("args"))
+        cdp_ep = _extract_cdp_endpoint_arg(primary_args)
         if cdp_ep:
             return "cdp", cdp_ep
         return "chrome", None
@@ -471,27 +511,28 @@ def inspect_mcp_headless_shell(
             continue
         if not isinstance(doc, dict):
             continue
-        servers = doc.get("mcpServers")
-        if not isinstance(servers, dict):
+        servers = _get_servers_dict(doc, cfg_path)
+        if servers is None:
             continue
         entry = servers.get(MCP_SERVER_NAME)
         if not isinstance(entry, dict):
             continue
 
         has_moli_companion = isinstance(servers.get(MCP_MOLI_SERVER_NAME), dict)
-        bridge = _extract_mcp_bridge_arg(entry.get("args"))
+        _, entry_args = _extract_entry_command_and_args(entry)
+        bridge = _extract_mcp_bridge_arg(entry_args)
         if bridge == "moli" or _is_native_rust_mcp_entry(entry):
             engine_modes[str(cfg_path)] = "moli"
             continue
 
-        cdp_ep = _extract_cdp_endpoint_arg(entry.get("args"))
+        cdp_ep = _extract_cdp_endpoint_arg(entry_args)
         if cdp_ep:
             cdp_configs[str(cfg_path)] = cdp_ep
             engine_modes[str(cfg_path)] = "cdp"
             continue
 
         engine_modes[str(cfg_path)] = "dual" if has_moli_companion else "chrome"
-        pinned_exec = _extract_executable_path_arg(entry.get("args"))
+        pinned_exec = _extract_executable_path_arg(entry_args)
         if not pinned_exec:
             unpinned_configs.append(str(cfg_path))
         else:
@@ -575,6 +616,12 @@ def detect_installed_targets(home: Optional[Path] = None) -> List[str]:
         targets.append("claude")
     if (root / ".cursor").is_dir() or (home is None and Path("/Applications/Cursor.app").exists()):
         targets.append("cursor")
+    if (
+        (root / ".config" / "opencode" / "opencode.json").is_file()
+        or (root / ".config" / "opencode").is_dir()
+        or (home is None and shutil.which("opencode") is not None)
+    ):
+        targets.append("opencode")
     return targets
 
 
@@ -604,9 +651,11 @@ def target_mcp_config_paths(target: str, home: Optional[Path] = None) -> List[Pa
         return [root / ".claude.json"]
     if target == "cursor":
         return [root / ".cursor" / "mcp.json"]
+    if target == "opencode":
+        return [root / ".config" / "opencode" / "opencode.json"]
     if target == "all":
         all_paths: List[Path] = []
-        for sub_target in ("antigravity", "claude", "cursor"):
+        for sub_target in ("antigravity", "claude", "cursor", "opencode"):
             for p in target_mcp_config_paths(sub_target, home=home):
                 if p not in all_paths:
                     all_paths.append(p)
@@ -788,20 +837,39 @@ def _sync_mcp_servers(cfg_path: Path, updates: Dict[str, Optional[Dict[str, Any]
             if raw:
                 doc = json.loads(raw)
 
-        servers = doc.get("mcpServers")
-        if not isinstance(servers, dict):
-            servers = {}
-            doc["mcpServers"] = servers
+        if not isinstance(doc, dict):
+            raise BrowserProfileError(f"Expected JSON object in MCP config: {raw_cfg}")
 
+        is_opencode = _is_opencode_config_path(raw_cfg)
         changed = False
+        if is_opencode:
+            if "$schema" not in doc:
+                doc["$schema"] = OPENCODE_SCHEMA_URL
+                changed = True
+            existing_mcp = doc.get("mcp")
+            if existing_mcp is None:
+                servers: Dict[str, Any] = {}
+                doc["mcp"] = servers
+            elif isinstance(existing_mcp, dict):
+                servers = existing_mcp
+            else:
+                raise BrowserProfileError(f"Expected 'mcp' JSON object in OpenCode config: {raw_cfg}")
+        else:
+            servers = doc.get("mcpServers")
+            if not isinstance(servers, dict):
+                servers = {}
+                doc["mcpServers"] = servers
+
         for server_name, entry in updates.items():
             if entry is None:
                 if server_name in servers:
                     del servers[server_name]
                     changed = True
-            elif servers.get(server_name) != entry:
-                servers[server_name] = entry
-                changed = True
+            else:
+                rendered_entry = _to_opencode_entry(entry) if is_opencode else entry
+                if servers.get(server_name) != rendered_entry:
+                    servers[server_name] = rendered_entry
+                    changed = True
 
         if not changed:
             return False

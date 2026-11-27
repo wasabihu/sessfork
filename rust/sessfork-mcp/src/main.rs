@@ -110,7 +110,7 @@ fn print_help() {
            sessfork-mcp [OPTIONS]                      Run stdio MCP server (default)\n\
            sessfork-mcp native-host [OPTIONS]          Run Chrome/Edge Native Messaging session bridge\n\
            sessfork-mcp register-host --extension-id <ID> [--browser chrome|edge|brave|chromium|all]\n\
-           sessfork-mcp setup --mcp-file <PATH>        Wire sessfork-moli into an MCP JSON config\n\n\
+           sessfork-mcp setup --mcp-file <PATH> [--format auto|standard|opencode]\n\n\
          MCP OPTIONS:\n\
            --moli <PATH>           Path to moli binary (auto-detected by default)\n\
            --cdp-url <URL>         Attach to any loopback CDP server (Chromium/CEF/Owl/Moli,\n\

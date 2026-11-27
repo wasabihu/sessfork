@@ -1178,10 +1178,46 @@ fn register_manifest_for_os(browser: &str, rendered: &str) -> Result<Vec<String>
     Ok(written)
 }
 
-/// Zero-Python MCP client wiring helper (`sessfork-mcp setup --mcp-file <PATH> [--name sessfork-moli]`).
+const OPENCODE_SCHEMA_URL: &str = "https://opencode.ai/config.json";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum McpConfigFormat {
+    Standard,
+    OpenCode,
+}
+
+impl McpConfigFormat {
+    fn resolve(raw: &str, target_file: &Path) -> Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "" | "auto" => {
+                let is_opencode = target_file
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| {
+                        let low = n.to_ascii_lowercase();
+                        low == "opencode.json" || low == "opencode.jsonc"
+                    })
+                    .unwrap_or(false);
+                Ok(if is_opencode {
+                    Self::OpenCode
+                } else {
+                    Self::Standard
+                })
+            }
+            "standard" => Ok(Self::Standard),
+            "opencode" => Ok(Self::OpenCode),
+            other => Err(format!(
+                "unsupported --format '{other}' (expected auto, standard, or opencode)"
+            )),
+        }
+    }
+}
+
+/// Zero-Python MCP client wiring helper (`sessfork-mcp setup --mcp-file <PATH> [--name sessfork-moli] [--format auto|standard|opencode]`).
 pub(crate) fn run_setup_mcp(args: &[String]) -> i32 {
     let mut mcp_file: Option<PathBuf> = None;
     let mut server_name = "sessfork-moli".to_string();
+    let mut format_arg = "auto".to_string();
     let mut moli_arg: Option<PathBuf> = None;
     let (mut state_path, _) = default_state_paths();
     let mut output_dir = default_home_dir()
@@ -1193,7 +1229,7 @@ pub(crate) fn run_setup_mcp(args: &[String]) -> i32 {
         let a = &args[i];
         if a == "-h" || a == "--help" {
             println!(
-                "USAGE:\n  sessfork-mcp setup --mcp-file <PATH> [--name sessfork-moli] [--moli <PATH>] [--storage-state <PATH>] [--output-dir <PATH>]"
+                "USAGE:\n  sessfork-mcp setup --mcp-file <PATH> [--name sessfork-moli] [--format auto|standard|opencode] [--moli <PATH>] [--storage-state <PATH>] [--output-dir <PATH>]"
             );
             return 0;
         } else if let Some(val) = a.strip_prefix("--mcp-file=") {
@@ -1206,6 +1242,11 @@ pub(crate) fn run_setup_mcp(args: &[String]) -> i32 {
         } else if a == "--name" && i + 1 < args.len() {
             i += 1;
             server_name = args[i].clone();
+        } else if let Some(val) = a.strip_prefix("--format=") {
+            format_arg = val.to_string();
+        } else if a == "--format" && i + 1 < args.len() {
+            i += 1;
+            format_arg = args[i].clone();
         } else if let Some(val) = a.strip_prefix("--moli=") {
             moli_arg = Some(PathBuf::from(val));
         } else if a == "--moli" && i + 1 < args.len() {
@@ -1232,6 +1273,13 @@ pub(crate) fn run_setup_mcp(args: &[String]) -> i32 {
         eprintln!("sessfork-mcp setup: missing required --mcp-file <PATH>");
         return 2;
     };
+    let cfg_format = match McpConfigFormat::resolve(&format_arg, &target_file) {
+        Ok(fmt) => fmt,
+        Err(e) => {
+            eprintln!("sessfork-mcp setup: {e}");
+            return 2;
+        }
+    };
     let self_bin = env::current_exe()
         .ok()
         .map(|p| canonicalize_clean(&p))
@@ -1249,8 +1297,13 @@ pub(crate) fn run_setup_mcp(args: &[String]) -> i32 {
         match fs::read_to_string(&target_file)
             .map_err(|e| format!("Failed to read '{}': {e}", target_file.display()))
             .and_then(|s| {
-                serde_json::from_str(&s)
-                    .map_err(|e| format!("Invalid JSON in '{}': {e}", target_file.display()))
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    Ok(json!({}))
+                } else {
+                    serde_json::from_str(trimmed)
+                        .map_err(|e| format!("Invalid JSON in '{}': {e}", target_file.display()))
+                }
             }) {
             Ok(v) => v,
             Err(e) => {
@@ -1269,18 +1322,42 @@ pub(crate) fn run_setup_mcp(args: &[String]) -> i32 {
         );
         return 1;
     };
-    let servers = obj.entry("mcpServers").or_insert_with(|| json!({}));
-    let Some(srv_map) = servers.as_object_mut() else {
-        eprintln!("sessfork-mcp setup error: 'mcpServers' is not an object");
-        return 1;
-    };
-    srv_map.insert(
-        server_name.clone(),
-        json!({
-            "command": self_bin.display().to_string(),
-            "args": srv_args,
-        }),
-    );
+    match cfg_format {
+        McpConfigFormat::Standard => {
+            let servers = obj.entry("mcpServers").or_insert_with(|| json!({}));
+            let Some(srv_map) = servers.as_object_mut() else {
+                eprintln!("sessfork-mcp setup error: 'mcpServers' is not an object");
+                return 1;
+            };
+            srv_map.insert(
+                server_name.clone(),
+                json!({
+                    "command": self_bin.display().to_string(),
+                    "args": srv_args,
+                }),
+            );
+        }
+        McpConfigFormat::OpenCode => {
+            obj.entry("$schema")
+                .or_insert_with(|| Value::String(OPENCODE_SCHEMA_URL.to_string()));
+            let servers = obj.entry("mcp").or_insert_with(|| json!({}));
+            let Some(srv_map) = servers.as_object_mut() else {
+                eprintln!("sessfork-mcp setup error: 'mcp' is not an object");
+                return 1;
+            };
+            let mut full_cmd = Vec::with_capacity(1 + srv_args.len());
+            full_cmd.push(self_bin.display().to_string());
+            full_cmd.extend(srv_args);
+            srv_map.insert(
+                server_name.clone(),
+                json!({
+                    "type": "local",
+                    "command": full_cmd,
+                    "enabled": true,
+                }),
+            );
+        }
+    }
 
     let rendered = match serde_json::to_string_pretty(&root) {
         Ok(s) => format!("{s}\n"),
@@ -1458,5 +1535,119 @@ mod tests {
     fn native_host_help_exits_zero_without_blocking_on_stdin() {
         assert_eq!(run_stdio_native_host(&["--help".to_string()]), 0);
         assert_eq!(run_stdio_native_host(&["-h".to_string()]), 0);
+    }
+
+    #[test]
+    fn setup_wires_standard_and_opencode_configs_and_fails_closed() {
+        let dir = tmp_dir("setup_opencode");
+        let state_path = dir.join("state.json");
+        let output_dir = dir.join("playwright-output");
+
+        // 1. Standard mcpServers JSON preserves existing servers
+        let std_cfg = dir.join("mcp.json");
+        fs::write(
+            &std_cfg,
+            r#"{"mcpServers":{"other":{"command":"echo","args":["hi"]}}}"#,
+        )
+        .unwrap();
+        let rc_std = run_setup_mcp(&[
+            "--mcp-file".into(),
+            std_cfg.display().to_string(),
+            "--storage-state".into(),
+            state_path.display().to_string(),
+            "--output-dir".into(),
+            output_dir.display().to_string(),
+        ]);
+        assert_eq!(rc_std, 0);
+        let std_doc: Value = serde_json::from_str(&fs::read_to_string(&std_cfg).unwrap()).unwrap();
+        assert!(std_doc["mcpServers"]["other"].is_object());
+        assert!(std_doc["mcpServers"]["sessfork-moli"]["command"].is_string());
+        assert!(std_doc["mcpServers"]["sessfork-moli"]["args"].is_array());
+        assert!(std_doc.get("mcp").is_none());
+
+        // 2. Auto-detected OpenCode config (`opencode.json`) writes `mcp` + `type: "local"` + `command` array
+        let oc_cfg = dir.join("opencode.json");
+        fs::write(
+            &oc_cfg,
+            r#"{"model":"anthropic/claude-sonnet-4","mcp":{"existing":{"type":"local","command":["echo"]}}}"#,
+        )
+        .unwrap();
+        let rc_oc = run_setup_mcp(&[
+            "--mcp-file".into(),
+            oc_cfg.display().to_string(),
+            "--storage-state".into(),
+            state_path.display().to_string(),
+            "--output-dir".into(),
+            output_dir.display().to_string(),
+        ]);
+        assert_eq!(rc_oc, 0);
+        let oc_doc: Value = serde_json::from_str(&fs::read_to_string(&oc_cfg).unwrap()).unwrap();
+        assert_eq!(oc_doc["$schema"], "https://opencode.ai/config.json");
+        assert_eq!(oc_doc["model"], "anthropic/claude-sonnet-4");
+        assert!(oc_doc["mcp"]["existing"].is_object());
+        assert!(oc_doc.get("mcpServers").is_none());
+        let entry = &oc_doc["mcp"]["sessfork-moli"];
+        assert_eq!(entry["type"], "local");
+        assert_eq!(entry["enabled"], true);
+        let cmd_arr = entry["command"].as_array().expect("OpenCode command array");
+        assert!(cmd_arr.len() >= 3);
+        assert!(cmd_arr
+            .iter()
+            .any(|v| v.as_str().unwrap_or("").starts_with("--storage-state=")));
+        assert!(cmd_arr
+            .iter()
+            .any(|v| v.as_str().unwrap_or("").starts_with("--output-dir=")));
+
+        // 3. Explicit --format opencode on arbitrary filename
+        let custom_oc = dir.join("custom-agent.json");
+        let rc_explicit = run_setup_mcp(&[
+            "--mcp-file".into(),
+            custom_oc.display().to_string(),
+            "--format".into(),
+            "opencode".into(),
+            "--storage-state".into(),
+            state_path.display().to_string(),
+            "--output-dir".into(),
+            output_dir.display().to_string(),
+        ]);
+        assert_eq!(rc_explicit, 0);
+        let custom_doc: Value =
+            serde_json::from_str(&fs::read_to_string(&custom_oc).unwrap()).unwrap();
+        assert_eq!(custom_doc["mcp"]["sessfork-moli"]["type"], "local");
+
+        // 4. Fail-closed on invalid --format, non-object `mcp`, and JSONC comments
+        assert_eq!(
+            run_setup_mcp(&[
+                "--mcp-file".into(),
+                custom_oc.display().to_string(),
+                "--format".into(),
+                "invalid".into(),
+            ]),
+            2
+        );
+        let bad_mcp = dir.join("bad_opencode.json");
+        fs::write(&bad_mcp, r#"{"mcp":[]}"#).unwrap();
+        assert_eq!(
+            run_setup_mcp(&[
+                "--mcp-file".into(),
+                bad_mcp.display().to_string(),
+                "--format".into(),
+                "opencode".into(),
+            ]),
+            1
+        );
+        assert_eq!(fs::read_to_string(&bad_mcp).unwrap(), r#"{"mcp":[]}"#);
+
+        let jsonc_cfg = dir.join("opencode.jsonc");
+        fs::write(&jsonc_cfg, "{\n  // user comment\n  \"mcp\": {}\n}\n").unwrap();
+        assert_eq!(
+            run_setup_mcp(&["--mcp-file".into(), jsonc_cfg.display().to_string()]),
+            1
+        );
+        assert!(fs::read_to_string(&jsonc_cfg)
+            .unwrap()
+            .contains("// user comment"));
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

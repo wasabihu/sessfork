@@ -1944,6 +1944,83 @@ class SessforkTestSuite(unittest.TestCase):
             ):
                 self.assertIn(forbidden_tool, pkg_skill)
 
+    def test_opencode_target_auto_detect_dual_mode_and_inspect(self) -> None:
+        from sessfork.ui_server import _client_label_from_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox_home = Path(tmp)
+            state_file = sandbox_home / ".sessfork" / "state.json"
+            oc_dir = sandbox_home / ".config" / "opencode"
+            oc_dir.mkdir(parents=True)
+            oc_cfg = oc_dir / "opencode.json"
+            oc_cfg.write_text(
+                json.dumps({"model": "anthropic/claude-sonnet-4", "mcp": {"existing": {"type": "local", "command": ["echo"]}}}),
+                encoding="utf-8",
+            )
+            fake_moli = sandbox_home / "moli"
+            fake_moli.write_text("#!/bin/sh\necho moli 1.1.27\n", encoding="utf-8")
+            fake_moli.chmod(0o755)
+            fake_rust = sandbox_home / ".local" / "bin" / "sessfork-mcp"
+            fake_rust.parent.mkdir(parents=True)
+            fake_rust.write_text("#!/bin/sh\necho sessfork-mcp 0.2.1\n", encoding="utf-8")
+            fake_rust.chmod(0o755)
+
+            # 1. Auto-detection discovers OpenCode and writes native `mcp` schema (type: local, command array, environment)
+            with mock.patch("sessfork.mcp_setup.find_moli_binary", return_value=fake_moli), \
+                 mock.patch("sessfork.mcp_setup.find_rust_mcp_binary", return_value=fake_rust):
+                updated = ensure_mcp_configured(
+                    ["auto"],
+                    state_path=state_file,
+                    home=sandbox_home,
+                    npx_cmd="/opt/homebrew/bin/npx",
+                )
+            self.assertIn(oc_cfg, updated)
+            doc = json.loads(oc_cfg.read_text(encoding="utf-8"))
+            self.assertEqual(doc["$schema"], "https://opencode.ai/config.json")
+            self.assertEqual(doc["model"], "anthropic/claude-sonnet-4")
+            self.assertNotIn("mcpServers", doc)
+            self.assertIn("existing", doc["mcp"])
+            self.assertIn("sessfork-browser", doc["mcp"])
+            self.assertIn("sessfork-moli", doc["mcp"])
+
+            browser_entry = doc["mcp"]["sessfork-browser"]
+            self.assertEqual(browser_entry["type"], "local")
+            self.assertTrue(browser_entry["enabled"])
+            self.assertIsInstance(browser_entry["command"], list)
+            self.assertEqual(browser_entry["command"][0], "/opt/homebrew/bin/npx")
+            self.assertNotIn("env", browser_entry)
+            if "environment" in browser_entry:
+                self.assertIsInstance(browser_entry["environment"], dict)
+
+            moli_entry = doc["mcp"]["sessfork-moli"]
+            self.assertEqual(moli_entry["type"], "local")
+            self.assertEqual(moli_entry["command"][0], str(fake_rust))
+            self.assertTrue(moli_entry["enabled"])
+
+            # 2. Inspection recognizes dual mode on OpenCode config, and UI label identifies OpenCode
+            info = inspect_mcp_headless_shell(config_paths=[oc_cfg], home=sandbox_home)
+            self.assertEqual(info["engine_modes"].get(str(oc_cfg)), "dual")
+            self.assertEqual(_client_label_from_path(str(oc_cfg)), "OpenCode")
+
+            # 3. Switching OpenCode explicitly to pure moli mode removes sessfork-moli companion and preserves Rust entry
+            with mock.patch("sessfork.mcp_setup.find_moli_binary", return_value=fake_moli), \
+                 mock.patch("sessfork.mcp_setup.find_rust_mcp_binary", return_value=fake_rust):
+                ensure_mcp_configured(["opencode"], state_path=state_file, home=sandbox_home, engine="moli")
+            doc_moli = json.loads(oc_cfg.read_text(encoding="utf-8"))
+            self.assertNotIn("sessfork-moli", doc_moli["mcp"])
+            self.assertEqual(doc_moli["mcp"]["sessfork-browser"]["command"][0], str(fake_rust))
+            info_moli = inspect_mcp_headless_shell(config_paths=[oc_cfg], home=sandbox_home)
+            self.assertEqual(info_moli["engine_modes"].get(str(oc_cfg)), "moli")
+
+            # 4. Fail-closed if existing `mcp` is non-object
+            bad_home = sandbox_home / "bad"
+            bad_oc = bad_home / ".config" / "opencode" / "opencode.json"
+            bad_oc.parent.mkdir(parents=True)
+            bad_oc.write_text('{"mcp": []}', encoding="utf-8")
+            with self.assertRaises(BrowserProfileError):
+                ensure_mcp_configured(["opencode"], state_path=state_file, home=bad_home, npx_cmd="/opt/homebrew/bin/npx")
+            self.assertEqual(bad_oc.read_text(encoding="utf-8"), '{"mcp": []}')
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -93,7 +93,24 @@ codex mcp add moli-browser -- ~/.local/bin/sessfork-mcp
 }
 ```
 
-*(Pass `"args": ["--layout"]` if you want `browser_take_screenshot` with Moli's on-demand layout engine.)*
+**OpenCode (`~/.config/opencode/opencode.json` or `%USERPROFILE%\.config\opencode\opencode.json`):**
+
+*(OpenCode uses `"mcp"` with `"type": "local"` and a `"command"` array instead of `"mcpServers"` — verified on `opencode 1.19.6`, or auto-wire via `sessfork-mcp setup --mcp-file ~/.config/opencode/opencode.json`.)*
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "sessfork-moli": {
+      "type": "local",
+      "command": ["sessfork-mcp"],
+      "enabled": true
+    }
+  }
+}
+```
+
+*(Pass `"--layout"` in `args` / `command` if you want `browser_take_screenshot` with Moli's on-demand layout engine, or `"--cdp-url", "http://127.0.0.1:9222"` to attach to an existing local Chromium instance.)*
 
 ### 3. Optional · Add Live Chrome Login Sessions (`sessfork`)
 
@@ -121,7 +138,7 @@ See the main [sessfork README](../../README.md) for full session-forking docs.
 | `--diff` | off | Default `click`/`type`/`press_key` to Action Receipts (`OK` / `WARNING: NO_OP`) + shift-invariant `+/-` diffs (cuts 8-step cumulative input tokens by **85.4%**) |
 | `native-host` | auto-detected on Chrome launch | Run Chrome/Edge Native Messaging host (`com.wasabihu.sessfork`) for the [Companion Extension](../../extension/README.md) |
 | `register-host [--extension-id <ID>]` | fixed ID + `--browser all` | Register Native Messaging manifest in Chrome / Edge / Brave / Chromium (HKCU Registry on Windows, JSON manifest on macOS/Linux; defaults to official fixed extension ID `eipgnmlpcpmadpbignmifidnbjfmlphm`) |
-| `setup --mcp-file <PATH>` | `--name sessfork-moli` | Atomically wire `sessfork-mcp` into an MCP JSON config (zero Python needed) |
+| `setup --mcp-file <PATH>` | `--name sessfork-moli` · `--format auto` | Atomically wire `sessfork-mcp` into an MCP JSON config (`mcpServers` or auto-detected OpenCode `opencode.json` `mcp` format, zero Python needed) |
 
 ## Small-Model Ergonomic Mode (`--compact --diff`, Zero Layout)
 

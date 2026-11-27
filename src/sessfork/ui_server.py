@@ -55,6 +55,8 @@ def _client_label_from_path(cfg_path: str) -> str:
         return "Claude Code"
     if ".cursor" in low:
         return "Cursor"
+    if "opencode" in low:
+        return "OpenCode"
     if "antigravity" in low or ".gemini" in low:
         return "Antigravity"
     return Path(cfg_path).name

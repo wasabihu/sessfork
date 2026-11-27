@@ -42,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="sessfork",
         description=(
             "Fork live Chrome auth state (SQLite Cookies + LevelDB LocalStorage) into a "
-            "background headless MCP browser (Antigravity, Claude Code, Cursor) with zero window focus theft."
+            "background headless MCP browser (Antigravity, Claude Code, Cursor, OpenCode) with zero window focus theft."
         ),
         epilog=(
             "Examples:\n"
@@ -105,9 +105,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-t",
         "--target",
-        choices=("auto", "antigravity", "claude", "cursor", "all", "none"),
+        choices=("auto", "antigravity", "claude", "cursor", "opencode", "all", "none"),
         default="auto",
-        help="Agent MCP config to auto-wire (default: auto-detect Antigravity/Claude/Cursor; use 'none' to skip)",
+        help="Agent MCP config to auto-wire (default: auto-detect Antigravity/Claude/Cursor/OpenCode; use 'none' to skip)",
     )
     parser.add_argument(
         "--engine",
