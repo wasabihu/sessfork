@@ -2069,9 +2069,86 @@ class SessforkTestSuite(unittest.TestCase):
             self.assertEqual(_client_label_from_path(str(wb_cfg)), "WorkBuddy")
             self.assertEqual(_client_label_from_path(str(ws_cfg)), "Windsurf")
 
-            # 4. `all` returns all 7 JSON harnesses
-            all_paths = target_mcp_config_paths("all", home=sandbox_home)
-            self.assertEqual(len(all_paths), 7)
+            # 4. `all` returns all 7 JSON harnesses when codex is absent (8 when codex is present)
+            with mock.patch("sessfork.mcp_setup.find_codex_binary", return_value=None):
+                all_paths = target_mcp_config_paths("all", home=sandbox_home)
+                self.assertEqual(len(all_paths), 7)
+
+    def test_codex_cli_official_add_remove_idempotency_and_inspect(self) -> None:
+        from sessfork.mcp_setup import detect_installed_targets, find_codex_binary, target_mcp_config_paths
+        from sessfork.ui_server import _client_label_from_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox_home = Path(tmp)
+            state_file = sandbox_home / ".sessfork" / "state.json"
+            codex_dir = sandbox_home / ".codex"
+            codex_dir.mkdir(parents=True)
+            codex_cfg = codex_dir / "config.toml"
+
+            # 1. Fail-closed on explicit --target codex when `codex` CLI is missing
+            with mock.patch("sessfork.mcp_setup.find_codex_binary", return_value=None):
+                self.assertNotIn("codex", detect_installed_targets(home=sandbox_home))
+                with self.assertRaises(BrowserProfileError):
+                    ensure_mcp_configured(["codex"], state_path=state_file, home=sandbox_home)
+
+            # 2. Label check + target_mcp_config_paths("all") includes Codex when binary present
+            self.assertEqual(_client_label_from_path(str(codex_cfg)), "Codex CLI")
+            real_codex = find_codex_binary()
+            with mock.patch("sessfork.mcp_setup.find_codex_binary", return_value="/usr/local/bin/codex"):
+                self.assertIn("codex", detect_installed_targets(home=sandbox_home))
+                self.assertEqual(len(target_mcp_config_paths("all", home=sandbox_home)), 8)
+
+            # 3. Real official `codex mcp add/remove` E2E when codex is installed on host
+            if real_codex is not None:
+                codex_cfg.write_text('# keep user comment\nmodel = "gpt-5.4"\n', encoding="utf-8")
+                fake_moli = sandbox_home / "moli"
+                fake_moli.write_text("#!/bin/sh\necho moli 1.1.27\n", encoding="utf-8")
+                fake_moli.chmod(0o755)
+                fake_rust = sandbox_home / ".local" / "bin" / "sessfork-mcp"
+                fake_rust.parent.mkdir(parents=True)
+                fake_rust.write_text("#!/bin/sh\necho sessfork-mcp 0.2.1\n", encoding="utf-8")
+                fake_rust.chmod(0o755)
+
+                with mock.patch("sessfork.mcp_setup.find_moli_binary", return_value=fake_moli), \
+                     mock.patch("sessfork.mcp_setup.find_rust_mcp_binary", return_value=fake_rust):
+                    updated_dual = ensure_mcp_configured(
+                        ["codex"],
+                        state_path=state_file,
+                        home=sandbox_home,
+                        npx_cmd="/opt/homebrew/bin/npx",
+                        engine="dual",
+                    )
+                    self.assertEqual(updated_dual, [codex_cfg])
+                    raw_toml = codex_cfg.read_text(encoding="utf-8")
+                    self.assertIn("# keep user comment", raw_toml)
+                    self.assertIn("[mcp_servers.sessfork-browser]", raw_toml)
+                    self.assertIn("[mcp_servers.sessfork-moli]", raw_toml)
+
+                    # Inspection detects dual mode from config.toml
+                    info_dual = inspect_mcp_headless_shell(config_paths=[codex_cfg], home=sandbox_home)
+                    self.assertEqual(info_dual["engine_modes"].get(str(codex_cfg)), "dual")
+
+                    # Idempotent re-run returns no changes
+                    updated_again = ensure_mcp_configured(
+                        ["codex"],
+                        state_path=state_file,
+                        home=sandbox_home,
+                        npx_cmd="/opt/homebrew/bin/npx",
+                        engine="dual",
+                    )
+                    self.assertEqual(updated_again, [])
+
+                    # Switching to pure moli removes sessfork-moli companion via `codex mcp remove`
+                    updated_moli = ensure_mcp_configured(
+                        ["codex"],
+                        state_path=state_file,
+                        home=sandbox_home,
+                        engine="moli",
+                    )
+                    self.assertEqual(updated_moli, [codex_cfg])
+                    info_moli = inspect_mcp_headless_shell(config_paths=[codex_cfg], home=sandbox_home)
+                    self.assertEqual(info_moli["engine_modes"].get(str(codex_cfg)), "moli")
+                    self.assertNotIn("[mcp_servers.sessfork-moli]", codex_cfg.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

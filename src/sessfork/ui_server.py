@@ -61,6 +61,8 @@ def _client_label_from_path(cfg_path: str) -> str:
         return "WorkBuddy"
     if "windsurf" in low:
         return "Windsurf"
+    if ".codex" in low and low.endswith("config.toml"):
+        return "Codex CLI"
     if ".gemini" in low and low.endswith("settings.json"):
         return "Gemini CLI"
     if "antigravity" in low or ".gemini" in low:

@@ -200,7 +200,7 @@ if ! command -v sessfork >/dev/null 2>&1; then
   echo "提示: 若终端提示找不到 sessfork，请将 ${BIN_DIR} 加入 PATH，或直接重启终端。"
 fi
 echo ""
-echo "Try asking your AI agent (Antigravity / Claude Code / Cursor / OpenCode / Gemini CLI / WorkBuddy / Windsurf):"
+echo "Try asking your AI agent (Antigravity / Claude Code / Cursor / OpenCode / Gemini CLI / WorkBuddy / Windsurf / Codex CLI):"
 echo "  \"Use sessfork to check my github.com notifications silently in the background.\""
 echo "  \"用 sessfork 帮我在后台悄悄检查一下 github.com 的未读通知，别打断我当前浏览器。\""
 echo ""

@@ -11,11 +11,17 @@ import platform as platform_mod
 import re
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 from urllib.parse import urlparse
+
+try:
+    import tomllib  # Python 3.11+
+except ImportError:  # pragma: no cover - Python 3.9/3.10 fallback
+    tomllib = None  # type: ignore[assignment]
 
 from sessfork.chrome import BrowserProfileError, real_user_home
 from sessfork.moli_bridge import (
@@ -398,8 +404,46 @@ def _is_opencode_config_path(cfg_path: Path) -> bool:
     return cfg_path.name.lower() in ("opencode.json", "opencode.jsonc")
 
 
+def _is_codex_config_path(cfg_path: Path) -> bool:
+    return cfg_path.suffix.lower() == ".toml"
+
+
+def find_codex_binary() -> Optional[str]:
+    """Locate the official OpenAI `codex` CLI binary if installed."""
+    found = shutil.which("codex")
+    if found:
+        return found
+    mac_app = Path("/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex")
+    if mac_app.is_file() and os.access(mac_app, os.X_OK):
+        return str(mac_app)
+    return None
+
+
+def _load_mcp_doc(cfg_path: Path) -> Optional[Dict[str, Any]]:
+    if not cfg_path.is_file():
+        return None
+    try:
+        raw = cfg_path.read_text(encoding="utf-8").strip()
+        if not raw:
+            return {}
+        if _is_codex_config_path(cfg_path):
+            if tomllib is None:
+                return None
+            doc = tomllib.loads(raw)
+        else:
+            doc = json.loads(raw)
+    except (OSError, ValueError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
 def _get_servers_dict(doc: Dict[str, Any], cfg_path: Path) -> Optional[Dict[str, Any]]:
-    key = "mcp" if _is_opencode_config_path(cfg_path) else "mcpServers"
+    if _is_opencode_config_path(cfg_path):
+        key = "mcp"
+    elif _is_codex_config_path(cfg_path):
+        key = "mcp_servers"
+    else:
+        key = "mcpServers"
     servers = doc.get(key)
     return servers if isinstance(servers, dict) else None
 
@@ -439,14 +483,8 @@ def _is_native_rust_mcp_entry(entry: Dict[str, Any]) -> bool:
 
 def _detect_existing_config_mode(cfg_path: Path) -> Tuple[Optional[str], Optional[str]]:
     """Return `(engine_mode, custom_cdp_endpoint)` from an existing MCP config file."""
-    if not cfg_path.is_file():
-        return None, None
-    try:
-        raw = cfg_path.read_text(encoding="utf-8").strip()
-        doc = json.loads(raw) if raw else {}
-    except (OSError, json.JSONDecodeError):
-        return None, None
-    if not isinstance(doc, dict):
+    doc = _load_mcp_doc(cfg_path)
+    if doc is None:
         return None, None
     servers = _get_servers_dict(doc, cfg_path)
     if servers is None:
@@ -504,12 +542,8 @@ def inspect_mcp_headless_shell(
         if cfg_path in seen or not cfg_path.is_file():
             continue
         seen.add(cfg_path)
-        try:
-            raw = cfg_path.read_text(encoding="utf-8").strip()
-            doc = json.loads(raw) if raw else {}
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(doc, dict):
+        doc = _load_mcp_doc(cfg_path)
+        if doc is None:
             continue
         servers = _get_servers_dict(doc, cfg_path)
         if servers is None:
@@ -633,11 +667,17 @@ def detect_installed_targets(home: Optional[Path] = None) -> List[str]:
         root / ".codeium" / "windsurf"
     ).is_dir():
         targets.append("windsurf")
+    if find_codex_binary() is not None and (
+        (root / ".codex" / "config.toml").is_file()
+        or (root / ".codex").is_dir()
+        or home is None
+    ):
+        targets.append("codex")
     return targets
 
 
 def target_mcp_config_paths(target: str, home: Optional[Path] = None) -> List[Path]:
-    """Return MCP config JSON file paths for the requested agent target."""
+    """Return MCP config JSON/TOML file paths for the requested agent target."""
     root = (home or real_user_home()).expanduser()
     if target == "auto":
         auto_paths: List[Path] = []
@@ -670,9 +710,14 @@ def target_mcp_config_paths(target: str, home: Optional[Path] = None) -> List[Pa
         return [root / ".workbuddy" / "mcp.json"]
     if target == "windsurf":
         return [root / ".codeium" / "windsurf" / "mcp_config.json"]
+    if target == "codex":
+        codex_env = os.environ.get("CODEX_HOME", "").strip()
+        if home is None and codex_env:
+            return [Path(codex_env).expanduser() / "config.toml"]
+        return [root / ".codex" / "config.toml"]
     if target == "all":
         all_paths: List[Path] = []
-        for sub_target in (
+        sub_targets = [
             "antigravity",
             "claude",
             "cursor",
@@ -680,7 +725,10 @@ def target_mcp_config_paths(target: str, home: Optional[Path] = None) -> List[Pa
             "gemini",
             "workbuddy",
             "windsurf",
-        ):
+        ]
+        if find_codex_binary() is not None:
+            sub_targets.append("codex")
+        for sub_target in sub_targets:
             for p in target_mcp_config_paths(sub_target, home=home):
                 if p not in all_paths:
                     all_paths.append(p)
@@ -817,10 +865,101 @@ def ensure_mcp_configured(
             else:
                 updates = _build_updates_for_mode("chrome")
 
-            if _sync_mcp_servers(cfg_path, updates):
+            if _is_codex_config_path(cfg_path):
+                if _sync_codex_mcp_servers(cfg_path, updates, require_cli=(target == "codex")):
+                    updated_files.append(cfg_path)
+            elif _sync_mcp_servers(cfg_path, updates):
                 updated_files.append(cfg_path)
 
     return updated_files
+
+
+def _sync_codex_mcp_servers(
+    cfg_path: Path,
+    updates: Dict[str, Optional[Dict[str, Any]]],
+    require_cli: bool = True,
+) -> bool:
+    """Wire Codex CLI MCP servers via official `codex mcp add/remove` (never hand-editing TOML)."""
+    raw_cfg = cfg_path.expanduser()
+    if raw_cfg.is_symlink() or raw_cfg.parent.is_symlink():
+        raise BrowserProfileError(f"Refusing to modify symlinked Codex config path: {raw_cfg}")
+    codex_bin = find_codex_binary()
+    if codex_bin is None:
+        if require_cli:
+            raise BrowserProfileError(
+                "Codex CLI ('codex') not found on PATH; install Codex CLI or run "
+                "`codex mcp add sessfork-moli -- ~/.local/bin/sessfork-mcp` manually."
+            )
+        return False
+
+    with _exclusive_mcp_cfg_lock(raw_cfg):
+        existing_doc = _load_mcp_doc(raw_cfg) or {}
+        existing_servers = _get_servers_dict(existing_doc, raw_cfg) or {}
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(raw_cfg.parent.resolve())
+        changed = False
+
+        for server_name, entry in updates.items():
+            cur = existing_servers.get(server_name)
+            if entry is None:
+                if isinstance(cur, dict):
+                    res = subprocess.run(
+                        [codex_bin, "mcp", "remove", server_name],
+                        env=env,
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                        check=False,
+                    )
+                    if res.returncode != 0:
+                        detail = (res.stderr or res.stdout or "").strip()
+                        raise BrowserProfileError(
+                            f"codex mcp remove {server_name!r} failed (exit {res.returncode}): {detail}"
+                        )
+                    changed = True
+                continue
+
+            cmd, args = _extract_entry_command_and_args(entry)
+            if not cmd:
+                continue
+            entry_env = entry.get("env") if isinstance(entry.get("env"), dict) else {}
+            clean_env: Dict[str, str] = {}
+            for k, v in entry_env.items():
+                ks, vs = str(k), str(v)
+                if "\0" in ks or "\n" in ks or "\r" in ks or "=" in ks or "\0" in vs or "\n" in vs or "\r" in vs:
+                    raise BrowserProfileError(f"Refusing unsafe env entry for Codex MCP: {ks!r}")
+                clean_env[ks] = vs
+
+            if isinstance(cur, dict):
+                cur_cmd, cur_args = _extract_entry_command_and_args(cur)
+                cur_env = cur.get("env") if isinstance(cur.get("env"), dict) else {}
+                cur_env_str = {str(k): str(v) for k, v in cur_env.items()}
+                if cur_cmd == cmd and cur_args == args and cur_env_str == clean_env:
+                    continue
+
+            cli_cmd = [codex_bin, "mcp", "add", server_name]
+            for k in sorted(clean_env):
+                cli_cmd.extend(["--env", f"{k}={clean_env[k]}"])
+            cli_cmd.append("--")
+            cli_cmd.append(cmd)
+            cli_cmd.extend(args)
+
+            res = subprocess.run(
+                cli_cmd,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            if res.returncode != 0:
+                detail = (res.stderr or res.stdout or "").strip()
+                raise BrowserProfileError(
+                    f"codex mcp add {server_name!r} failed (exit {res.returncode}): {detail}"
+                )
+            changed = True
+
+        return changed
 
 
 @contextlib.contextmanager

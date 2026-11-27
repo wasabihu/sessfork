@@ -266,6 +266,26 @@ try {
                 }
             }
         }
+        $CodexCmd = Get-Command "codex" -ErrorAction SilentlyContinue
+        if ($CodexCmd) {
+            $CodexState = Join-Path $env:USERPROFILE ".sessfork\state.json"
+            $CodexOutDir = Join-Path $env:USERPROFILE ".sessfork\playwright-output"
+            $PrevEAP = $ErrorActionPreference
+            $CodexExit = 1
+            try {
+                $ErrorActionPreference = "Continue"
+                & $CodexCmd.Source mcp add sessfork-moli -- $DestBin "--storage-state=$CodexState" "--output-dir=$CodexOutDir" 2>&1 | Out-Null
+                $CodexExit = $LASTEXITCODE
+            } finally {
+                $ErrorActionPreference = $PrevEAP
+            }
+            if ($CodexExit -eq 0) {
+                Write-Host "Wired MCP server 'sessfork-moli' -> Codex CLI (codex mcp add)"
+                $Wired += "Codex CLI"
+            } else {
+                Write-Host "  Warning: skipped Codex CLI due to codex mcp add exit code $CodexExit"
+            }
+        }
     }
     if ($Wired.Count -eq 0) {
         Write-Host '  No pre-existing MCP config detected. Wire manually anytime via:'

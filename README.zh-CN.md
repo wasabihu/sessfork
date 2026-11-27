@@ -31,7 +31,7 @@
 
 ### 方式一 · 一键全自动安装配置（推荐，无需预先装 `uv` 或三方包）
 
-自动检测本机已安装的 **Antigravity / Claude Code / Cursor / OpenCode / Gemini CLI / WorkBuddy / Windsurf**，自动注册 `sessfork-browser` 无头 MCP 服务并安装全局 Agent `SKILL.md`：
+自动检测本机已安装的 **Antigravity / Claude Code / Cursor / OpenCode / Gemini CLI / WorkBuddy / Windsurf / Codex CLI**，自动注册 `sessfork-browser` 无头 MCP 服务并安装全局 Agent `SKILL.md`：
 
 ```bash
 curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/wasabihu/sessfork/v0.2.1/install.sh | bash
@@ -210,8 +210,8 @@ python3 scripts/stress_test.py --heavy-compare
 | 从 Arc / Brave / Edge 等其他浏览器分叉 | `sessfork x.com --browser arc` |
 | 指定 Chrome 分身账号目录 | `sessfork github.com --profile "Profile 1"` |
 | 单独写入 OpenCode（`~/.config/opencode/opencode.json`）配置 | `sessfork --setup --target opencode` |
-| 单独写入 WorkBuddy / Gemini CLI / Windsurf 配置 | `sessfork --setup --target workbuddy`（或 `gemini` / `windsurf`） |
-| 同时为全部 7 款主流 JSON Harness 写入配置 | `sessfork --setup --target all` |
+| 单独写入 WorkBuddy / Gemini CLI / Windsurf / Codex CLI 配置 | `sessfork --setup --target codex`（或 `workbuddy` / `gemini` / `windsurf`） |
+| 同时为全部 8 款主流 Harness 写入配置 | `sessfork --setup --target all` |
 | 打开本机可视化配置台（`127.0.0.1`、零依赖一键切引擎与管理域名） | `sessfork --ui` |
 | 一键切换无头引擎（`chrome` 默认 / `moli` 自动托管 / `dual` 双通道惰性兜底） | `sessfork --engine dual`（或 `chrome` / `moli`） |
 | 接入外部已启动的 CDP 浏览器（如手动 `moli serve`） | `sessfork --setup --cdp-endpoint http://127.0.0.1:9222` |
